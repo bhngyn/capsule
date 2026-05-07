@@ -114,7 +114,7 @@ This release assumes a **safe operating environment**: the investigator's device
 
 This is the most common source of bugs in Dockerized GUI tools. Follow these rules:
 
-- **Use `linux/amd64` and `linux/arm64` multi-arch images.** Apple Silicon Macs need arm64 natively or Rosetta will slow downloads — and Playwright/Chromium — dramatically.
+- **Use `linux/amd64` and `linux/arm64` multi-arch images.** Apple Silicon Macs need arm64 natively or Rosetta will slow downloads — and Playwright/Chromium — dramatically. The reproducible build script `scripts/build-dist.sh` drives `docker buildx` for both arches and produces per-arch image tags (`capsule:arm64`, `capsule:amd64`). Bundled-tar launchers (`dist/Capsule*/Capsule.{command,bat}`) run with the explicit per-arch tag, never `capsule:latest`, and force-reload the bundled tar whenever the loaded image's content digest doesn't match the one stamped into the launcher at build time. This is what stops a stale or wrong-arch `capsule:latest` from silently shadowing the right image (the Docker Desktop "AMD64" warning chip on Apple Silicon hosts is the symptom of that failure mode).
 - **Bind-mount paths must be POSIX inside the container** (`/downloads`, `/config`) regardless of how the user mounts them on the host. Windows users will mount `C:\Users\foo\Documents\Capsule`, Mac users will mount `/Users/foo/Documents/Capsule` — both must map to `/downloads` inside.
 - **Filename sanitization must satisfy the strictest host filesystem,** which is NTFS/exFAT on Windows. That means: no `< > : " / \ | ? *`, no trailing spaces or dots, no reserved names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`), and a 255-character limit per path component. Apply this sanitizer **even on Mac**, so a library copied between machines stays portable.
 - **Never write absolute host paths into the database, sidecars, audit log, or evidence export.** Always store paths relative to `/downloads`. The host path differs per machine and leaks user-environment detail into evidence.
@@ -231,7 +231,8 @@ Every capture produces, at minimum, a page snapshot package (MHTML + screenshot 
 ```
 /downloads/{case_slug}/{stem}/                          ← per-item folder
 /downloads/{case_slug}/{stem}/{stem}.{ext}              ← media file (if any)
-/downloads/{case_slug}/{stem}/{stem}.manifest.pdf       ← per-item manifest PDF
+/downloads/{case_slug}/{stem}/{stem}.manifest.pdf       ← per-item manifest PDF (full hashes, A4 landscape)
+/downloads/{case_slug}/{stem}/{stem}.report.pdf         ← per-item human-readable report PDF
 /downloads/{case_slug}/{stem}/{stem}.meta.json          ← canonical record
 /downloads/{case_slug}/{stem}/{stem}.meta.json.sig
 /downloads/{case_slug}/{stem}/{stem}.checksums.txt
@@ -292,7 +293,8 @@ For every capture, all files live together in `/downloads/{case_slug}/{stem}/`. 
 
 | File                       | Always present? | Source / contents                                                                                                                                                                                                                                                                                                                                                                  |
 |----------------------------|------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `{stem}.manifest.pdf`      | Yes              | Locale-aware per-item evidence manifest (PDF). Header with source URL, capture timestamp UTC, and signing-key fingerprint, then a table of every file in the item folder with MD5 and SHA-256. Hash recorded in `meta.json` and `checksums.txt` and transitively signed via `meta.json.sig`. |
+| `{stem}.manifest.pdf`      | Yes              | Locale-aware per-item evidence manifest (PDF, A4 landscape). Header with source URL, capture timestamp UTC, and signing-key fingerprint, then a table of every file in the item folder with **full** MD5 (32 hex) and **full** SHA-256 (64 hex) — verifier-ready, no truncation. Hash recorded in `meta.json` and `checksums.txt` and transitively signed via `meta.json.sig`. |
+| `{stem}.report.pdf`        | Yes              | Locale-aware per-item human-readable report (PDF). Provenance (URLs, redirects, capture timestamp UTC, uploader, title, upload date, duration, authenticated domains), full untruncated description (paginated), tools/versions table, and capture-side report (render-wait outcomes, blocked-request count, banner-hide flags, readiness, report locale). Companion to `{stem}.manifest.pdf`. Hash recorded in `meta.json` and `checksums.txt` and transitively signed via `meta.json.sig`. |
 | `{stem}.meta.json`         | Yes              | **Our** structured metadata. Includes capture_kind, filenames, original/final URLs, redirect chain, response headers, platform, uploader, title (sanitized + original), description, upload_date, capture_date (UTC), duration, format details, file sizes, MD5/SHA-256 of every artifact, app/yt-dlp/browsertrix/Chromium versions, signing key fingerprint, audit-log entry id, list of authenticated domains (no cookie values) |
 | `{stem}.meta.json.sig`     | Yes              | Detached Ed25519 signature of `meta.json`                                                                                                                                                                                                                                                                                                                                          |
 | `{stem}.checksums.txt`     | Yes              | Lines of `MD5  <hash>  <relpath>` and `SHA256  <hash>  <relpath>` for every artifact (compatible with `md5sum -c` / `sha256sum -c`)                                                                                                                                                                                                                                              |
@@ -308,11 +310,13 @@ For every capture, all files live together in `/downloads/{case_slug}/{stem}/`. 
 | `{stem}.user-browser.dom-snapshot.html`   | Extension live capture | Click-time `document.documentElement.outerHTML` from the user's authenticated browser. Distinct from the Playwright MHTML — locks in exactly what the investigator was looking at. (v2)                                                                                                                                                       |
 | `{stem}.user-browser.dom-snapshot.json`   | Extension live capture | Structural counts that go with the DOM HTML (node count, iframe count, video count, image total + visible). (v2)                                                                                                                                                                                                                              |
 
-`{stem}.meta.json` is the canonical record. Schema lives at `/app/schemas/meta.schema.json` and is versioned (`"schema_version": 2`). When the schema changes, write a migration. v2 (hardening pass) adds:
+`{stem}.meta.json` is the canonical record. Schema lives at `/app/schemas/meta.schema.json` and is versioned (`"schema_version": 4`). When the schema changes, write a migration. v2 (hardening pass) adds:
 
 - `capture` — the capture report: render-wait outcomes (`load`, `fonts`, `images`, `video`, `lazy_load`, `networkidle`), blocked-request count + sample, `blocklist_version`, `banner_hide_applied`, `banner_hide_version`, `tab_context_used`.
 - `cookies_snapshot_sha256` — SHA-256 of the cookies file the job consumed; binds the capture to the exact cookie set without ever logging values.
 - `ephemeral_cookies_used` — true iff the job used a one-shot ephemeral cookie file (extension-supplied, never persisted to the case directory).
+
+v3 (Track A) adds the `manifest_pdf` artifact role + checksum and `capture.report_lang`. v4 adds the `report_pdf` artifact role + checksum (the per-item human-readable report PDF). Both PDFs are referenced by hash in `meta.json` and therefore transitively signed by `meta.json.sig` — no extra signing path required.
 
 The new sidecars are referenced by hash in `meta.json` and therefore transitively signed by `meta.json.sig` — no extra signing path required.
 
@@ -618,7 +622,7 @@ The README is the user's first contact. Write for an investigator who has never 
 - **Audience:** investigators (researchers, journalists, lawyers, legal-discovery practitioners). Court admissibility is a goal.
 - **Threat model:** safe (no Tor/proxy/at-rest-encryption in v1).
 - **Multi-user:** no. Single investigator, single laptop. Sharing via signed evidence bundles.
-- **Cases:** first-class on the backend (filesystem grouping under `/downloads/{case_slug}/`). The downloader uses a default `quick-captures` case implicitly; v1 has no UI to switch cases, but the API and on-disk layout still support arbitrary cases.
+- **Cases:** first-class on the backend (filesystem grouping under `/downloads/{case_slug}/`). The downloader uses a default case implicitly; v1 has no UI to switch cases, but the API and on-disk layout still support arbitrary cases. **Default slug:** `downloads` for fresh installs (folder: `~/Documents/Capsule/downloads/`). **Forward-only legacy fallback:** existing installs that already have a `quick-captures` case row keep using it — `cases.ensure_default_case()` prefers `downloads` first, then falls back to `quick-captures` if that row exists, else creates `downloads`. No on-disk migration; the legacy slug name is preserved indefinitely for those users so existing evidence chains stay intact.
 - **Accent color:** teal-600 throughout.
 - **Concurrent captures:** default 2 (Chromium memory contention beyond that). Configurable in Settings.
 - **Duplicate handling:** when a paste matches an existing `(case_id, capture_kind, url_hash)`, show a modal with the existing capture preview and three buttons: "Open existing," "Re-capture as new entry" (creates sibling with `__c2`/`__c3` suffix), "Cancel." All three outcomes recorded in audit log.
@@ -647,8 +651,10 @@ The README is the user's first contact. Write for an investigator who has never 
 - **Ephemeral cookies opt-in per submission** via `cookie_persistence: "ephemeral"` on `POST /api/extension/capture`. One-shot tmpdir, never written to the case directory, discarded after job completion.
 - **Cookie-set provenance hash** (`cookies_snapshot_sha256`) recorded per job in `meta.json` and the audit log.
 - **New audit actions:** `extension.tab_context_received`, `extension.id_mismatch`, `extension.token_rotated`, `cookies.stale_at_capture`, `cookies.ephemeral_used`, `capture.ads_blocked`, `capture.banners_hidden`, `capture.readiness_timed_out`.
-- **Per-item PDF manifest** at capture time, locale-aware, hashed in `meta.json` and signed transitively via `meta.json.sig`. Lives at `{stem}.manifest.pdf` inside the per-item folder.
-- **Layout:** per-item folder colocates media, snapshot, sidecars, and manifest PDF under `/downloads/{case}/{stem}/`. Old `sidecars/{stem}/` subfolder removed.
+- **Per-item PDF manifest** at capture time, locale-aware, hashed in `meta.json` and signed transitively via `meta.json.sig`. Lives at `{stem}.manifest.pdf` inside the per-item folder. As of schema v3, the file table emits **full** MD5 (32 hex) and SHA-256 (64 hex) — no truncation — and the page is A4 landscape so the hashes wrap inside their column without overflow.
+- **Per-item PDF report** (`{stem}.report.pdf`, schema v4) — locale-aware human-readable companion to the manifest PDF. Provenance + full untruncated description + tools/versions + capture report. Hashed and added to `artifacts["report_pdf"]` *before* the manifest PDF renders so the manifest's file table includes the report row, and `meta.json.sig` transitively binds both PDFs.
+- **Layout:** per-item folder colocates media, snapshot, sidecars, and both PDFs under `/downloads/{case}/{stem}/`. Old `sidecars/{stem}/` subfolder removed.
+- **Distribution: per-arch image tags + reproducible build script.** `scripts/build-dist.sh` drives `docker buildx` for both arm64 and amd64, saves the per-arch tars with their content digests, and renders launchers from `dist-templates/Capsule.{command,bat}.in`. Bundled-tar launchers run with the explicit per-arch tag (`capsule:arm64` / `capsule:amd64`) and force-reload the bundled tar whenever the loaded image's digest doesn't match the one stamped into the launcher at build time. Fixes the "AMD64" warning chip on Apple Silicon hosts.
 
 ## 16. Still open
 
