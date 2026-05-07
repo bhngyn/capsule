@@ -2,7 +2,8 @@
 
 The orchestrator path itself is exercised in ``test_api.py`` already; here we
 focus on the request shape, dedupe, validation, and the auto-resolution of the
-quick-captures case.
+default downloader case (slug ``downloads`` on fresh installs, ``quick-captures``
+on legacy installs).
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ async def client(capsule_dirs):
 
 
 @pytest.mark.asyncio
-async def test_batch_without_case_creates_quick_case(client):
+async def test_batch_without_case_creates_default_case(client):
     resp = await client.post(
         "/api/jobs/batch",
         json={"urls": ["https://example.com/one", "https://example.com/two"]},
@@ -58,9 +59,9 @@ async def test_batch_without_case_creates_quick_case(client):
     assert body["jobs"][0]["case_id"] == body["case_id"]
 
     cases = (await client.get("/api/cases")).json()["cases"]
-    quick = [c for c in cases if c["slug"] == "quick-captures"]
-    assert len(quick) == 1
-    assert quick[0]["id"] == body["case_id"]
+    default = [c for c in cases if c["slug"] == "downloads"]
+    assert len(default) == 1
+    assert default[0]["id"] == body["case_id"]
 
 
 @pytest.mark.asyncio
@@ -138,8 +139,11 @@ async def test_system_version_includes_paths(client):
     assert "paths" in body
     paths = body["paths"]
     assert paths["downloads_dir"]
-    assert paths["quick_captures_dir"].endswith("quick-captures")
+    assert paths["default_case_dir"].endswith("downloads")
     assert isinstance(paths["can_reveal"], bool)
+    # Frontend reads the slug from this top-level field rather than
+    # hardcoding either ``downloads`` or ``quick-captures``.
+    assert body["default_case_slug"] == "downloads"
 
 
 # --- /api/system/reveal -----------------------------------------------------
@@ -172,11 +176,11 @@ async def test_reveal_404_for_missing_path(client, monkeypatch):
 async def test_reveal_returns_no_desktop_when_unsupported(client, monkeypatch, capsule_dirs):
     from app import main as main_mod
 
-    # Pre-create the quick case so the target dir exists.
+    # Pre-create the default case so the target dir exists.
     await client.post("/api/jobs/batch", json={"urls": ["https://example.com/x"]})
     monkeypatch.setattr(main_mod, "_can_reveal", lambda: False)
     resp = await client.post(
-        "/api/system/reveal", json={"relative_path": "quick-captures"}
+        "/api/system/reveal", json={"relative_path": "downloads"}
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -203,10 +207,10 @@ async def test_reveal_succeeds_with_stubbed_opener(client, monkeypatch, capsule_
     monkeypatch.setattr(subprocess, "Popen", _StubPopen)
 
     resp = await client.post(
-        "/api/system/reveal", json={"relative_path": "quick-captures"}
+        "/api/system/reveal", json={"relative_path": "downloads"}
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
     assert spawned and spawned[0][0] in {"open", "explorer", "xdg-open"}
-    assert spawned[0][-1].endswith("quick-captures")
+    assert spawned[0][-1].endswith("downloads")
