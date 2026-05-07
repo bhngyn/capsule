@@ -39,7 +39,8 @@ def test_create_provisions_directories(conn, capsule_dirs):
 
     cases_mod.create(conn, name="Ops")
     assert (capsule_dirs["downloads"] / "ops").is_dir()
-    assert (capsule_dirs["downloads"] / "ops" / "sidecars").is_dir()
+    # Track A: per-item folders live directly under the case dir; the old
+    # ``sidecars/`` intermediate is gone (CLAUDE.md §5/§6).
     assert (capsule_dirs["config"] / "cases" / "ops").is_dir()
 
 
@@ -139,7 +140,7 @@ def test_ensure_quick_creates_pinned_slug(conn, capsule_dirs):
     assert case.status == "open"
     assert case.settings.get("auto_managed") is True
     assert (capsule_dirs["downloads"] / "quick-captures").is_dir()
-    assert (capsule_dirs["downloads"] / "quick-captures" / "sidecars").is_dir()
+    # Track A: per-item folders live directly under the case dir.
 
 
 def test_ensure_quick_is_idempotent(conn, capsule_dirs):

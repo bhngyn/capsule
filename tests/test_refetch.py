@@ -87,16 +87,16 @@ async def test_extend_capture_adds_warc_and_resigns(reload_modules, capsule_dirs
             actor="user",
         )
 
-        # WARC landed in the sidecar dir under the canonical name.
-        sidecar_dir = capsule_dirs["downloads"] / result.relative_sidecar_dir
-        warc_target = sidecar_dir / f"{result.stem}.page.warc.gz"
+        # WARC landed in the per-item folder under the canonical name.
+        item_dir = capsule_dirs["downloads"] / result.relative_item_dir
+        warc_target = item_dir / f"{result.stem}.page.warc.gz"
         assert warc_target.is_file()
         assert out["role"] == "page_warc"
         assert out["sha256"]
 
         # meta.json now lists the new role; signature is valid.
-        meta_path = sidecar_dir / f"{result.stem}.meta.json"
-        sig_path = sidecar_dir / f"{result.stem}.meta.json.sig"
+        meta_path = item_dir / f"{result.stem}.meta.json"
+        sig_path = item_dir / f"{result.stem}.meta.json.sig"
         assert meta_path.is_file() and sig_path.is_file()
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         assert "page_warc" in meta["artifacts"]
@@ -106,7 +106,7 @@ async def test_extend_capture_adds_warc_and_resigns(reload_modules, capsule_dirs
         assert signing.verify(meta_path.read_bytes(), sig_path.read_bytes())
 
         # checksums.txt reflects both the original artifacts and the new WARC.
-        cs = (sidecar_dir / f"{result.stem}.checksums.txt").read_text(encoding="utf-8")
+        cs = (item_dir / f"{result.stem}.checksums.txt").read_text(encoding="utf-8")
         assert out["sha256"] in cs
 
         # Audit row appended.

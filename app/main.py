@@ -499,11 +499,16 @@ async def upload_cookies_text(body: CookiesTextBody) -> dict[str, Any]:
 class JobSubmit(BaseModel):
     case_id: int
     url: str = Field(min_length=1)
+    # UI locale at submission time (Track A). Drives the per-item
+    # manifest PDF's labels + RTL/LTR + font stack. ``None`` ⇒ the
+    # orchestrator falls back to ``config.DEFAULT_LANG``.
+    lang: str | None = None
 
 
 class JobBatch(BaseModel):
     case_id: int | None = None
     urls: list[str] = Field(min_length=1, max_length=25)
+    lang: str | None = None
 
 
 @app.post("/api/jobs")
@@ -515,7 +520,9 @@ async def submit_job(body: JobSubmit) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="case not found")
     finally:
         conn.close()
-    job = await jobs_mod.orchestrator().submit(case_id=body.case_id, url=body.url)
+    job = await jobs_mod.orchestrator().submit(
+        case_id=body.case_id, url=body.url, lang=body.lang,
+    )
     return job.to_dict()
 
 
@@ -552,7 +559,9 @@ async def submit_jobs_batch(body: JobBatch) -> dict[str, Any]:
 
     submitted = []
     for u in urls:
-        job = await jobs_mod.orchestrator().submit(case_id=case.id, url=u)
+        job = await jobs_mod.orchestrator().submit(
+            case_id=case.id, url=u, lang=body.lang,
+        )
         submitted.append(job.to_dict())
     return {"case_id": case.id, "jobs": submitted}
 
@@ -834,7 +843,7 @@ async def list_library(
         # meta_json blob avoids parsing JSON for every row in a large library.
         sql = (
             "SELECT id, case_id, capture_kind, source_url, final_url, platform, "
-            "video_id, uploader, title, capture_date, relative_path, sidecar_dir, "
+            "video_id, uploader, title, capture_date, relative_path, item_dir, "
             "file_size_bytes, md5, sha256, signing_key_fp, "
             "(meta_json LIKE '%\"user_browser_%') AS has_user_browser_capture "
             "FROM downloads WHERE 1=1"
@@ -931,10 +940,10 @@ async def verify_library(download_id: int | None = None) -> dict[str, Any]:
         for row in rows:
             r = dict(row)
             meta = json.loads(r["meta_json"])
-            sidecar_dir = config.DOWNLOADS_DIR / r["sidecar_dir"]
-            stem = sidecar_dir.name
-            meta_path = sidecar_dir / f"{stem}.meta.json"
-            sig_path = sidecar_dir / f"{stem}.meta.json.sig"
+            item_dir = config.DOWNLOADS_DIR / r["item_dir"]
+            stem = item_dir.name
+            meta_path = item_dir / f"{stem}.meta.json"
+            sig_path = item_dir / f"{stem}.meta.json.sig"
             issues: list[str] = []
             sig_ok = False
             if meta_path.is_file() and sig_path.is_file():
@@ -992,17 +1001,25 @@ async def list_audit(
 
 
 @app.post("/api/cases/{case_id}/export")
-async def export_case(case_id: int) -> FileResponse:
+async def export_case(
+    case_id: int,
+    lang: str | None = Query(default=None),
+) -> FileResponse:
     """Build a signed evidence-export bundle for ``case_id``.
 
     Returns the zip directly so the frontend can stream it to the user as
     a single download. The bundle is also persisted to
     ``$CAPSULE_CONFIG_DIR/exports/`` for re-download if needed.
+
+    ``lang`` selects the locale for the rendered case_report.pdf inside
+    the bundle. Defaults to ``config.DEFAULT_LANG``.
     """
     conn = _conn()
     try:
         try:
-            result = evidence_export.build_bundle(conn, case_id=case_id)
+            result = evidence_export.build_bundle(
+                conn, case_id=case_id, lang=lang or config.DEFAULT_LANG,
+            )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return FileResponse(
@@ -1386,6 +1403,9 @@ class ExtensionCaptureBody(BaseModel):
     # 'ephemeral' writes them to a per-job tmpdir, used for one capture,
     # discarded after — never written to the case directory.
     cookie_persistence: str = Field(default="case", pattern=r"^(case|ephemeral)$")
+    # UI locale at submission time (Track A). Threads through to the
+    # per-item manifest PDF; falls back to ``config.DEFAULT_LANG``.
+    lang: str | None = None
 
 
 def _decode_b64(blob: str | None, *, label: str) -> bytes | None:
@@ -1570,7 +1590,9 @@ async def extension_capture(
         raise HTTPException(status_code=400, detail="no URLs")
     submitted = []
     for u in urls:
-        job = await jobs_mod.orchestrator().submit(case_id=case.id, url=u)
+        job = await jobs_mod.orchestrator().submit(
+            case_id=case.id, url=u, lang=body.lang,
+        )
         submitted.append(job.to_dict())
 
     # Step 4: pair live captures with their submitted job by URL match.

@@ -17,9 +17,13 @@ Bundle layout::
     ├── verify.py
     ├── README.txt
     └── downloads/
-        └── {stem}/
+        └── {stem}/                     ← per-item folder (CLAUDE.md §5/§6)
             ├── {media_filename}        ← present for media kind
-            └── sidecars/{stem}/        ← all per-item sidecars
+            ├── {stem}.manifest.pdf
+            ├── {stem}.meta.json
+            ├── {stem}.meta.json.sig
+            ├── {stem}.checksums.txt
+            └── {stem}.page.*           ← MHTML, screenshot, WARC, etc.
 
 The manifest is a flat list of ``{path, role, size, md5, sha256}`` records
 covering every file in the bundle. We sign the manifest, not each file
@@ -96,14 +100,20 @@ def plan_for_case(conn: sqlite3.Connection, case_id: int) -> ExportPlan:
 
 
 def _iter_artifact_paths(plan: ExportPlan) -> Iterable[tuple[Path, str, str]]:
-    """Yield ``(absolute, relative_in_zip, role)`` for every artifact."""
+    """Yield ``(absolute, relative_in_zip, role)`` for every artifact.
+
+    Track A layout: each library item has a single per-item folder
+    ``/downloads/{case_slug}/{stem}/`` that holds the media file (if any),
+    every sidecar, and the meta + signature + checksums files. The bundle
+    mirrors this flat layout under ``downloads/{stem}/...``.
+    """
     for row in plan.items:
         meta = json.loads(row["meta_json"])
-        sidecar_rel = row["sidecar_dir"]  # relative to /downloads
-        sidecar_abs = config.DOWNLOADS_DIR / sidecar_rel
-        stem = sidecar_abs.name
+        item_rel = row["item_dir"]  # relative to /downloads
+        item_abs = config.DOWNLOADS_DIR / item_rel
+        stem = item_abs.name
 
-        # Media file (if any)
+        # Media file (if any) lives in the same per-item folder.
         if row["relative_path"]:
             yield (
                 config.DOWNLOADS_DIR / row["relative_path"],
@@ -111,10 +121,10 @@ def _iter_artifact_paths(plan: ExportPlan) -> Iterable[tuple[Path, str, str]]:
                 "media",
             )
 
-        # Every artifact recorded in meta.json that lives under sidecars/ —
-        # covers MHTML, PNG, WARC, info.json, description, thumbnail, subs.
-        # Skip ``media`` / ``media_2`` roles since the primary media file
-        # is emitted at the top of the loop above.
+        # Every artifact recorded in meta.json. Covers MHTML, PNG, WARC,
+        # info.json, description, thumbnail, subs, manifest_pdf, etc. Skip
+        # ``media`` / ``media_2`` roles since the primary media file is
+        # emitted at the top of the loop above.
         downloads_root = config.DOWNLOADS_DIR.resolve()
         for role, rel in meta.get("artifacts", {}).items():
             if role.startswith("media"):
@@ -135,18 +145,19 @@ def _iter_artifact_paths(plan: ExportPlan) -> Iterable[tuple[Path, str, str]]:
                 continue
             yield (
                 abs_path,
-                f"downloads/{stem}/sidecars/{stem}/{abs_path.name}",
+                f"downloads/{stem}/{abs_path.name}",
                 role,
             )
 
-        # The meta.json + sig + checksums are reachable via meta["artifacts"]?
-        # No — they aren't artifacts of themselves. Add explicitly.
+        # The meta.json + sig + checksums + manifest.pdf are not listed in
+        # meta["artifacts"] (the manifest PDF is — see Track A commit 3 —
+        # but meta.json + sig + checksums.txt are not). Emit explicitly.
         for tail in (".meta.json", ".meta.json.sig", ".checksums.txt"):
-            p = sidecar_abs / f"{stem}{tail}"
+            p = item_abs / f"{stem}{tail}"
             if p.is_file():
                 yield (
                     p,
-                    f"downloads/{stem}/sidecars/{stem}/{p.name}",
+                    f"downloads/{stem}/{p.name}",
                     f"meta{tail}",
                 )
 
@@ -156,14 +167,21 @@ def build_bundle(
     *,
     case_id: int,
     out_dir: Path | None = None,
+    lang: str | None = None,
 ) -> ExportResult:
     """Build a signed zip + PDF + verifier for ``case_id``.
 
     ``out_dir`` defaults to ``$CAPSULE_CONFIG_DIR/exports/`` so exports
     persist across restarts and never share a folder with downloads.
+
+    ``lang`` selects the locale for the rendered ``case_report.pdf``.
+    Defaults to ``config.DEFAULT_LANG`` so existing call sites keep
+    working without churn; the export endpoint plumbs the active UI
+    locale through.
     """
     out_dir = out_dir or (config.CONFIG_DIR / "exports")
     out_dir.mkdir(parents=True, exist_ok=True)
+    lang = lang or config.DEFAULT_LANG
 
     plan = plan_for_case(conn, case_id)
     case = plan.case
@@ -198,8 +216,11 @@ def build_bundle(
         audit_entries, indent=2, ensure_ascii=True, default=str
     ).encode("utf-8")
 
-    # PDF report.
-    pdf_bytes = pdf_report.render_case_report(case=case, items=plan.items)
+    # PDF report. Locale flips labels, page direction, and the font
+    # stack so RTL Arabic / CJK glyphs render without tofu.
+    pdf_bytes = pdf_report.render_case_report(
+        case=case, items=plan.items, lang=lang,
+    )
 
     # Verifier script.
     verifier_bytes = verifier_template_path().read_bytes()

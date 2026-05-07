@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{lang}}" dir="{{dir}}">
 <head>
   <meta charset="utf-8">
   <title>Capsule case report — {{case_name}}</title>
@@ -8,14 +8,16 @@
       size: A4;
       margin: 18mm 16mm 22mm 16mm;
       @bottom-center {
-        content: "Capsule evidence export · {{case_name}} · page " counter(page) " of " counter(pages);
-        font-family: "Helvetica", "Arial", sans-serif;
+        content: "{{label.footer_prefix}} " counter(page) " / " counter(pages);
+        font-family: "Inter", "Noto Sans CJK JP", "Noto Sans CJK KR",
+                     "Noto Sans Arabic", "Helvetica", "Arial", sans-serif;
         font-size: 8pt;
         color: #64748b;
       }
     }
     body {
-      font-family: "Helvetica", "Arial", "Noto Sans", sans-serif;
+      font-family: "Inter", "Noto Sans CJK JP", "Noto Sans CJK KR",
+                   "Noto Sans Arabic", "Helvetica", "Arial", sans-serif;
       color: #0f172a;
       font-size: 10pt;
       line-height: 1.5;
@@ -28,7 +30,7 @@
       margin: 16pt 0 24pt 0;
       padding: 12pt 14pt;
       border: 1px solid #e2e8f0;
-      border-left: 4px solid #0d9488;
+      border-inline-start: 4px solid #0d9488;
       background: #f8fafc;
     }
     .summary dl { display: grid; grid-template-columns: max-content 1fr; gap: 4pt 14pt; margin: 0; }
@@ -66,7 +68,7 @@
     dt { color: #475569; font-weight: 500; }
     dd { margin: 0; word-break: break-all; }
     code { font-family: "Menlo", "Courier New", monospace; font-size: 9pt; }
-    .artifacts ul { padding-left: 0; list-style: none; margin: 4pt 0 0 0; }
+    .artifacts ul { padding-inline-start: 0; list-style: none; margin: 4pt 0 0 0; }
     .artifacts li { font-size: 9pt; padding: 1pt 0; }
     .artifacts .role {
       display: inline-block;
@@ -85,13 +87,14 @@
     }
     .brand svg { display: inline-block; width: 18pt; height: 18pt; }
     .brand .wordmark { font-size: 12pt; font-weight: 600; letter-spacing: -0.01em; }
+    .brand .tagline { font-size: 9pt; color: #64748b; }
   </style>
 </head>
 <body>
   <!-- Brand mark — bell jar over a browser-window specimen (mono variant). -->
   <div class="brand">
     <svg viewBox="0 0 24 24" fill="none" stroke="#1e293b" stroke-width="1.5"
-         stroke-linecap="round" stroke-linejoin="round" aria-label="Capsule">
+         stroke-linecap="round" stroke-linejoin="round" aria-label="{{label.brand_name}}">
       <rect x="2.75" y="20.5" width="18.5" height="2" rx="0.5"
             fill="#1e293b" fill-opacity="0.15" stroke-width="1.5"/>
       <path d="M 5.25 20.5 L 5.25 11.5 Q 5.25 4.25 12 4.25 Q 18.75 4.25 18.75 11.5 L 18.75 20.5"/>
@@ -105,19 +108,20 @@
       <line x1="8.7" y1="12.6" x2="15.3" y2="12.6" stroke-width="0.9" stroke-opacity="0.55"/>
       <line x1="8.7" y1="14"   x2="13.5" y2="14"   stroke-width="0.9" stroke-opacity="0.55"/>
     </svg>
-    <span class="wordmark">Capsule</span>
+    <span class="wordmark">{{label.brand_name}}</span>
+    <span class="tagline">· {{label.brand_tagline}}</span>
   </div>
 
   <h1>{{case_name}}</h1>
-  <div class="meta">Slug: <code>{{case_slug}}</code> · Status: {{case_status}}</div>
+  <div class="meta">{{label.field_slug}}: <code>{{case_slug}}</code> · {{label.field_status}}: {{case_status}}</div>
   <p>{{case_description}}</p>
 
   <section class="summary">
     <dl>
-      <dt>Items</dt>           <dd>{{item_count}}</dd>
-      <dt>Exported (UTC)</dt>  <dd>{{exported_at}}</dd>
-      <dt>App version</dt>     <dd>{{app_version}}</dd>
-      <dt>Signing key</dt>     <dd><code>{{fingerprint}}</code></dd>
+      <dt>{{label.summary_items}}</dt>           <dd>{{item_count}}</dd>
+      <dt>{{label.summary_exported_utc}}</dt>    <dd>{{exported_at}}</dd>
+      <dt>{{label.summary_app_version}}</dt>     <dd>{{app_version}}</dd>
+      <dt>{{label.summary_signing_key}}</dt>     <dd><code>{{fingerprint}}</code></dd>
     </dl>
   </section>
 

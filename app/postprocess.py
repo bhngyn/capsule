@@ -2,7 +2,7 @@
 
 The integration glue between yt-dlp output (Phase 1), the page-snapshot
 producer (Phase 2 — Playwright + browsertrix), and the persistence layer
-(DB + sidecars + audit log + signing).
+(DB + per-item folder + audit log + signing).
 
 ``finalize`` accepts a ``CaptureInput`` and produces a ``CaptureResult``.
 The function is producer-agnostic: page-artifact paths are part of the
@@ -13,11 +13,10 @@ Sequence (CLAUDE.md §5):
 1. Decide ``capture_kind`` from whether yt-dlp produced any media file.
 2. Build the canonical stem (``sanitize.canonical_filename`` /
    ``canonical_page_only_stem``).
-3. Resolve filesystem collisions in
-   ``/downloads/{slug}/`` and ``/downloads/{slug}/sidecars/``.
-4. Move the media file (if any) to its canonical name; create
-   ``sidecars/{stem}/`` and move yt-dlp's sidecars + the page-snapshot
-   artifacts into it.
+3. Resolve filesystem collisions inside the case dir (the per-item
+   folder ``/downloads/{slug}/{stem}/`` must not already exist).
+4. Create the per-item folder and move the media file (if any) plus
+   yt-dlp's sidecars and the page-snapshot artifacts into it.
 5. Hash every artifact (MD5 + SHA-256, 1 MB chunks). Write
    ``{stem}.checksums.txt``.
 6. Write ``{stem}.meta.json`` per ``app/schemas/meta.schema.json``.
@@ -129,6 +128,11 @@ class CaptureInput:
     # persistent case file). Recorded for audit; does not affect on-disk
     # artifacts.
     ephemeral_cookies_used: bool = False
+    # UI locale at the time of submission. Drives the per-item manifest
+    # PDF's labels + direction + font stack. Recorded in
+    # ``meta.json.capture.report_lang`` so a future evidence reviewer
+    # can confirm what the investigator saw.
+    lang: str = "en"
 
 
 @dataclass(frozen=True)
@@ -137,7 +141,7 @@ class CaptureResult:
     capture_kind: str
     stem: str
     relative_media_path: str | None
-    relative_sidecar_dir: str
+    relative_item_dir: str
     meta_json_path: Path
     signature_path: Path
     audit_log_entry_id: int
@@ -204,13 +208,21 @@ def _stem_for(
 
 
 def _resolve_collisions(case_dir: Path, stem: str) -> str:
-    """Pick a stem that does not collide with anything already on disk."""
-    sidecars = case_dir / "sidecars"
+    """Pick a stem that does not collide with anything already on disk.
+
+    Per-item folders live directly under ``case_dir`` — one folder per
+    capture, named after the canonical stem. A pre-existing folder (or a
+    bare file at that name from a partially-failed run) blocks the stem.
+    """
     existing: set[str] = set()
     if case_dir.exists():
-        existing |= {p.stem.split(".", 1)[0] for p in case_dir.iterdir() if p.is_file()}
-    if sidecars.exists():
-        existing |= {p.name for p in sidecars.iterdir() if p.is_dir()}
+        for p in case_dir.iterdir():
+            if p.is_dir():
+                existing.add(p.name)
+            elif p.is_file():
+                # Defensive: legacy or partially-rolled-back files at the
+                # case root should still mark the stem as taken.
+                existing.add(p.stem.split(".", 1)[0])
     return sanitize.next_collision_suffix(existing, stem)
 
 
@@ -227,10 +239,8 @@ def _move_into(target_dir: Path, source: Path, new_name: str | None = None) -> P
 def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureResult:
     info = capture_input.info_json or {}
     case = capture_input.case
-    case_dir = cases.downloads_dir_for(case.slug)
-    sidecars_root = cases.sidecars_dir_for(case.slug)
-    case_dir.mkdir(parents=True, exist_ok=True)
-    sidecars_root.mkdir(parents=True, exist_ok=True)
+    items_root = cases.item_dir_for(case.slug)
+    items_root.mkdir(parents=True, exist_ok=True)
 
     # Step 1: capture_kind
     capture_kind = "media" if capture_input.media_files else "page_only"
@@ -245,36 +255,38 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
     if existing is not None:
         raise DuplicateCapture(existing_id=int(existing["id"]))
 
-    # Step 2-3: stem + collision suffix
+    # Step 2-3: stem + collision suffix. The per-item folder lives directly
+    # under the case dir.
     base_stem, ext = _stem_for(capture_input, info, capture_kind)
-    stem = _resolve_collisions(case_dir, base_stem)
-    sidecar_dir = sidecars_root / stem
-    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    stem = _resolve_collisions(items_root, base_stem)
+    item_dir = items_root / stem
+    item_dir.mkdir(parents=True, exist_ok=True)
 
     moved: list[Path] = []
     artifacts: dict[str, str] = {}
 
     try:
-        # Step 4: move media + sidecars
+        # Step 4: move media + sidecars into the per-item folder.
         relative_media_path: str | None = None
         if capture_kind == "media":
             primary = capture_input.media_files[0]
             ext_clean = ext or primary.suffix.lstrip(".")
             media_target_name = f"{stem}.{ext_clean}" if ext_clean else stem
-            media_target = _move_into(case_dir, primary, new_name=media_target_name)
+            media_target = _move_into(item_dir, primary, new_name=media_target_name)
             moved.append(media_target)
             relative_media_path = paths.relative_to_downloads(media_target)
             artifacts["media"] = relative_media_path
 
-            # Any extra media files (e.g. multi-format) stay alongside the primary
-            # but with the same base stem and a suffix so they don't collide.
+            # Any extra media files (e.g. multi-format) stay alongside the
+            # primary inside the same per-item folder.
             for i, extra in enumerate(capture_input.media_files[1:], start=2):
                 tail = f"{stem}.{i}.{extra.suffix.lstrip('.') or 'bin'}"
-                m = _move_into(case_dir, extra, new_name=tail)
+                m = _move_into(item_dir, extra, new_name=tail)
                 moved.append(m)
                 artifacts[f"media_{i}"] = paths.relative_to_downloads(m)
 
-        # yt-dlp sidecars: rename to share the new stem and drop in sidecars/
+        # yt-dlp sidecars: rename to share the new stem and drop into the
+        # per-item folder.
         for src in capture_input.extra_sidecars:
             if not src.exists():
                 continue
@@ -288,7 +300,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 # thumbnail or subs: keep the part after the original stem.
                 tail = src.name.split(".", 1)[1] if "." in src.name else src.name
                 rel_name = f"{stem}.{tail}"
-            dest = _move_into(sidecar_dir, src, new_name=rel_name)
+            dest = _move_into(item_dir, src, new_name=rel_name)
             moved.append(dest)
             artifacts[f"sidecar_{rel_name}"] = paths.relative_to_downloads(dest)
 
@@ -323,29 +335,77 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 "user_browser_dom_snapshot_html": f"{stem}.user-browser.dom-snapshot.html",
                 "user_browser_dom_snapshot_meta": f"{stem}.user-browser.dom-snapshot.json",
             }[role]
-            dest = _move_into(sidecar_dir, src, new_name=named)
+            dest = _move_into(item_dir, src, new_name=named)
             moved.append(dest)
             artifacts[role] = paths.relative_to_downloads(dest)
 
-        # Step 5: hash everything we kept (excluding the about-to-be-written
-        # meta.json + sig + checksums file).
+        # Step 5a: hash every non-PDF artifact. The manifest PDF (rendered
+        # next) is hashed afterwards so the table inside it lists every
+        # other file's MD5/SHA-256.
         checksums: dict[str, dict[str, Any]] = {}
         for role, rel in artifacts.items():
             abs_path = config.DOWNLOADS_DIR / rel
             checksums[role] = compute_hashes(abs_path)
 
-        checksums_path = sidecar_dir / f"{stem}.checksums.txt"
+        # Step 5b: render the per-item manifest PDF.
+        # Imported lazily to avoid pulling weasyprint at module-import
+        # time (it's a heavy dep — every test that imports
+        # ``app.postprocess`` would otherwise pay the cost).
+        from . import pdf_report  # noqa: PLC0415
+
+        kp = signing.ensure_keypair()
+        fp = signing.fingerprint(kp.public)
+        title_sanitized_for_pdf = sanitize.sanitize_component(
+            info.get("title") or capture_input.url_final, max_len=sanitize.TITLE_MAX
+        )
+        manifest_files = [
+            pdf_report.FileEntry(
+                relpath=artifacts[role],
+                size=int(checksums[role]["size_bytes"]),
+                md5=checksums[role]["md5"],
+                sha256=checksums[role]["sha256"],
+            )
+            for role in sorted(artifacts.keys())
+        ]
+        manifest_pdf_bytes = pdf_report.render_item_manifest(
+            case=case,
+            item_view={
+                "title": title_sanitized_for_pdf,
+                "source_url": capture_input.url_final or capture_input.url_submitted,
+                "captured_utc": capture_input.capture_date,
+                "signing_key_fp": fp,
+            },
+            item_dir=item_dir,
+            files=manifest_files,
+            lang=capture_input.lang,
+        )
+        manifest_pdf_path = item_dir / f"{stem}.manifest.pdf"
+        manifest_pdf_path.write_bytes(manifest_pdf_bytes)
+        moved.append(manifest_pdf_path)
+
+        # Step 5c: hash the manifest PDF and record it under the
+        # ``manifest_pdf`` role so it gets the same chain-of-custody
+        # treatment as every other artifact.
+        manifest_pdf_relpath = paths.relative_to_downloads(manifest_pdf_path)
+        artifacts["manifest_pdf"] = manifest_pdf_relpath
+        checksums["manifest_pdf"] = compute_hashes(manifest_pdf_path)
+
+        # Step 5d: write checksums.txt now that the manifest PDF is hashed.
+        checksums_path = item_dir / f"{stem}.checksums.txt"
         with checksums_path.open("w", encoding="utf-8") as fh:
             for role, h in sorted(checksums.items()):
                 rel = artifacts[role]
                 fh.write(f"MD5    {h['md5']}  {rel}\n")
                 fh.write(f"SHA256 {h['sha256']}  {rel}\n")
 
-        # Step 6: meta.json
-        kp = signing.ensure_keypair()
-        fp = signing.fingerprint(kp.public)
+        # Step 6: meta.json — captures both the artifact set (including
+        # the manifest PDF, so the signature transitively binds it) and
+        # the locale used to render the manifest.
+        capture_block = dict(capture_input.capture_report or {})
+        capture_block["report_lang"] = capture_input.lang
+
         meta = {
-            "schema_version": 2,
+            "schema_version": 3,
             "job_uuid": capture_input.job_uuid,
             "capture_kind": capture_kind,
             "case": {"id": case.id, "slug": case.slug, "name": case.name},
@@ -379,14 +439,16 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             },
             # Hardening pass: capture-side mutations and the cookie-set
             # provenance hash. Per CLAUDE.md §13, every blocking and every
-            # banner-hide is recorded — never silent.
-            "capture": capture_input.capture_report or {},
+            # banner-hide is recorded — never silent. ``report_lang`` is
+            # the UI locale at submission time; the manifest PDF was
+            # rendered with it.
+            "capture": capture_block,
             "cookies_snapshot_sha256": capture_input.cookies_snapshot_sha256,
             "ephemeral_cookies_used": capture_input.ephemeral_cookies_used,
             "audit_log_entry_id": None,  # filled below
             "signing_key_fp": fp,
         }
-        meta_path = sidecar_dir / f"{stem}.meta.json"
+        meta_path = item_dir / f"{stem}.meta.json"
         meta_bytes = json.dumps(meta, indent=2, ensure_ascii=False, sort_keys=True).encode(
             "utf-8"
         )
@@ -405,7 +467,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                     INSERT INTO downloads(
                         case_id, job_uuid, capture_kind, source_url, final_url,
                         platform, video_id, url_hash, uploader, title, title_original,
-                        upload_date, capture_date, relative_path, sidecar_dir,
+                        upload_date, capture_date, relative_path, item_dir,
                         file_size_bytes, md5, sha256, duration_seconds,
                         ytdlp_version, chromium_version, browsertrix_version,
                         app_version, signing_key_fp, meta_json
@@ -426,7 +488,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                         info.get("upload_date") if info else None,
                         capture_date,
                         relative_media_path,
-                        paths.relative_to_downloads(sidecar_dir),
+                        paths.relative_to_downloads(item_dir),
                         checksums.get("media", {}).get("size_bytes"),
                         checksums.get("media", {}).get("md5"),
                         checksums.get("media", {}).get("sha256"),
@@ -467,6 +529,24 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             },
         )
 
+        # Per-item manifest PDF event — recorded so a future evidence
+        # reviewer can see exactly when (and at what locale) the manifest
+        # was rendered. The PDF itself is bound to the meta.json by hash,
+        # which the meta signature transitively covers.
+        audit.append(
+            conn,
+            "item.manifest_rendered",
+            case_id=case.id,
+            download_id=download_id,
+            actor="system",
+            details={
+                "stem": stem,
+                "lang": capture_input.lang,
+                "size_bytes": int(checksums["manifest_pdf"]["size_bytes"]),
+                "sha256": checksums["manifest_pdf"]["sha256"],
+            },
+        )
+
         # Supplementary capture from the Capsule extension's live browser
         # session, if present. Recorded as a separate audit row so a court
         # reviewer can see (a) that an additional, non-reproducible capture
@@ -495,7 +575,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             capture_kind=capture_kind,
             stem=stem,
             relative_media_path=relative_media_path,
-            relative_sidecar_dir=paths.relative_to_downloads(sidecar_dir),
+            relative_item_dir=paths.relative_to_downloads(item_dir),
             meta_json_path=meta_path,
             signature_path=sig_path,
             audit_log_entry_id=audit_id,
@@ -512,8 +592,8 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             except OSError:
                 pass
         try:
-            if sidecar_dir.exists() and not any(sidecar_dir.iterdir()):
-                sidecar_dir.rmdir()
+            if item_dir.exists() and not any(item_dir.iterdir()):
+                item_dir.rmdir()
         except OSError:
             pass
         raise
@@ -532,7 +612,7 @@ def extend_capture(
     Used by archive- or media-only re-fetch jobs to extend an item that
     already has a snapshot. The function:
 
-    1. Moves ``source`` into the item's existing ``sidecar_dir`` with the
+    1. Moves ``source`` into the item's existing per-item folder with the
        canonical role-based filename (``{stem}.page.warc.gz`` etc.).
     2. Computes MD5 + SHA-256.
     3. Patches the on-disk and DB ``meta.json`` (artifacts + checksums).
@@ -547,16 +627,16 @@ def extend_capture(
     meta.json hash) that the orchestrator can stash in the job's result.
     """
     row = conn.execute(
-        "SELECT id, case_id, sidecar_dir, meta_json FROM downloads WHERE id = ?",
+        "SELECT id, case_id, item_dir, meta_json FROM downloads WHERE id = ?",
         (download_id,),
     ).fetchone()
     if row is None:
         raise LookupError(f"download {download_id} not found")
 
-    sidecar_dir = config.DOWNLOADS_DIR / row["sidecar_dir"]
-    if not sidecar_dir.is_dir():
-        raise FileNotFoundError(f"sidecar dir missing: {sidecar_dir}")
-    stem = sidecar_dir.name
+    item_dir = config.DOWNLOADS_DIR / row["item_dir"]
+    if not item_dir.is_dir():
+        raise FileNotFoundError(f"item dir missing: {item_dir}")
+    stem = item_dir.name
 
     # Map role → on-disk filename. Mirrors ``finalize``'s naming.
     name_for = {
@@ -571,19 +651,19 @@ def extend_capture(
         "user_browser_session_state": f"{stem}.user-browser.session-state.json",
         "user_browser_dom_snapshot_html": f"{stem}.user-browser.dom-snapshot.html",
         "user_browser_dom_snapshot_meta": f"{stem}.user-browser.dom-snapshot.json",
-        "media":                   None,  # media goes alongside, not in sidecar dir
+        "media":                   None,  # named below using source extension
     }
     if role not in name_for:
         raise ValueError(f"unknown extend role {role!r}")
 
     if role == "media":
-        # Media files go in the case folder (root) not the sidecar dir.
-        case_dir = sidecar_dir.parent.parent
+        # Track A layout: media files live inside the per-item folder
+        # alongside the rest of the artifacts.
         ext = source.suffix.lstrip(".") or "bin"
         target_name = f"{stem}.{ext}"
-        target = _move_into(case_dir, source, new_name=target_name)
+        target = _move_into(item_dir, source, new_name=target_name)
     else:
-        target = _move_into(sidecar_dir, source, new_name=name_for[role])
+        target = _move_into(item_dir, source, new_name=name_for[role])
 
     new_hashes = compute_hashes(target)
     new_relpath = paths.relative_to_downloads(target)
@@ -600,7 +680,7 @@ def extend_capture(
     history.append({"role": role, "at": meta["updated_at"]})
     meta["update_history"] = history
 
-    meta_path = sidecar_dir / f"{stem}.meta.json"
+    meta_path = item_dir / f"{stem}.meta.json"
     new_meta_bytes = json.dumps(
         meta, indent=2, ensure_ascii=False, sort_keys=True,
     ).encode("utf-8")
@@ -610,7 +690,7 @@ def extend_capture(
     sig_path = signing.sign_file(meta_path)
 
     # Re-write checksums.txt to match the updated artifact set.
-    checksums_path = sidecar_dir / f"{stem}.checksums.txt"
+    checksums_path = item_dir / f"{stem}.checksums.txt"
     with checksums_path.open("w", encoding="utf-8") as fh:
         for r, h in sorted(checksums.items()):
             rel = artifacts[r]

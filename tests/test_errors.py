@@ -147,3 +147,9 @@ def test_arabic_bundle_has_same_keys_as_english():
     en_errors = {k for k in en if k.startswith("errors.")}
     ar_errors = {k for k in ar if k.startswith("errors.")}
     assert en_errors == ar_errors
+
+
+def test_japanese_bundle_has_same_keys_as_english():
+    en = json.loads(Path("app/i18n/en.json").read_text(encoding="utf-8"))
+    ja = json.loads(Path("app/i18n/ja.json").read_text(encoding="utf-8"))
+    assert set(en) == set(ja), f"key mismatch: {set(en) ^ set(ja)}"

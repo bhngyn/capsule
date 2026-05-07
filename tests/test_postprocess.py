@@ -96,19 +96,19 @@ def test_media_capture_full_happy_path(env):
     assert "youtube__veritasium__Hello World__2024-08-12__abc" in result.stem
 
     case_dir = env["downloads"] / env["case"].slug
-    media_path = case_dir / f"{result.stem}.mp4"
+    item_dir = case_dir / result.stem
+    media_path = item_dir / f"{result.stem}.mp4"
     assert media_path.exists()
 
-    sidecar_dir = case_dir / "sidecars" / result.stem
-    assert (sidecar_dir / f"{result.stem}.info.json").exists()
-    assert (sidecar_dir / f"{result.stem}.description").exists()
-    assert (sidecar_dir / f"{result.stem}.checksums.txt").exists()
-    assert (sidecar_dir / f"{result.stem}.meta.json").exists()
-    assert (sidecar_dir / f"{result.stem}.meta.json.sig").exists()
+    assert (item_dir / f"{result.stem}.info.json").exists()
+    assert (item_dir / f"{result.stem}.description").exists()
+    assert (item_dir / f"{result.stem}.checksums.txt").exists()
+    assert (item_dir / f"{result.stem}.meta.json").exists()
+    assert (item_dir / f"{result.stem}.meta.json.sig").exists()
 
     # Signature verifies against the active public key.
-    meta_bytes = (sidecar_dir / f"{result.stem}.meta.json").read_bytes()
-    sig_bytes = (sidecar_dir / f"{result.stem}.meta.json.sig").read_bytes()
+    meta_bytes = (item_dir / f"{result.stem}.meta.json").read_bytes()
+    sig_bytes = (item_dir / f"{result.stem}.meta.json.sig").read_bytes()
     assert env["signing"].verify(meta_bytes, sig_bytes) is True
 
     # DB row inserted.
@@ -148,7 +148,7 @@ def test_page_only_capture(env):
     assert result.relative_media_path is None
     assert result.stem.startswith("generic__")
     case_dir = env["downloads"] / env["case"].slug
-    assert (case_dir / "sidecars" / result.stem / f"{result.stem}.meta.json").exists()
+    assert (case_dir / result.stem / f"{result.stem}.meta.json").exists()
 
 
 def test_duplicate_raises(env):
@@ -300,7 +300,7 @@ def _stage_user_browser(env, *, stem_dir: str = "user-bundle") -> dict:
     return {"mhtml": mhtml, "screenshot": shot, "har": har, "environment": env_json}
 
 
-def test_user_browser_artifacts_are_moved_into_sidecar_dir(env):
+def test_user_browser_artifacts_are_moved_into_item_dir(env):
     media, info, desc = _stage_media(env)
     pp = env["pp"]
     user = _stage_user_browser(env)
@@ -322,11 +322,11 @@ def test_user_browser_artifacts_are_moved_into_sidecar_dir(env):
         user_browser_label="My laptop",
     )
     result = pp.finalize(env["conn"], capture_input)
-    sidecar = env["downloads"] / result.relative_sidecar_dir
+    item_dir = env["downloads"] / result.relative_item_dir
     stem = result.stem
     for tail in (".user-browser.mhtml", ".user-browser.png",
                  ".user-browser.har", ".user-browser.environment.json"):
-        assert (sidecar / f"{stem}{tail}").is_file(), tail
+        assert (item_dir / f"{stem}{tail}").is_file(), tail
 
 
 def test_user_browser_artifacts_are_listed_in_meta_and_checksums(env):
@@ -395,6 +395,190 @@ def test_user_browser_artifacts_trigger_audit_entry(env):
     entry = next(r for r in rows if r["action"] == "user_browser_capture.received")
     assert entry["details"]["extension_label"] == "ext-on-my-laptop"
     assert "user_browser_mhtml" in entry["details"]["artifact_roles"]
+
+
+# --- Track A: per-item manifest PDF + layout + lang -----------------------
+
+
+def test_per_item_folder_layout_collapses_sidecars(env):
+    """All artifacts for one capture live directly under
+    ``/downloads/{case}/{stem}/`` — no ``sidecars/`` intermediate."""
+    media, info, desc = _stage_media(env)
+    pp = env["pp"]
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://www.youtube.com/watch?v=abc",
+        url_final="https://www.youtube.com/watch?v=abc",
+        redirect_chain=["https://www.youtube.com/watch?v=abc"],
+        capture_date=pp.utc_now(),
+        media_files=[media],
+        info_json=json.loads(info.read_text()),
+        extra_sidecars=[info, desc],
+        ytdlp_version="2026.03.17",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+    case_dir = env["downloads"] / env["case"].slug
+    item_dir = case_dir / result.stem
+
+    # Old "sidecars/" tier must NOT exist.
+    assert not (case_dir / "sidecars").exists()
+    # Media + sidecars all sit in the same per-item folder.
+    assert (item_dir / f"{result.stem}.mp4").is_file()
+    assert (item_dir / f"{result.stem}.info.json").is_file()
+    assert (item_dir / f"{result.stem}.meta.json").is_file()
+    assert (item_dir / f"{result.stem}.checksums.txt").is_file()
+
+    # CaptureResult exposes the new field name.
+    assert result.relative_item_dir.endswith(f"/{result.stem}")
+    # DB column is now item_dir.
+    row = env["conn"].execute(
+        "SELECT item_dir FROM downloads WHERE id = ?", (result.download_id,)
+    ).fetchone()
+    assert row["item_dir"] == result.relative_item_dir
+
+
+def test_manifest_pdf_is_emitted_for_every_capture(env):
+    media, info, desc = _stage_media(env)
+    pp = env["pp"]
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://www.youtube.com/watch?v=abc",
+        url_final="https://www.youtube.com/watch?v=abc",
+        redirect_chain=["https://www.youtube.com/watch?v=abc"],
+        capture_date=pp.utc_now(),
+        media_files=[media],
+        info_json=json.loads(info.read_text()),
+        extra_sidecars=[info, desc],
+        ytdlp_version="2026.03.17",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+    item_dir = env["downloads"] / result.relative_item_dir
+    manifest_pdf = item_dir / f"{result.stem}.manifest.pdf"
+    assert manifest_pdf.is_file()
+    assert manifest_pdf.read_bytes()[:5] == b"%PDF-"
+
+
+def test_manifest_pdf_hash_present_in_meta_and_checksums(env):
+    media, info, desc = _stage_media(env)
+    pp = env["pp"]
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://www.youtube.com/watch?v=abc",
+        url_final="https://www.youtube.com/watch?v=abc",
+        redirect_chain=["https://www.youtube.com/watch?v=abc"],
+        capture_date=pp.utc_now(),
+        media_files=[media],
+        info_json=json.loads(info.read_text()),
+        extra_sidecars=[info, desc],
+        ytdlp_version="2026.03.17",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+    meta = json.loads(result.meta_json_path.read_text(encoding="utf-8"))
+    assert "manifest_pdf" in meta["artifacts"]
+    assert "manifest_pdf" in meta["checksums"]
+    assert meta["checksums"]["manifest_pdf"]["sha256"]
+    cs_text = (result.meta_json_path.parent / f"{result.stem}.checksums.txt").read_text()
+    assert ".manifest.pdf" in cs_text
+    # Schema version was bumped for the manifest PDF + report_lang.
+    assert meta["schema_version"] == 3
+
+
+def test_capture_input_lang_is_recorded_in_meta(env):
+    media, info, desc = _stage_media(env)
+    pp = env["pp"]
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://www.youtube.com/watch?v=abc",
+        url_final="https://www.youtube.com/watch?v=abc",
+        redirect_chain=["https://www.youtube.com/watch?v=abc"],
+        capture_date=pp.utc_now(),
+        media_files=[media],
+        info_json=json.loads(info.read_text()),
+        extra_sidecars=[info, desc],
+        ytdlp_version="2026.03.17",
+        lang="ar",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+    meta = json.loads(result.meta_json_path.read_text(encoding="utf-8"))
+    assert meta["capture"]["report_lang"] == "ar"
+
+
+def test_manifest_pdf_audit_entry_recorded(env):
+    media, info, desc = _stage_media(env)
+    pp = env["pp"]
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://www.youtube.com/watch?v=abc",
+        url_final="https://www.youtube.com/watch?v=abc",
+        redirect_chain=["https://www.youtube.com/watch?v=abc"],
+        capture_date=pp.utc_now(),
+        media_files=[media],
+        info_json=json.loads(info.read_text()),
+        extra_sidecars=[info, desc],
+        ytdlp_version="2026.03.17",
+        lang="en",
+    )
+    pp.finalize(env["conn"], capture_input)
+    rows = list(env["audit"].iter_entries(env["conn"]))
+    actions = [r["action"] for r in rows]
+    assert "item.manifest_rendered" in actions
+    entry = next(r for r in rows if r["action"] == "item.manifest_rendered")
+    assert entry["details"]["lang"] == "en"
+    assert entry["details"]["sha256"]
+    assert int(entry["details"]["size_bytes"]) > 0
+    # Audit chain still verifies after the new entry type lands.
+    ok, broken = env["audit"].verify_chain(env["conn"])
+    assert ok and broken is None
+
+
+def test_manifest_pdf_renders_for_page_only(env):
+    """Page-only captures get a manifest PDF too — no media file in the
+    table, but every sidecar (MHTML, screenshot, WARC) shows up."""
+    pp = env["pp"]
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://example.com/page",
+        url_final="https://example.com/page",
+        redirect_chain=["https://example.com/page"],
+        capture_date=pp.utc_now(),
+        media_files=[],
+        info_json=None,
+        lang="en",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+    item_dir = env["downloads"] / result.relative_item_dir
+    assert (item_dir / f"{result.stem}.manifest.pdf").is_file()
+
+
+def test_manifest_pdf_for_arabic_locale(env):
+    """``lang='ar'`` flows through and the PDF still emits valid bytes
+    (the Noto fallback chain in the template handles glyph coverage —
+    see commit 2's font stack)."""
+    media, info, desc = _stage_media(env)
+    pp = env["pp"]
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://www.youtube.com/watch?v=abc",
+        url_final="https://www.youtube.com/watch?v=abc",
+        redirect_chain=["https://www.youtube.com/watch?v=abc"],
+        capture_date=pp.utc_now(),
+        media_files=[media],
+        info_json=json.loads(info.read_text()),
+        extra_sidecars=[info, desc],
+        ytdlp_version="2026.03.17",
+        lang="ar",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+    item_dir = env["downloads"] / result.relative_item_dir
+    pdf_bytes = (item_dir / f"{result.stem}.manifest.pdf").read_bytes()
+    assert pdf_bytes.startswith(b"%PDF-")
 
 
 def test_meta_json_signature_covers_user_browser_artifacts(env):
