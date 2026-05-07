@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://capsule.example/schemas/meta.schema.json",
   "title": "Capsule capture metadata (meta.json)",
-  "description": "Per-capture forensic record. Source of truth for the integrity story; signed by the case keypair. Schema v2 (hardening pass) adds tab_context, capture-side mutations (blocking + banner hide), render-wait outcomes, and cookie-set provenance hash. Schema v3 (Track A) adds the per-item manifest PDF artifact role + checksum, plus capture.report_lang for the locale the manifest PDF was rendered in. Schema v4 adds the per-item report PDF (``report_pdf`` artifact role) — a human-readable companion to the manifest PDF carrying provenance, full description, tools, and the capture report; its hash is bound to meta.json by the same signature. Schema v5 adds ``url_canonical`` (canonical form of url_final used for dedup hashing) and ``force_recapture_index`` (set when the row was an intentional re-capture per CLAUDE.md §15; null otherwise).",
+  "description": "Per-capture forensic record. Source of truth for the integrity story; signed by the case keypair. Schema v2 (hardening pass) adds tab_context, capture-side mutations (blocking + banner hide), render-wait outcomes, and cookie-set provenance hash. Schema v3 (Track A) adds the per-item manifest PDF artifact role + checksum, plus capture.report_lang for the locale the manifest PDF was rendered in. Schema v4 adds the per-item report PDF (``report_pdf`` artifact role) — a human-readable companion to the manifest PDF carrying provenance, full description, tools, and the capture report; its hash is bound to meta.json by the same signature. Schema v5 adds ``url_canonical`` (canonical form of url_final used for dedup hashing) and ``force_recapture_index`` (set when the row was an intentional re-capture per CLAUDE.md §15; null otherwise). Schema v6 adds the ``gallery`` capture_kind for image-gallery captures (gallery-dl producer): ``gallery_count`` and ``gallery_extractor`` at the root, ``gallery_dl_version`` under tools, ``gallery_NNN`` / ``gallery_NNN_meta`` / ``gallery_info`` artifact roles, and ``capture.gallery_attempted`` / ``capture.gallery_outcome`` for the capture report.",
   "type": "object",
   "required": [
     "schema_version",
@@ -22,9 +22,9 @@
     "signing_key_fp"
   ],
   "properties": {
-    "schema_version": { "enum": [1, 2, 3, 4, 5] },
+    "schema_version": { "enum": [1, 2, 3, 4, 5, 6] },
     "job_uuid": { "type": "string" },
-    "capture_kind": { "enum": ["media", "page_only"] },
+    "capture_kind": { "enum": ["media", "page_only", "gallery"] },
     "case": {
       "type": "object",
       "required": ["id", "slug", "name"],
@@ -56,7 +56,7 @@
     "authenticated_domains": { "type": "array", "items": { "type": "string" } },
     "artifacts": {
       "type": "object",
-      "description": "Artifact role → relative path under /downloads. Roles include page_mhtml, page_screenshot, page_warc, user_browser_*, plus tab_context / session_state / dom_snapshot_* (v2). v3 adds ``manifest_pdf`` — the per-item evidence manifest PDF; its hash is bound to meta.json via the signature. v4 adds ``report_pdf`` — the human-readable per-item report PDF (provenance, description, tools, capture report); its hash is bound the same way.",
+      "description": "Artifact role → relative path under /downloads. Roles include page_mhtml, page_screenshot, page_warc, user_browser_*, plus tab_context / session_state / dom_snapshot_* (v2). v3 adds ``manifest_pdf`` — the per-item evidence manifest PDF; its hash is bound to meta.json via the signature. v4 adds ``report_pdf`` — the human-readable per-item report PDF (provenance, description, tools, capture report); its hash is bound the same way. v6 adds gallery roles: ``gallery_NNN`` (one per image, NNN is a 1-based 3-digit zero-padded index), ``gallery_NNN_meta`` (gallery-dl per-image JSON sidecar), ``gallery_info`` (gallery-level info.json from gallery-dl).",
       "additionalProperties": { "type": "string" }
     },
     "checksums": {
@@ -79,7 +79,11 @@
         "app_version": { "type": "string" },
         "ytdlp_version": { "type": "string" },
         "chromium_version": { "type": "string" },
-        "browsertrix_version": { "type": "string" }
+        "browsertrix_version": { "type": "string" },
+        "gallery_dl_version": {
+          "type": ["string", "null"],
+          "description": "gallery-dl version when gallery-dl ran (capture_kind == 'gallery') or was attempted. ``null`` for captures that never invoked gallery-dl (every video URL). v6."
+        }
       }
     },
     "capture": {
@@ -113,6 +117,14 @@
         "report_lang": {
           "type": "string",
           "description": "UI locale active at submission time. The per-item manifest PDF was rendered in this locale (RTL/LTR direction, label set, font fallbacks). v3."
+        },
+        "gallery_attempted": {
+          "type": "boolean",
+          "description": "True iff gallery-dl was invoked for this URL (i.e. yt-dlp returned no media and gallery-dl was enabled for the case). False otherwise. v6."
+        },
+        "gallery_outcome": {
+          "enum": ["captured", "empty", "rate_limited", "auth_required", "failed", "skipped"],
+          "description": "Outcome of the gallery-dl invocation, if attempted. ``captured`` means at least one image was retained; ``skipped`` means gallery-dl was disabled for this case. v6."
         }
       }
     },
@@ -127,6 +139,14 @@
     "force_recapture_index": {
       "type": ["integer", "null"],
       "description": "Set when this row was an intentional re-capture per CLAUDE.md §15 (the user clicked 'Re-capture as new entry' on a duplicate-detection modal). Index 1 is implicit for the original; 2, 3, … name successive forced re-captures. ``null`` for normal captures. v5."
+    },
+    "gallery_count": {
+      "type": ["integer", "null"],
+      "description": "Number of images preserved when capture_kind == 'gallery' (one entry per ``gallery_NNN`` artifact). ``null`` for non-gallery kinds. v6."
+    },
+    "gallery_extractor": {
+      "type": ["string", "null"],
+      "description": "gallery-dl ``category`` (its extractor identifier, lower-case — e.g. ``pixiv``, ``twitter``, ``imgur``) for the gallery this row preserves. ``null`` for non-gallery kinds. v6."
     },
     "audit_log_entry_id": { "type": ["integer", "null"] },
     "signing_key_fp": { "type": "string" }
