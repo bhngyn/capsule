@@ -13,6 +13,7 @@
   "lang.en": "English",
   "lang.ar": "العربية",
   "lang.ja": "日本語",
+  "lang.es": "Español",
   "errors.rate_limited": "The site is rate-limiting us. Wait a bit.",
   "errors.blocked": "This site is blocking the download.",
   "errors.unavailable": "This video is private or has been removed.",
