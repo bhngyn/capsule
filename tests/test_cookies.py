@@ -364,3 +364,96 @@ def test_save_merged_value_secrecy_invariant(cookies_module):
     # Also: stats and the returned summary don't carry value strings.
     for d in summary.domains:
         assert "SUPER_SECRET_NEW_TOKEN" not in repr(d)
+
+
+# --- Hardening pass: freshness, snapshot hash, ephemeral path -------------
+
+
+def test_validate_freshness_returns_none_when_no_file(cookies_module):
+    assert cookies_module.validate_freshness("no-such-case") is None
+
+
+def test_validate_freshness_flags_expired_and_soon(cookies_module):
+    sample = (
+        "# Netscape HTTP Cookie File\n"
+        # expired (epoch=1)
+        ".old.com\tTRUE\t/\tTRUE\t1\told_session\tdoesntmatter\n"
+        # expiring soon (1h from now)
+        f".soon.com\tTRUE\t/\tTRUE\t{2_000_000_000}\tsoon_session\tdoesntmatter\n"
+        # safely in the future
+        ".far.com\tTRUE\t/\tTRUE\t9999999999\tlong\tdoesntmatter\n"
+    )
+    cookies_module.save("freshness-case", sample.encode("utf-8"))
+    # Freeze "now" so the test is deterministic. 1_999_995_000 = soon-1h.
+    fake_now = 1_999_995_000
+    report = cookies_module.validate_freshness(
+        "freshness-case", soon_window_s=24 * 60 * 60, now=fake_now,
+    )
+    assert report is not None
+    expired_domains = {d.domain for d in report.expired}
+    soon_domains = {d.domain for d in report.expiring_soon}
+    assert "old.com" in expired_domains
+    assert "soon.com" in soon_domains
+    assert "far.com" not in expired_domains and "far.com" not in soon_domains
+
+
+def test_validate_freshness_does_not_leak_values(cookies_module):
+    sample = (
+        "# Netscape HTTP Cookie File\n"
+        ".x.com\tTRUE\t/\tTRUE\t1\tauth\tULTRA_SECRET_VALUE\n"
+    )
+    cookies_module.save("leak-case", sample.encode("utf-8"))
+    report = cookies_module.validate_freshness("leak-case")
+    assert report is not None
+    assert "ULTRA_SECRET_VALUE" not in repr(report)
+
+
+def test_snapshot_hash_returns_none_when_no_file(cookies_module):
+    assert cookies_module.snapshot_hash("ghost") is None
+
+
+def test_snapshot_hash_changes_when_cookies_change(cookies_module):
+    sample_a = "# Netscape HTTP Cookie File\n.a.com\tTRUE\t/\tTRUE\t9999999999\ta\tv1\n"
+    sample_b = "# Netscape HTTP Cookie File\n.a.com\tTRUE\t/\tTRUE\t9999999999\ta\tv2\n"
+    cookies_module.save("snap-case", sample_a.encode("utf-8"))
+    h1 = cookies_module.snapshot_hash("snap-case")
+    cookies_module.save("snap-case", sample_b.encode("utf-8"))
+    h2 = cookies_module.snapshot_hash("snap-case")
+    assert h1 != h2
+    assert len(h1) == 64 and len(h2) == 64  # sha-256 hex
+
+
+def test_write_ephemeral_persists_outside_case_dir(cookies_module, capsule_dirs):
+    cookie_objs = [{
+        "name": "tok", "value": "ephemeral-val", "domain": "x.com",
+        "path": "/", "expirationDate": 9999999999, "secure": True,
+        "httpOnly": False, "hostOnly": False,
+    }]
+    path, summary = cookies_module.write_ephemeral("job-12345678", cookie_objs)
+    assert path.is_file()
+    # NOT in the case directory.
+    assert "cases" not in str(path.parent)
+    assert "cookies_ephemeral" in str(path.parent)
+    # Summary present, but values never round-trip.
+    assert summary.total_cookies == 1
+    assert "ephemeral-val" not in repr(summary)
+
+
+def test_discard_ephemeral_removes_file_and_dir(cookies_module):
+    cookie_objs = [{
+        "name": "k", "value": "v", "domain": "x.com",
+        "path": "/", "expirationDate": 9999999999, "secure": True,
+        "httpOnly": False, "hostOnly": False,
+    }]
+    path, _ = cookies_module.write_ephemeral("job-deleteme", cookie_objs)
+    parent = path.parent
+    cookies_module.discard_ephemeral(path)
+    assert not path.exists()
+    assert not parent.exists()
+
+
+def test_discard_ephemeral_safe_on_already_removed(cookies_module, tmp_path):
+    # Idempotent: callers should be able to call it from a finally block
+    # without checking whether the path still exists.
+    fake = tmp_path / "ghost-job" / "cookies.txt"
+    cookies_module.discard_ephemeral(fake)  # must not raise
