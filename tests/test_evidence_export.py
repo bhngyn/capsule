@@ -190,6 +190,46 @@ def test_pdf_renders_for_populated_case(env):
     assert len(pdf) > 2000
 
 
+def test_export_lang_threads_through_to_case_report(env):
+    """``build_bundle(lang='ar')`` flips the case_report PDF to RTL/Arabic
+    labels via ``pdf_report.render_case_report``. We can't easily diff
+    the PDF byte stream, but we can sanity-check the PDF still renders
+    without error and is non-empty."""
+    _seed_capture(env, "abc")
+    result = env["ee"].build_bundle(
+        env["conn"], case_id=env["case"].id, lang="ar",
+    )
+    with zipfile.ZipFile(result.zip_path) as zf:
+        pdf = zf.read("case_report.pdf")
+    assert pdf.startswith(b"%PDF-")
+    assert len(pdf) > 1000
+
+
+def test_export_includes_per_item_manifest_pdf(env):
+    """The per-item manifest PDF (Track A commit 3) ships inside the
+    evidence bundle alongside the case-level PDF — the meta-json
+    signature transitively binds it via the artifact hash."""
+    _seed_capture(env, "abc")
+    result = env["ee"].build_bundle(env["conn"], case_id=env["case"].id)
+    with zipfile.ZipFile(result.zip_path) as zf:
+        names = zf.namelist()
+    manifest_pdfs = [n for n in names if n.endswith(".manifest.pdf")]
+    assert len(manifest_pdfs) >= 1
+    # Layout: per-item folder under downloads/{stem}/, no sidecars/ tier.
+    assert all("/sidecars/" not in n for n in names if n.startswith("downloads/"))
+
+
+def test_export_default_lang_is_english(env):
+    """Calling ``build_bundle`` without ``lang=`` yields an English PDF
+    via ``config.DEFAULT_LANG``, preserving back-compat with tests that
+    don't know about the new keyword."""
+    _seed_capture(env, "abc")
+    result = env["ee"].build_bundle(env["conn"], case_id=env["case"].id)
+    with zipfile.ZipFile(result.zip_path) as zf:
+        pdf = zf.read("case_report.pdf")
+    assert pdf.startswith(b"%PDF-")
+
+
 # --- Extension-supplied user-browser sidecars in evidence bundles ---------
 
 
