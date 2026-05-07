@@ -13,7 +13,8 @@ A web-evidence capture tool for investigators — researchers, journalists, lawy
 - **Tamper-evident audit log** — every state-changing operation is hash-chained; tampering breaks the chain at the modified row.
 - **Per-case cookies** — upload a `cookies.txt` per case for authenticated capture; values are never logged or exported.
 - **Evidence export** — signed zip + PDF + standalone `verify.py` bundled in. Recipient runs `python verify.py` to confirm integrity.
-- **First-class RTL** — English and Arabic ship as Tier 1; Spanish and French follow.
+- **First-class RTL** — English, Japanese, and Arabic ship as fully translated locales.
+- **One folder per capture** — the page snapshot, the media file, the per-item manifest PDF, and every signed sidecar live together in `/{case}/{stem}/`. Copy that one folder to share a single capture; the manifest PDF tells the recipient exactly what should be there and the hashes to expect.
 
 ## Run
 
@@ -42,7 +43,7 @@ CAPSULE_DOWNLOADS_DIR=$PWD/_dev/downloads CAPSULE_CONFIG_DIR=$PWD/_dev/config \
 
 ## Status
 
-The backend is feature-complete through Phase 4: cases, jobs, capture pipeline (Playwright + yt-dlp), post-processing, hash-chained audit log, signed meta + evidence export with bundled verifier. The frontend SPA in v1 surfaces only the **downloader** (paste a link or list, watch the four-phase progress, find results in the recent-captures grid) and **Settings** (language, signing-key fingerprint, browser-extension pairing, yt-dlp updater). The case-management surfaces (Cases / Library / Item detail / Audit log) live on disk and over the API; the downloader uses them under the hood (every job lands in a default `quick-captures` case). EN/AR ship translated; ES/FR ship as stubs (mirror EN values until translation lands; the runtime ICU/RTL pipeline works for all four).
+The backend is feature-complete through Phase 4: cases, jobs, capture pipeline (Playwright + yt-dlp), post-processing, hash-chained audit log, signed meta + evidence export with bundled verifier. The frontend SPA in v1 surfaces only the **downloader** (paste a link or list, watch the four-phase progress, find results in the recent-captures grid) and **Settings** (language, signing-key fingerprint, browser-extension pairing, yt-dlp updater). The case-management surfaces (Cases / Library / Item detail / Audit log) live on disk and over the API; the downloader uses them under the hood (every job lands in a default `quick-captures` case). EN, JA, and AR ship as fully translated locales; the runtime ICU/RTL pipeline is the same shared path.
 
 Out of scope for this release:
 
@@ -52,7 +53,7 @@ Out of scope for this release:
 
 ## Switching language
 
-Click the language picker in the header, or visit `?lang=ar`. Arabic switches the entire layout to RTL, swaps fonts, and mirrors direction-implying icons.
+Click the language picker in the header, or visit `?lang=ja` or `?lang=ar`. Japanese loads Noto Sans JP. Arabic switches the entire layout to RTL, swaps fonts, and mirrors direction-implying icons.
 
 ## Documentation
 
