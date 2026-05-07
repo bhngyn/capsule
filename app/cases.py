@@ -28,9 +28,12 @@ from . import audit, config, sanitize
 __all__ = [
     "Case",
     "CASE_STATUSES",
+    "DEFAULT_CASE_SLUG",
+    "DEFAULT_CASE_NAME",
     "QUICK_CASE_SLUG",
     "QUICK_CASE_NAME",
     "create",
+    "ensure_default_case",
     "ensure_quick",
     "get",
     "get_by_slug",
@@ -49,9 +52,20 @@ CASE_STATUSES = frozenset({"open", "closed", "archived"})
 
 # Slug for the auto-managed case backing the Simple-mode downloader.
 # Pinned (not derived via slugify_case) so it stays unambiguously identifiable
-# even if a user happens to name their own case "Quick captures".
-QUICK_CASE_SLUG = "quick-captures"
-QUICK_CASE_NAME = "Quick captures"
+# even if a user happens to name their own case "Downloads".
+#
+# Forward-only rename (CLAUDE.md §15): fresh installs use ``downloads``; users
+# whose DB already has a ``quick-captures`` row continue to land on it. The
+# legacy slug is preserved so existing on-disk folders, audit-log entries, and
+# evidence-export bundles keep referring to the same path.
+DEFAULT_CASE_SLUG = "downloads"
+DEFAULT_CASE_NAME = "Downloads"
+_LEGACY_DEFAULT_CASE_SLUG = "quick-captures"
+
+# Deprecated: remove after vN+1. Kept so callers that import these names keep
+# working through one release while the orchestrator migrates them.
+QUICK_CASE_SLUG = DEFAULT_CASE_SLUG
+QUICK_CASE_NAME = DEFAULT_CASE_NAME
 
 
 def _utcnow() -> str:
@@ -171,18 +185,31 @@ def create(
     return _require(conn, case_id)
 
 
-def ensure_quick(conn: sqlite3.Connection) -> Case:
-    """Resolve (or lazily create) the auto-managed quick-captures case.
+def ensure_default_case(conn: sqlite3.Connection) -> Case:
+    """Resolve (or lazily create) the auto-managed default downloader case.
 
     Backs the Simple-mode downloader: every paste-a-link capture lands in
     this single case so the rest of the forensic pipeline (audit, hashing,
-    signing) keeps running unchanged. The slug is pinned, so a user who
-    later happens to name their own case "Quick captures" gets a different
-    slug.
+    signing) keeps running unchanged.
+
+    Forward-only fallback (CLAUDE.md §15):
+
+    1. Prefer the modern ``downloads`` slug.
+    2. If a legacy ``quick-captures`` row exists (older installs), return it
+       unchanged — no folder rename, no audit-log entry, no migration.
+    3. Otherwise create a fresh ``downloads`` row.
+
+    The slug is pinned, so a user who later happens to name their own case
+    "Downloads" gets a different slug.
     """
-    existing = get_by_slug(conn, QUICK_CASE_SLUG)
+    existing = get_by_slug(conn, DEFAULT_CASE_SLUG)
     if existing is not None:
         return existing
+
+    legacy = get_by_slug(conn, _LEGACY_DEFAULT_CASE_SLUG)
+    if legacy is not None:
+        # Legacy users: keep their existing folder + audit chain intact.
+        return legacy
 
     now = _utcnow()
     settings_json = json.dumps(
@@ -196,8 +223,8 @@ def ensure_quick(conn: sqlite3.Connection) -> Case:
             VALUES (?, ?, ?, 'open', ?, ?, ?)
             """,
             (
-                QUICK_CASE_SLUG,
-                QUICK_CASE_NAME,
+                DEFAULT_CASE_SLUG,
+                DEFAULT_CASE_NAME,
                 "Auto-managed case for the simple downloader.",
                 now,
                 now,
@@ -206,15 +233,25 @@ def ensure_quick(conn: sqlite3.Connection) -> Case:
         )
         case_id = int(cur.lastrowid or 0)
 
-    _provision_dirs(QUICK_CASE_SLUG)
+    _provision_dirs(DEFAULT_CASE_SLUG)
     audit.append(
         conn,
         "case.created",
         case_id=case_id,
         actor="system",
-        details={"slug": QUICK_CASE_SLUG, "name": QUICK_CASE_NAME, "kind": "quick"},
+        details={
+            "slug": DEFAULT_CASE_SLUG,
+            "name": DEFAULT_CASE_NAME,
+            "kind": "quick",
+        },
     )
     return _require(conn, case_id)
+
+
+# Deprecated: remove after vN+1. Thin alias so callers that still import the
+# legacy name keep working through one release.
+def ensure_quick(conn: sqlite3.Connection) -> Case:
+    return ensure_default_case(conn)
 
 
 def _require(conn: sqlite3.Connection, case_id: int) -> Case:

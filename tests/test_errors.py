@@ -179,6 +179,11 @@ def test_translated_bundles_actually_translated():
         "lang.es",
         "common.error",
         "capture.progress.speed_suffix",
+        # The em-dash placeholder is a typographic glyph, not a word.
+        "pdf.report.field.unknown",
+        # "No" is the natural Spanish translation of "No" — they spell
+        # identically without being untranslated.
+        "pdf.report.field.no",
     }
     for lang in ("ja", "ar", "es"):
         bundle = json.loads(

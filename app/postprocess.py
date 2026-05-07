@@ -339,18 +339,18 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             moved.append(dest)
             artifacts[role] = paths.relative_to_downloads(dest)
 
-        # Step 5a: hash every non-PDF artifact. The manifest PDF (rendered
-        # next) is hashed afterwards so the table inside it lists every
-        # other file's MD5/SHA-256.
+        # Step 5a: hash every non-PDF artifact. The two PDFs (report
+        # rendered next, manifest after) are hashed afterwards so the
+        # manifest table can list every other file's MD5/SHA-256
+        # (including the report PDF — meaning meta.json's signature
+        # transitively binds both PDFs).
         checksums: dict[str, dict[str, Any]] = {}
         for role, rel in artifacts.items():
             abs_path = config.DOWNLOADS_DIR / rel
             checksums[role] = compute_hashes(abs_path)
 
-        # Step 5b: render the per-item manifest PDF.
-        # Imported lazily to avoid pulling weasyprint at module-import
-        # time (it's a heavy dep — every test that imports
-        # ``app.postprocess`` would otherwise pay the cost).
+        # Lazy import — weasyprint is a heavy dep and every test that
+        # imports ``app.postprocess`` would otherwise pay the cost.
         from . import pdf_report  # noqa: PLC0415
 
         kp = signing.ensure_keypair()
@@ -358,6 +358,53 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         title_sanitized_for_pdf = sanitize.sanitize_component(
             info.get("title") or capture_input.url_final, max_len=sanitize.TITLE_MAX
         )
+        capture_block_for_report = dict(capture_input.capture_report or {})
+        capture_block_for_report["report_lang"] = capture_input.lang
+
+        # Step 5a.5: render the per-item report PDF (provenance,
+        # description, tools, capture report). Hashed and added to
+        # ``artifacts`` BEFORE the manifest PDF renders so the manifest's
+        # file table includes the ``report_pdf`` row, AND meta.json.sig
+        # transitively binds it through the manifest's checksum entry.
+        report_view = {
+            "title": title_sanitized_for_pdf,
+            "source_url": capture_input.url_submitted,
+            "final_url": capture_input.url_final,
+            "redirect_chain": list(capture_input.redirect_chain or []),
+            "captured_utc": capture_input.capture_date,
+            "signing_key_fp": fp,
+            "platform": (
+                platforms.friendly_name(info.get("extractor_key", ""))
+                if info
+                else platforms.platform_for_url(capture_input.url_final)
+            ),
+            "uploader": (info.get("uploader") or info.get("channel")) if info else None,
+            "upload_date": info.get("upload_date") if info else None,
+            "duration_seconds": info.get("duration") if info else None,
+            "authenticated_domains": list(capture_input.authenticated_domains),
+            "description": info.get("description") if info else None,
+            "tools": {
+                "app_version": APP_VERSION,
+                "ytdlp_version": capture_input.ytdlp_version,
+                "chromium_version": capture_input.chromium_version,
+                "browsertrix_version": capture_input.browsertrix_version,
+            },
+            "capture": capture_block_for_report,
+            "manifest_filename": f"{stem}.manifest.pdf",
+        }
+        report_pdf_bytes = pdf_report.render_item_report(
+            case=case, item_view=report_view, lang=capture_input.lang,
+        )
+        report_pdf_path = item_dir / f"{stem}.report.pdf"
+        report_pdf_path.write_bytes(report_pdf_bytes)
+        moved.append(report_pdf_path)
+        report_pdf_relpath = paths.relative_to_downloads(report_pdf_path)
+        artifacts["report_pdf"] = report_pdf_relpath
+        checksums["report_pdf"] = compute_hashes(report_pdf_path)
+
+        # Step 5b: render the per-item manifest PDF. The ``manifest_files``
+        # list is built from ``artifacts`` AFTER the report-PDF row has
+        # been added, so the report appears in the manifest table.
         manifest_files = [
             pdf_report.FileEntry(
                 relpath=artifacts[role],
@@ -399,13 +446,14 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 fh.write(f"SHA256 {h['sha256']}  {rel}\n")
 
         # Step 6: meta.json — captures both the artifact set (including
-        # the manifest PDF, so the signature transitively binds it) and
-        # the locale used to render the manifest.
-        capture_block = dict(capture_input.capture_report or {})
-        capture_block["report_lang"] = capture_input.lang
+        # both PDFs, so the signature transitively binds them) and the
+        # locale used to render them. ``capture_block_for_report`` was
+        # already built above with ``report_lang`` set; reuse it here so
+        # the report-PDF-renderer view and the meta record agree.
+        capture_block = capture_block_for_report
 
         meta = {
-            "schema_version": 3,
+            "schema_version": 4,
             "job_uuid": capture_input.job_uuid,
             "capture_kind": capture_kind,
             "case": {"id": case.id, "slug": case.slug, "name": case.name},

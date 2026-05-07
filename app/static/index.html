@@ -327,9 +327,9 @@
         <div class="flex items-center gap-2 px-4 py-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50">
           <i data-lucide="folder-open" class="size-5 text-accent flex-shrink-0"></i>
           <code class="font-mono text-xs text-zinc-600 dark:text-zinc-300 truncate flex-1 text-end"
-                :title="systemVersion?.paths?.host_quick_captures_dir || systemVersion?.paths?.quick_captures_dir || ''"
-                x-text="systemVersion?.paths?.host_quick_captures_dir || systemVersion?.paths?.quick_captures_dir || ''"></code>
-          <button @click="copyPath(systemVersion?.paths?.host_quick_captures_dir || systemVersion?.paths?.quick_captures_dir)"
+                :title="systemVersion?.paths?.host_default_case_dir || systemVersion?.paths?.default_case_dir || ''"
+                x-text="systemVersion?.paths?.host_default_case_dir || systemVersion?.paths?.default_case_dir || ''"></code>
+          <button @click="copyPath(systemVersion?.paths?.host_default_case_dir || systemVersion?.paths?.default_case_dir)"
                   :aria-label="t('simple.path.copy.aria')"
                   class="h-9 px-3 inline-flex items-center gap-1.5 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition flex-shrink-0">
             <i :data-lucide="pathCopied ? 'check' : 'copy'" class="size-4"></i>

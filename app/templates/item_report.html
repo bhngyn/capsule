@@ -2,15 +2,11 @@
 <html lang="{{lang}}" dir="{{dir}}">
 <head>
   <meta charset="utf-8">
-  <title>Capsule item manifest — {{title}}</title>
+  <title>Capsule item report — {{title}}</title>
   <style>
     @page {
-      /* Landscape so the full 32-hex MD5 and 64-hex SHA-256 fit alongside
-         the relative path and size without overflow. Forensic
-         re-verification requires the full digests; truncating them would
-         make ``sha256sum -c`` impossible. */
-      size: A4 landscape;
-      margin: 14mm 14mm 18mm 14mm;
+      size: A4;
+      margin: 18mm 16mm 22mm 16mm;
       @bottom-center {
         content: "{{label.footer_prefix}} " counter(page) " / " counter(pages);
         font-family: "Inter", "Noto Sans CJK JP", "Noto Sans CJK KR",
@@ -33,6 +29,8 @@
       color: #475569;
       text-transform: uppercase;
       letter-spacing: 0.05em;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 3pt;
     }
     .brand {
       display: flex;
@@ -52,49 +50,73 @@
       background: #f8fafc;
       page-break-inside: avoid;
     }
-    .header dl {
+    .header dl,
+    .provenance dl,
+    .capture dl {
       display: grid;
       grid-template-columns: max-content 1fr;
       gap: 4pt 14pt;
       margin: 0;
     }
-    .header dt { color: #475569; font-weight: 600; }
-    .header dd { margin: 0; word-break: break-all; }
-    code { font-family: "Menlo", "Courier New", monospace; font-size: 7.5pt; }
-    .manifest-table {
-      width: 100%;
-      border-collapse: collapse;
-      /* 8pt + landscape leaves comfortable room for the full 32-hex MD5
-         and 64-hex SHA-256 alongside the relative path. */
-      font-size: 8pt;
-      table-layout: fixed;
-    }
-    .manifest-table thead th {
-      text-align: start;
-      font-weight: 600;
+    .header dt,
+    .provenance dt,
+    .capture dt {
       color: #475569;
-      border-bottom: 1px solid #cbd5e1;
-      padding: 3pt 5pt;
-      background: #f8fafc;
+      font-weight: 600;
     }
-    .manifest-table tbody td {
-      border-bottom: 1px solid #f1f5f9;
-      padding: 2pt 5pt;
+    .header dd,
+    .provenance dd,
+    .capture dd {
+      margin: 0;
+      word-break: break-word;
+    }
+    .provenance ol {
+      margin: 0;
+      padding-inline-start: 18pt;
+    }
+    .provenance ol li { word-break: break-all; }
+    code { font-family: "Menlo", "Courier New", monospace; font-size: 9pt; }
+    .description {
+      margin: 0;
+      padding: 8pt 10pt;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 2pt;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 9.5pt;
+      line-height: 1.5;
+    }
+    .description-empty {
+      color: #94a3b8;
+      font-style: italic;
+    }
+    .tools-table {
+      width: auto;
+      border-collapse: collapse;
+      font-size: 9.5pt;
+    }
+    .tools-table tbody td {
+      padding: 3pt 14pt 3pt 0;
       vertical-align: top;
     }
-    .manifest-table td.path { word-break: break-all; }
-    .manifest-table td.size { white-space: nowrap; color: #475569; }
-    /* Full hex digests wrap inside the cell — never truncated, never
-       overflow the page. */
-    .manifest-table td.hash { word-break: break-all; }
-    .manifest-table td.hash code { display: inline-block; line-height: 1.25; }
-    .empty { color: #94a3b8; font-style: italic; }
+    .tools-table tbody td.label {
+      color: #475569;
+      font-weight: 600;
+    }
+    .footer-note {
+      margin-top: 22pt;
+      padding-top: 8pt;
+      border-top: 1px solid #e2e8f0;
+      color: #64748b;
+      font-size: 9pt;
+    }
     bdi { unicode-bidi: isolate; }
   </style>
 </head>
 <body>
-  <!-- Brand mark mirrors the case_report (CLAUDE.md §10 keeps the visual
-       language consistent between case-level and item-level evidence). -->
+  <!-- Brand mark mirrors item_manifest.html and case_report.html so the
+       three PDFs feel like a set (CLAUDE.md §10 visual-language). -->
   <div class="brand">
     <svg viewBox="0 0 24 24" fill="none" stroke="#1e293b" stroke-width="1.5"
          stroke-linecap="round" stroke-linejoin="round" aria-label="{{label.brand_name}}">
@@ -120,12 +142,48 @@
   <section class="header">
     <dl>
       <dt>{{label.source_url}}</dt>     <dd><bdi>{{source_url}}</bdi></dd>
+      {{final_url_block}}
       <dt>{{label.captured_utc}}</dt>   <dd>{{captured_utc}}</dd>
       <dt>{{label.signing_key}}</dt>    <dd><code>{{fingerprint}}</code></dd>
     </dl>
   </section>
 
-  <h2>{{label.heading}}</h2>
-  {{rows_block}}
+  <section class="provenance">
+    <h2>{{label.heading_provenance}}</h2>
+    <dl>
+      <dt>{{label.url_submitted}}</dt>          <dd><bdi>{{url_submitted}}</bdi></dd>
+      <dt>{{label.url_final}}</dt>              <dd><bdi>{{url_final}}</bdi></dd>
+      <dt>{{label.redirect_chain}}</dt>         <dd>{{redirect_chain_block}}</dd>
+      <dt>{{label.platform}}</dt>               <dd>{{platform}}</dd>
+      <dt>{{label.uploader}}</dt>               <dd><bdi>{{uploader}}</bdi></dd>
+      <dt>{{label.upload_date}}</dt>            <dd>{{upload_date}}</dd>
+      <dt>{{label.duration}}</dt>               <dd>{{duration}}</dd>
+      <dt>{{label.authenticated_domains}}</dt>  <dd><bdi>{{authenticated_domains}}</bdi></dd>
+    </dl>
+  </section>
+
+  <section class="description-section">
+    <h2>{{label.heading_description}}</h2>
+    {{description_block}}
+  </section>
+
+  <section class="tools">
+    <h2>{{label.heading_tools}}</h2>
+    <table class="tools-table">
+      <tbody>
+        <tr><td class="label">{{label.app_version}}</td>         <td><code>{{tool_app_version}}</code></td></tr>
+        <tr><td class="label">{{label.ytdlp_version}}</td>       <td><code>{{tool_ytdlp_version}}</code></td></tr>
+        <tr><td class="label">{{label.chromium_version}}</td>    <td><code>{{tool_chromium_version}}</code></td></tr>
+        <tr><td class="label">{{label.browsertrix_version}}</td> <td><code>{{tool_browsertrix_version}}</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="capture">
+    <h2>{{label.heading_capture}}</h2>
+    {{capture_block}}
+  </section>
+
+  <p class="footer-note">{{footer_note}}</p>
 </body>
 </html>

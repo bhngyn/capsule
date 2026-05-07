@@ -43,7 +43,7 @@ CAPSULE_DOWNLOADS_DIR=$PWD/_dev/downloads CAPSULE_CONFIG_DIR=$PWD/_dev/config \
 
 ## Status
 
-The backend is feature-complete through Phase 4: cases, jobs, capture pipeline (Playwright + yt-dlp), post-processing, hash-chained audit log, signed meta + evidence export with bundled verifier. The frontend SPA in v1 surfaces only the **downloader** (paste a link or list, watch the four-phase progress, find results in the recent-captures grid) and **Settings** (language, signing-key fingerprint, browser-extension pairing, yt-dlp updater). The case-management surfaces (Cases / Library / Item detail / Audit log) live on disk and over the API; the downloader uses them under the hood (every job lands in a default `quick-captures` case). EN, JA, and AR ship as fully translated locales; the runtime ICU/RTL pipeline is the same shared path.
+The backend is feature-complete through Phase 4: cases, jobs, capture pipeline (Playwright + yt-dlp), post-processing, hash-chained audit log, signed meta + evidence export with bundled verifier. The frontend SPA in v1 surfaces only the **downloader** (paste a link or list, watch the four-phase progress, find results in the recent-captures grid) and **Settings** (language, signing-key fingerprint, browser-extension pairing, yt-dlp updater). The case-management surfaces (Cases / Library / Item detail / Audit log) live on disk and over the API; the downloader uses them under the hood (every job lands in the default case — slug `downloads` for fresh installs, `quick-captures` preserved on legacy installs). EN, JA, ES, and AR ship as fully translated locales; the runtime ICU/RTL pipeline is the same shared path.
 
 Out of scope for this release:
 

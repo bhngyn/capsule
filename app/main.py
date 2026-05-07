@@ -531,15 +531,16 @@ async def submit_jobs_batch(body: JobBatch) -> dict[str, Any]:
     """Submit one or many URLs as captures.
 
     If ``case_id`` is omitted, the URLs are routed into the auto-managed
-    ``quick-captures`` case that backs the Simple-mode downloader. The
-    upper bound of 25 URLs per submission is enforced by the schema and
-    keeps the active-jobs UI manageable; the orchestrator's own semaphore
-    (default 2) bounds actual concurrency.
+    default case that backs the Simple-mode downloader (slug ``downloads``
+    on fresh installs, ``quick-captures`` on legacy installs). The upper
+    bound of 25 URLs per submission is enforced by the schema and keeps the
+    active-jobs UI manageable; the orchestrator's own semaphore (default 2)
+    bounds actual concurrency.
     """
     conn = _conn()
     try:
         if body.case_id is None:
-            case = cases.ensure_quick(conn)
+            case = cases.ensure_default_case(conn)
         else:
             case = cases.get(conn, body.case_id)
             if case is None:
@@ -1059,18 +1060,28 @@ async def system_version() -> dict[str, Any]:
         rel_str = str(rel).replace("/", sep) if rel.parts else ""
         return f"{host}{sep}{rel_str}" if rel_str else host
 
-    quick_dir = cases.downloads_dir_for(cases.QUICK_CASE_SLUG)
+    # Resolve the active default-case slug at runtime: legacy users with a
+    # ``quick-captures`` row continue to see that path, fresh installs get
+    # the new ``downloads`` slug. The frontend reads ``default_case_slug``
+    # rather than hardcoding either value (CLAUDE.md §15).
+    conn = _conn()
+    try:
+        default_case = cases.ensure_default_case(conn)
+    finally:
+        conn.close()
+    default_dir = cases.downloads_dir_for(default_case.slug)
     return {
         "app": __version__,
         "yt_dlp": ytdlp_v,
         "chromium": "0",          # Phase 2 sets this
         "browsertrix": "0",       # Phase 2 sets this
         "signing_key_fingerprint": signing.fingerprint(kp.public),
+        "default_case_slug": default_case.slug,
         "paths": {
             "downloads_dir": str(config.DOWNLOADS_DIR),
-            "quick_captures_dir": str(quick_dir),
+            "default_case_dir": str(default_dir),
             "host_downloads_dir": config.HOST_DOWNLOADS_DIR,
-            "host_quick_captures_dir": _host(quick_dir),
+            "host_default_case_dir": _host(default_dir),
             "can_reveal": _can_reveal(),
         },
     }

@@ -496,11 +496,16 @@
 
       async refreshRecentCaptures() {
         if (!this.quickCaseId) {
+          // Resolve the default-case slug from /api/system/version so legacy
+          // installs (slug: 'quick-captures') and fresh installs (slug:
+          // 'downloads') both work without a frontend code change.
+          const defaultSlug = this.systemVersion?.default_case_slug;
+          if (!defaultSlug) { this.recentCaptures = []; return; }
           try {
             const res = await fetch('/api/cases');
             if (res.ok) {
               const body = await res.json();
-              const c = (body.cases || []).find(x => x.slug === 'quick-captures');
+              const c = (body.cases || []).find(x => x.slug === defaultSlug);
               if (c) this.quickCaseId = c.id;
             }
           } catch (_) { /* ignore — empty grid will render */ }
@@ -537,12 +542,14 @@
         // host-side path via CAPSULE_HOST_DOWNLOADS_DIR so we can copy
         // something the user can paste into Finder/Explorer.
         const paths = this.systemVersion?.paths || {};
-        const path = paths.host_quick_captures_dir || paths.quick_captures_dir;
+        const path = paths.host_default_case_dir || paths.default_case_dir;
+        const defaultSlug = this.systemVersion?.default_case_slug;
+        if (!defaultSlug) { await this.copyPath(path); return; }
         try {
           const res = await fetch('/api/system/reveal', {
             method: 'POST',
             headers: {'content-type': 'application/json'},
-            body: JSON.stringify({ relative_path: 'quick-captures' }),
+            body: JSON.stringify({ relative_path: defaultSlug }),
           });
           const body = await res.json().catch(() => ({}));
           if (body && body.ok) return;
