@@ -10,6 +10,20 @@ Two producers, one entry point:
   loaded — never the whole site). It runs as an external process; if not
   installed, the WARC artifact is omitted and the meta.json reflects that.
 
+Hardening pass (CLAUDE.md §13 — capture-side mutations recorded):
+
+* When the extension supplies a ``TabContext`` (UA, viewport, timezone,
+  scroll, color scheme, referrer), the canonical Chromium capture mirrors
+  it. Mobile pages render as mobile, dark-mode pages render dark, etc.
+* Render-wait policy: ``load`` → ``document.fonts.ready`` → visible-image
+  completion → video readyState → ``networkidle`` (best-effort, capped).
+  Each wait's outcome is recorded so the audit log can show what was
+  actually awaited and what timed out.
+* Network-layer ad/tracker blocking via ``app.blocklist`` — every blocked
+  URL recorded; toggle off per-case.
+* Cookie/consent banner CSS hide via ``app.banner_hide`` — DOM untouched;
+  toggle off per-case.
+
 The capture function is producer-agnostic on the consumer side: it returns
 ``CaptureBundle`` paths, which ``postprocess.finalize`` already accepts.
 """
@@ -20,15 +34,20 @@ import asyncio
 import json
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import banner_hide as banner_hide_mod
+from . import blocklist as blocklist_mod
 from . import cookies as cookies_mod
 from .platforms import is_social
 
 __all__ = [
     "CaptureBundle",
+    "TabContext",
+    "RenderWait",
+    "CaptureReport",
     "capture_page",
     "browsertrix_available",
     "playwright_chromium_version",
@@ -41,6 +60,7 @@ __all__ = [
     "DEFAULT_WARMUP_STEPS",
     "DEFAULT_WARMUP_STEP_MS",
     "DEFAULT_BROWSERTRIX_BEHAVIOR_TIMEOUT_S",
+    "DEFAULT_RENDER_WAIT_BUDGET_MS",
 ]
 
 
@@ -50,10 +70,10 @@ __all__ = [
 # 60s was the prior Playwright timeout — too tight on slow links. 90s gives
 # the page time to render through TLS handshake + first paint over a VPN.
 DEFAULT_PLAYWRIGHT_TIMEOUT_MS = 90_000
-# A short settle period after DOMContentLoaded so client-side rendering and
-# late-loading sub-resources (fonts, hero images) make it into the snapshot.
-# 4s is a deliberate compromise: long enough for most SPAs to paint, short
-# enough that we don't hold the slot for slowly-streamed embeds.
+# A short settle period after the render-wait orchestrator finishes, before
+# the snapshot. The orchestrator already waits for fonts/images/video; this
+# cushion is kept for parity with the prior pipeline (callers that disable
+# render waits still get a coherent settle).
 DEFAULT_SETTLE_DELAY_MS = 4_000
 # 180s, up from 90s. The browsertrix call writes the WARC AND every
 # sub-resource — on a slow link the prior 90s was tripping for sites with
@@ -76,6 +96,146 @@ DEFAULT_WARMUP_STEP_MS = 250
 # browsertrix behavior cap. Stays well under DEFAULT_BROWSERTRIX_TIMEOUT_S
 # so behaviors can't starve the rest of the crawl.
 DEFAULT_BROWSERTRIX_BEHAVIOR_TIMEOUT_S = 30
+# Hard ceiling on the render-wait orchestrator. The individual waits each
+# have their own caps; this is the outer envelope so a misbehaving page
+# can't hold the slot indefinitely.
+DEFAULT_RENDER_WAIT_BUDGET_MS = 60_000
+
+
+# --- Tab context (extension-supplied environment mirror) -------------------
+
+
+@dataclass(frozen=True)
+class TabContext:
+    """User-environment fields captured by the Capsule extension.
+
+    All fields optional — when present, the canonical Chromium capture
+    mirrors them so the snapshot reflects the user's authenticated view.
+    Missing fields fall back to the engine defaults.
+    """
+
+    user_agent: str | None = None
+    viewport_width: int | None = None
+    viewport_height: int | None = None
+    device_scale_factor: float | None = None
+    timezone: str | None = None
+    locale: str | None = None
+    color_scheme: str | None = None  # 'light' | 'dark' | 'no-preference'
+    reduced_motion: bool | None = None
+    referrer: str | None = None
+    scroll_x: int | None = None
+    scroll_y: int | None = None
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any] | None) -> "TabContext | None":
+        """Tolerantly construct from the JSON envelope the extension sends."""
+        if not raw:
+            return None
+        viewport = raw.get("viewport") or {}
+        scroll = raw.get("scroll") or {}
+        languages = raw.get("languages") or []
+        locale = raw.get("language") or (languages[0] if languages else None)
+        return cls(
+            user_agent=_str_or_none(raw.get("user_agent")),
+            viewport_width=_int_or_none(viewport.get("width")),
+            viewport_height=_int_or_none(viewport.get("height")),
+            device_scale_factor=_float_or_none(viewport.get("device_scale_factor")),
+            timezone=_str_or_none(raw.get("timezone")),
+            locale=_str_or_none(locale),
+            color_scheme=_str_or_none(raw.get("color_scheme")),
+            reduced_motion=_bool_or_none(raw.get("reduced_motion")),
+            referrer=_str_or_none(raw.get("referrer")),
+            scroll_x=_int_or_none(scroll.get("x")),
+            scroll_y=_int_or_none(scroll.get("y")),
+        )
+
+
+def _str_or_none(v: Any) -> str | None:
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s or None
+
+
+def _int_or_none(v: Any) -> int | None:
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(v: Any) -> float | None:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bool_or_none(v: Any) -> bool | None:
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.lower() in ("1", "true", "yes")
+    return bool(v)
+
+
+# --- Render-wait reporting --------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RenderWait:
+    """One render-wait gate's outcome. Surfaced into ``meta.json.capture``
+    and the audit log so a forensic reviewer can answer "what did the
+    capture process actually wait for?".
+    """
+
+    name: str           # 'load' | 'fonts' | 'images' | 'video' | 'networkidle' | 'lazy_load'
+    ok: bool            # True if the gate's condition was satisfied
+    elapsed_ms: int     # how long the wait took
+    timed_out: bool     # True iff the cap was hit before the condition
+    detail: str | None = None  # optional human-readable note (e.g. "8 images, 2 incomplete")
+
+
+@dataclass(frozen=True)
+class CaptureReport:
+    """Auditable record of capture-side mutations and wait outcomes."""
+
+    render_waits: list[RenderWait] = field(default_factory=list)
+    blocked_requests: list[str] = field(default_factory=list)  # URLs only — no headers
+    blocklist_version: str | None = None
+    banner_hide_applied: bool = False
+    banner_hide_version: str | None = None
+    tab_context_used: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "render_waits": [
+                {
+                    "name": w.name,
+                    "ok": w.ok,
+                    "elapsed_ms": w.elapsed_ms,
+                    "timed_out": w.timed_out,
+                    "detail": w.detail,
+                }
+                for w in self.render_waits
+            ],
+            "blocked_request_count": len(self.blocked_requests),
+            # Cap the URL list at a reasonable size so meta.json stays readable
+            # on pages with thousands of trackers. The full set still appears
+            # in the WARC (each is a recorded aborted request), so forensic
+            # completeness isn't compromised.
+            "blocked_requests_sample": list(self.blocked_requests[:200]),
+            "blocklist_version": self.blocklist_version,
+            "banner_hide_applied": self.banner_hide_applied,
+            "banner_hide_version": self.banner_hide_version,
+            "tab_context_used": self.tab_context_used,
+        }
 
 
 @dataclass(frozen=True)
@@ -87,6 +247,7 @@ class CaptureBundle:
     browsertrix_version: str
     page_title: str | None
     response_headers: dict[str, str] | None
+    report: CaptureReport = field(default_factory=CaptureReport)
 
 
 def browsertrix_available() -> bool:
@@ -137,6 +298,12 @@ def _netscape_to_playwright_cookies(content: str) -> list[dict[str, Any]]:
     return out
 
 
+def _load_cookies_from_path(cookies_path: Path | None) -> list[dict[str, Any]]:
+    if cookies_path is None or not cookies_path.is_file():
+        return []
+    return _netscape_to_playwright_cookies(cookies_path.read_text(encoding="utf-8"))
+
+
 def _load_cookies_for(case_slug: str | None) -> list[dict[str, Any]]:
     if not case_slug or not cookies_mod.exists(case_slug):
         return []
@@ -165,12 +332,97 @@ async def playwright_chromium_version() -> str:
         return "0"
 
 
+async def _wait_with_cap(
+    coro_factory,
+    *,
+    name: str,
+    cap_ms: int,
+) -> RenderWait:
+    """Run ``coro_factory()`` (a zero-arg async callable) with a hard cap.
+
+    Returns a :class:`RenderWait` describing the outcome. The async work
+    is wrapped in :func:`asyncio.wait_for`; on timeout the gate is recorded
+    as ``timed_out=True`` and the capture continues — best-effort waits do
+    not abort the capture.
+    """
+    import time
+    started = time.monotonic()
+    try:
+        detail = await asyncio.wait_for(coro_factory(), timeout=cap_ms / 1000.0)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return RenderWait(name=name, ok=True, elapsed_ms=elapsed_ms, timed_out=False, detail=detail)
+    except asyncio.TimeoutError:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return RenderWait(name=name, ok=False, elapsed_ms=elapsed_ms, timed_out=True, detail=None)
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return RenderWait(
+            name=name, ok=False, elapsed_ms=elapsed_ms, timed_out=False,
+            detail=f"error:{type(exc).__name__}",
+        )
+
+
+async def _wait_for_fonts(page) -> str | None:
+    """Resolve when ``document.fonts.ready`` resolves, or never if no
+    document.fonts. Returns a brief detail string with the font count."""
+    return await page.evaluate(
+        """async () => {
+            if (!document.fonts) return 'no-fonts-api';
+            await document.fonts.ready;
+            return 'fonts:' + document.fonts.size;
+        }"""
+    )
+
+
+async def _wait_for_visible_images(page) -> str | None:
+    """Resolve when every ``<img>`` currently in the viewport has ``complete``
+    and a non-zero ``naturalHeight``. Tolerant: stops trying after a short
+    poll, so broken/blocked images never wedge the capture."""
+    return await page.evaluate(
+        """async () => {
+            const start = performance.now();
+            while (performance.now() - start < 8000) {
+                const imgs = Array.from(document.images || []);
+                if (imgs.length === 0) return 'no-images';
+                let pending = 0;
+                for (const img of imgs) {
+                    const r = img.getBoundingClientRect();
+                    const inView = r.top < window.innerHeight && r.bottom > 0;
+                    if (!inView) continue;
+                    if (!img.complete || img.naturalHeight === 0) pending++;
+                }
+                if (pending === 0) return 'images:' + imgs.length + ' complete';
+                await new Promise(r => setTimeout(r, 250));
+            }
+            return 'images:timeout';
+        }"""
+    )
+
+
+async def _wait_for_video_metadata(page) -> str | None:
+    """Resolve when every ``<video>`` element has ``readyState >= 1``
+    (HAVE_METADATA). Pages without ``<video>`` resolve immediately."""
+    return await page.evaluate(
+        """async () => {
+            const start = performance.now();
+            while (performance.now() - start < 5000) {
+                const vids = Array.from(document.querySelectorAll('video'));
+                if (vids.length === 0) return 'no-video';
+                const pending = vids.filter(v => v.readyState < 1).length;
+                if (pending === 0) return 'video:' + vids.length + ' ready';
+                await new Promise(r => setTimeout(r, 250));
+            }
+            return 'video:timeout';
+        }"""
+    )
+
+
 async def _warm_lazy_load(
     page,
     *,
     max_steps: int = DEFAULT_WARMUP_STEPS,
     step_ms: int = DEFAULT_WARMUP_STEP_MS,
-) -> None:
+) -> str | None:
     """Scroll the page to surface lazy-loaded content, then return to top.
 
     Stops as soon as ``document.scrollHeight`` stops growing, or after
@@ -181,6 +433,7 @@ async def _warm_lazy_load(
     DOM.
     """
     last_height = 0
+    steps_taken = 0
     for _ in range(max_steps):
         height = await page.evaluate("document.documentElement.scrollHeight")
         if height <= last_height:
@@ -188,9 +441,30 @@ async def _warm_lazy_load(
         last_height = height
         await page.evaluate("window.scrollBy(0, window.innerHeight * 0.9)")
         await page.wait_for_timeout(step_ms)
+        steps_taken += 1
     await page.evaluate("window.scrollTo(0, 0)")
-    # Brief pause so any image fade-in animations settle before the PNG.
     await page.wait_for_timeout(step_ms)
+    return f"steps:{steps_taken}/{max_steps}"
+
+
+def _route_handler_factory(rules: blocklist_mod.BlocklistRules, log: list[str]):
+    """Build a Playwright route handler that aborts blocked URLs."""
+
+    async def _handler(route, request):
+        url = request.url
+        if rules.should_block(url):
+            log.append(url)
+            try:
+                await route.abort("blockedbyclient")
+            except Exception:
+                pass
+            return
+        try:
+            await route.continue_()
+        except Exception:
+            pass
+
+    return _handler
 
 
 async def _playwright_snapshot(
@@ -201,19 +475,20 @@ async def _playwright_snapshot(
     timeout_ms: int = DEFAULT_PLAYWRIGHT_TIMEOUT_MS,
     settle_ms: int = DEFAULT_SETTLE_DELAY_MS,
     proxy_url: str | None = None,
-) -> tuple[Path, Path, str, dict[str, str], str]:
-    """Open ``url`` once and produce ``(mhtml, screenshot, title, headers, version)``.
+    tab_context: TabContext | None = None,
+    block_ads: bool = True,
+    hide_cookie_banners: bool = True,
+) -> tuple[Path, Path, str, dict[str, str], str, CaptureReport]:
+    """Open ``url`` once and produce ``(mhtml, screenshot, title, headers, version, report)``.
 
     The CDP ``Page.captureSnapshot`` call yields a single-file MHTML — no
     second navigation, so the snapshot and the screenshot are guaranteed to
     be of the same DOM state.
 
-    Wait policy (CLAUDE.md plan §U3): ``domcontentloaded`` + a short settle
-    delay, **not** ``networkidle``. ``networkidle`` is unreliable on slow
-    links and on sites that hold long-poll connections open — it can hang
-    until the timeout for pages that have already rendered everything we
-    need. ``domcontentloaded`` fires deterministically; the settle delay
-    catches late-loading sub-resources without a hard upper bound.
+    Wait policy (hardening pass): ``load`` → fonts → visible images → video
+    metadata → lazy-load scroll → networkidle (best-effort, capped). Each
+    gate's outcome is recorded into the returned :class:`CaptureReport` so
+    the audit log can show what was awaited.
     """
     from playwright.async_api import async_playwright
 
@@ -221,20 +496,47 @@ async def _playwright_snapshot(
     mhtml_path = out_dir / "page.mhtml"
     png_path = out_dir / "page.png"
 
+    blocked_log: list[str] = []
+    waits: list[RenderWait] = []
+    blocklist_version: str | None = None
+    banner_version: str | None = None
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
             ctx_kwargs: dict[str, Any] = dict(
                 user_agent=(
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 "
-                    "Capsule/0.1"
+                    tab_context.user_agent
+                    if tab_context and tab_context.user_agent
+                    else (
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 "
+                        "Capsule/0.1"
+                    )
                 ),
                 viewport={
-                    "width": DEFAULT_VIEWPORT_WIDTH,
-                    "height": DEFAULT_VIEWPORT_HEIGHT,
+                    "width": (
+                        tab_context.viewport_width
+                        if tab_context and tab_context.viewport_width
+                        else DEFAULT_VIEWPORT_WIDTH
+                    ),
+                    "height": (
+                        tab_context.viewport_height
+                        if tab_context and tab_context.viewport_height
+                        else DEFAULT_VIEWPORT_HEIGHT
+                    ),
                 },
             )
+            if tab_context and tab_context.device_scale_factor:
+                ctx_kwargs["device_scale_factor"] = float(tab_context.device_scale_factor)
+            if tab_context and tab_context.timezone:
+                ctx_kwargs["timezone_id"] = tab_context.timezone
+            if tab_context and tab_context.locale:
+                ctx_kwargs["locale"] = tab_context.locale
+            if tab_context and tab_context.color_scheme in ("light", "dark", "no-preference"):
+                ctx_kwargs["color_scheme"] = tab_context.color_scheme
+            if tab_context and tab_context.reduced_motion is not None:
+                ctx_kwargs["reduced_motion"] = "reduce" if tab_context.reduced_motion else "no-preference"
             if proxy_url:
                 # Plan §U8: route Playwright traffic through the same tunnel
                 # as yt-dlp + browsertrix so the page snapshot, the WARC, and
@@ -243,13 +545,78 @@ async def _playwright_snapshot(
             ctx = await browser.new_context(**ctx_kwargs)
             if cookies:
                 await ctx.add_cookies(cookies)
+
+            # Network-layer ad/tracker blocking. Routes are installed at the
+            # context level so they apply to every request the page makes,
+            # including sub-frames.
+            if block_ads:
+                rules = blocklist_mod.default_rules()
+                blocklist_version = rules.version
+                await ctx.route("**/*", _route_handler_factory(rules, blocked_log))
+
             page = await ctx.new_page()
-            response = await page.goto(
-                url, wait_until="domcontentloaded", timeout=timeout_ms,
-            )
+            goto_kwargs: dict[str, Any] = {
+                "wait_until": "load",
+                "timeout": timeout_ms,
+            }
+            if tab_context and tab_context.referrer:
+                goto_kwargs["referer"] = tab_context.referrer
+            response = await page.goto(url, **goto_kwargs)
+            waits.append(RenderWait(
+                name="load", ok=True, elapsed_ms=0, timed_out=False,
+                detail=f"status:{response.status if response else 'no-response'}",
+            ))
+
+            # Banner CSS hide injected as early as possible after navigation
+            # so the page never paints a banner that we'd then hide.
+            banner_hide_applied = False
+            if hide_cookie_banners:
+                rules_b = banner_hide_mod.default_rules()
+                banner_version = rules_b.version
+                try:
+                    await page.add_style_tag(content=rules_b.css)
+                    banner_hide_applied = True
+                except Exception:
+                    banner_hide_applied = False
+
+            # Render-wait orchestration.
+            waits.append(await _wait_with_cap(
+                lambda: _wait_for_fonts(page),
+                name="fonts", cap_ms=5_000,
+            ))
+            waits.append(await _wait_with_cap(
+                lambda: _wait_for_visible_images(page),
+                name="images", cap_ms=10_000,
+            ))
+            waits.append(await _wait_with_cap(
+                lambda: _wait_for_video_metadata(page),
+                name="video", cap_ms=8_000,
+            ))
+            waits.append(await _wait_with_cap(
+                lambda: _warm_lazy_load(page),
+                name="lazy_load", cap_ms=15_000,
+            ))
+
+            async def _networkidle():
+                await page.wait_for_load_state("networkidle", timeout=15_000)
+                return "networkidle:reached"
+
+            waits.append(await _wait_with_cap(
+                _networkidle, name="networkidle", cap_ms=15_000,
+            ))
+
             if settle_ms > 0:
                 await page.wait_for_timeout(settle_ms)
-            await _warm_lazy_load(page)
+
+            # Restore the user's scroll position (extension-supplied) so the
+            # PNG reflects the investigator's vantage; full-page mode below
+            # captures everything regardless. The default is top-of-page.
+            if tab_context and tab_context.scroll_y is not None:
+                await page.evaluate(
+                    "([x, y]) => window.scrollTo(x, y)",
+                    [tab_context.scroll_x or 0, tab_context.scroll_y or 0],
+                )
+
             title = await page.title()
             headers = dict(response.headers) if response else {}
 
@@ -260,7 +627,16 @@ async def _playwright_snapshot(
 
             await page.screenshot(path=str(png_path), full_page=True)
             version = browser.version or "0"
-            return mhtml_path, png_path, title, headers, version
+
+            report = CaptureReport(
+                render_waits=waits,
+                blocked_requests=blocked_log,
+                blocklist_version=blocklist_version,
+                banner_hide_applied=banner_hide_applied,
+                banner_hide_version=banner_version,
+                tab_context_used=tab_context is not None,
+            )
+            return mhtml_path, png_path, title, headers, version, report
         finally:
             await browser.close()
 
@@ -277,6 +653,8 @@ async def _browsertrix_attempt(
     timeout_s: int,
     attempt_idx: int,
     proxy_url: str | None = None,
+    tab_context: TabContext | None = None,
+    block_rules_file: Path | None = None,
 ) -> Path | None:
     """One browsertrix invocation. Returns the merged WARC path or ``None``.
 
@@ -304,11 +682,16 @@ async def _browsertrix_attempt(
         "--behaviors", "autoscroll",
         "--behaviorTimeout", str(DEFAULT_BROWSERTRIX_BEHAVIOR_TIMEOUT_S),
     ]
+    if tab_context and tab_context.user_agent:
+        argv += ["--userAgent", tab_context.user_agent]
     if case_cookies_path and case_cookies_path.is_file():
         argv += ["--cookieFile", str(case_cookies_path)]
     if proxy_url:
         # Plan §U8: same-identity routing across all three producers.
         argv += ["--proxyServer", proxy_url]
+    if block_rules_file and block_rules_file.is_file():
+        # browsertrix-crawler natively supports a JSON block-rules file.
+        argv += ["--blockRules", str(block_rules_file)]
 
     proc = await asyncio.create_subprocess_exec(
         *argv,
@@ -342,6 +725,26 @@ async def _browsertrix_attempt(
     return target
 
 
+def _write_browsertrix_block_rules(out_dir: Path) -> Path | None:
+    """Materialise the bundled blocklist as a browsertrix-compatible JSON
+    file. Returns the path, or ``None`` if the rules can't be loaded.
+    """
+    try:
+        rules = blocklist_mod.default_rules()
+    except Exception:
+        return None
+    if not rules.blocked_hosts:
+        return None
+    # browsertrix rules: list of objects with `url` (regex) and `type`. We
+    # build a single rule with a regex matching any of the blocked hosts.
+    import re
+    pattern = "|".join(re.escape(h) for h in sorted(rules.blocked_hosts))
+    body = [{"url": f"https?://[^/]*({pattern})(/.*)?$", "type": "block"}]
+    target = out_dir / "block-rules.json"
+    target.write_text(json.dumps(body), encoding="utf-8")
+    return target
+
+
 async def _browsertrix_warc(
     *,
     url: str,
@@ -350,6 +753,8 @@ async def _browsertrix_warc(
     timeout_s: int = DEFAULT_BROWSERTRIX_TIMEOUT_S,
     attempts: int = DEFAULT_BROWSERTRIX_ATTEMPTS,
     proxy_url: str | None = None,
+    tab_context: TabContext | None = None,
+    block_ads: bool = True,
 ) -> tuple[Path | None, str]:
     """Run ``browsertrix-crawler`` for one URL, retrying on hard failure.
 
@@ -366,6 +771,8 @@ async def _browsertrix_warc(
     if binary is None:
         return None, "0"
 
+    block_rules_file = _write_browsertrix_block_rules(out_dir) if block_ads else None
+
     target: Path | None = None
     for i in range(attempts):
         target = await _browsertrix_attempt(
@@ -376,6 +783,8 @@ async def _browsertrix_warc(
             timeout_s=timeout_s,
             attempt_idx=i + 1,
             proxy_url=proxy_url,
+            tab_context=tab_context,
+            block_rules_file=block_rules_file,
         )
         if target is not None:
             break
@@ -409,6 +818,10 @@ async def capture_page(
     browsertrix_timeout_s: int = DEFAULT_BROWSERTRIX_TIMEOUT_S,
     browsertrix_attempts: int = DEFAULT_BROWSERTRIX_ATTEMPTS,
     proxy_url: str | None = None,
+    tab_context: TabContext | None = None,
+    cookies_path: Path | None = None,
+    block_ads: bool = True,
+    hide_cookie_banners: bool = True,
 ) -> CaptureBundle:
     """Drive both producers and return a ``CaptureBundle``.
 
@@ -416,33 +829,48 @@ async def capture_page(
     into the canonical sidecar dir; pass one in tests, otherwise a
     private tmp dir is created and the caller is responsible for moving
     the files out before it goes out of scope.
+
+    ``cookies_path`` overrides the on-disk per-case cookie file — used by
+    the ephemeral-cookies path so a one-shot job's cookies aren't persisted
+    to the case directory.
     """
     if work_dir is None:
         work_dir = Path(tempfile.mkdtemp(prefix="capsule-capture-"))
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    cookies = _load_cookies_for(case_slug)
-    cookies_path = (
-        cookies_mod.path_for(case_slug)
-        if case_slug and cookies_mod.exists(case_slug) and is_social(url)
-        else None
-    )
+    if cookies_path is not None:
+        cookies = _load_cookies_from_path(cookies_path)
+        cookies_for_browsertrix: Path | None = (
+            cookies_path if is_social(url) else None
+        )
+    else:
+        cookies = _load_cookies_for(case_slug)
+        cookies_for_browsertrix = (
+            cookies_mod.path_for(case_slug)
+            if case_slug and cookies_mod.exists(case_slug) and is_social(url)
+            else None
+        )
 
-    mhtml, png, title, headers, chromium_v = await _playwright_snapshot(
+    mhtml, png, title, headers, chromium_v, report = await _playwright_snapshot(
         url=url,
         out_dir=work_dir,
         cookies=cookies,
         timeout_ms=timeout_ms,
         settle_ms=settle_ms,
         proxy_url=proxy_url,
+        tab_context=tab_context,
+        block_ads=block_ads,
+        hide_cookie_banners=hide_cookie_banners,
     )
     warc, btx_v = await _browsertrix_warc(
         url=url,
         out_dir=work_dir,
-        case_cookies_path=cookies_path,
+        case_cookies_path=cookies_for_browsertrix,
         timeout_s=browsertrix_timeout_s,
         attempts=browsertrix_attempts,
         proxy_url=proxy_url,
+        tab_context=tab_context,
+        block_ads=block_ads,
     )
     return CaptureBundle(
         mhtml=mhtml,
@@ -452,4 +880,5 @@ async def capture_page(
         browsertrix_version=btx_v,
         page_title=title,
         response_headers=headers,
+        report=report,
     )
