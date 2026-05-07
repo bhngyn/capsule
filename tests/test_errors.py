@@ -168,6 +168,7 @@ def test_translated_bundles_actually_translated():
         "lang.en",
         "lang.ja",
         "lang.ar",
+        "lang.es",
     }
     for lang in ("ja", "ar"):
         bundle = json.loads(
