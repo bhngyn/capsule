@@ -416,3 +416,233 @@ async def test_extension_capture_audit_records_no_cookie_values(client):
     assert "topsecret-must-not-leak" not in blob
     actions = [e["action"] for e in audit["entries"]]
     assert "extension.capture_submitted" in actions
+
+
+# --- Hardening pass: extension_id binding, rotate, ephemeral cookies, ----
+# --- tab_context envelope, full session-state payload --------------------
+
+
+@pytest.mark.asyncio
+async def test_pair_with_extension_id_binds_token(client):
+    """When the pair body specifies ``extension_id``, every authenticated
+    request must present the same value or it gets a 403."""
+    pair = (await client.post(
+        "/api/extension/pair",
+        json={"label": "bound", "extension_id": "abcdef"},
+    )).json()
+    # Right id passes.
+    ok = await client.get(
+        "/api/extension/cases",
+        headers={
+            "Authorization": f"Bearer {pair['token']}",
+            "X-Extension-Id": "abcdef",
+        },
+    )
+    assert ok.status_code == 200
+    # Wrong id is rejected with 403, not 401 — the credentials are valid,
+    # they're just not for this device.
+    bad = await client.get(
+        "/api/extension/cases",
+        headers={
+            "Authorization": f"Bearer {pair['token']}",
+            "X-Extension-Id": "different-id",
+        },
+    )
+    assert bad.status_code == 403
+    # Missing id with a bound token is also 403.
+    missing = await client.get(
+        "/api/extension/cases",
+        headers={"Authorization": f"Bearer {pair['token']}"},
+    )
+    assert missing.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_extension_id_mismatch_audits(client):
+    pair = (await client.post(
+        "/api/extension/pair",
+        json={"label": "bound", "extension_id": "real-id"},
+    )).json()
+    await client.get(
+        "/api/extension/cases",
+        headers={
+            "Authorization": f"Bearer {pair['token']}",
+            "X-Extension-Id": "wrong-id",
+        },
+    )
+    audit = (await client.get("/api/audit")).json()
+    actions = [e["action"] for e in audit["entries"]]
+    assert "extension.id_mismatch" in actions
+
+
+@pytest.mark.asyncio
+async def test_legacy_unbound_token_still_works_without_id_header(client):
+    """Tokens minted without an ``extension_id`` are grandfathered."""
+    pair = (await client.post("/api/extension/pair", json={"label": "legacy"})).json()
+    resp = await client.get(
+        "/api/extension/cases",
+        headers={"Authorization": f"Bearer {pair['token']}"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_rotate_token_endpoint(client):
+    pair = (await client.post(
+        "/api/extension/pair",
+        json={"label": "rot", "extension_id": "ext-1"},
+    )).json()
+    rot = await client.post(f"/api/extension/pair/{pair['token_id']}/rotate")
+    assert rot.status_code == 200
+    body = rot.json()
+    assert body["token"] != pair["token"]
+    assert body["token_id"] != pair["token_id"]
+    assert body["label"] == "rot"
+    # Old token no longer works.
+    old = await client.get(
+        "/api/extension/cases",
+        headers={
+            "Authorization": f"Bearer {pair['token']}",
+            "X-Extension-Id": "ext-1",
+        },
+    )
+    assert old.status_code == 401
+    # New token does.
+    new = await client.get(
+        "/api/extension/cases",
+        headers={
+            "Authorization": f"Bearer {body['token']}",
+            "X-Extension-Id": "ext-1",
+        },
+    )
+    assert new.status_code == 200
+    audit = (await client.get("/api/audit")).json()
+    assert "extension.token_rotated" in [e["action"] for e in audit["entries"]]
+
+
+@pytest.mark.asyncio
+async def test_rotate_unknown_token_404(client):
+    resp = await client.post("/api/extension/pair/does-not-exist/rotate")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_extension_capture_with_tab_context_persists_envelope(client, capsule_dirs):
+    """The tab_context envelope ships through the live-capture stash and
+    materialises on the per-job tmpdir for the orchestrator to pick up."""
+    from app import jobs as jobs_mod
+
+    pair = (await client.post("/api/extension/pair", json={"label": "ext"})).json()
+    case = (await client.post("/api/cases", json={"name": "Op"})).json()
+
+    resp = await client.post(
+        "/api/extension/capture",
+        json={
+            "case_id": case["id"],
+            "urls": ["https://example.com/article"],
+            "live_captures": [{
+                "url": "https://example.com/article",
+                "tab_context": {
+                    "user_agent": "Mozilla/5.0 (test) Chrome/138",
+                    "viewport": {"width": 414, "height": 896, "device_scale_factor": 3},
+                    "scroll": {"x": 0, "y": 1240},
+                    "timezone": "America/Los_Angeles",
+                    "language": "en-US",
+                    "color_scheme": "dark",
+                    "referrer": "https://news.ycombinator.com/",
+                },
+                "session_state": [{
+                    "origin": "https://example.com",
+                    "local_storage": {"jwt": "redacted"},
+                    "session_storage": {},
+                    "captured_at": "2026-05-06T00:00:00Z",
+                }],
+                "dom_snapshot_meta": {"counts": {"nodes": 42}},
+            }],
+        },
+        headers={"Authorization": f"Bearer {pair['token']}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["jobs"]) == 1
+    job_id = body["jobs"][0]["id"]
+    bundle = jobs_mod._user_browser_bundles.get(job_id)
+    assert bundle is not None
+    assert bundle.tab_context is not None and bundle.tab_context.is_file()
+    assert bundle.session_state is not None and bundle.session_state.is_file()
+    assert bundle.dom_snapshot_meta is not None and bundle.dom_snapshot_meta.is_file()
+    # Tab context content is what we sent.
+    raw = bundle.tab_context.read_text(encoding="utf-8")
+    assert "Mozilla/5.0 (test) Chrome/138" in raw
+    assert "America/Los_Angeles" in raw
+
+
+@pytest.mark.asyncio
+async def test_extension_capture_ephemeral_cookies_not_persisted(client, capsule_dirs):
+    """When ``cookie_persistence='ephemeral'``, cookies must NOT be written
+    to the case directory; they live in a per-job tmpdir keyed off the job
+    id, which is wiped after the job ends."""
+    from app import jobs as jobs_mod
+
+    pair = (await client.post("/api/extension/pair", json={"label": "ext"})).json()
+    case = (await client.post("/api/cases", json={"name": "Op"})).json()
+
+    resp = await client.post(
+        "/api/extension/capture",
+        json={
+            "case_id": case["id"],
+            "urls": ["https://example.com/a"],
+            "cookies": [{
+                "name": "SID", "value": "EPHEMERAL_SECRET",
+                "domain": "example.com", "path": "/",
+                "expirationDate": 9999999999, "secure": True,
+                "httpOnly": False, "hostOnly": False,
+            }],
+            "cookie_persistence": "ephemeral",
+        },
+        headers={"Authorization": f"Bearer {pair['token']}"},
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["jobs"][0]["id"]
+
+    # Persistent case file must NOT exist.
+    case_cookies = capsule_dirs["config"] / "cases" / case["slug"] / "cookies.txt"
+    assert not case_cookies.exists()
+
+    # Bundle attached with an ephemeral cookies path that DOES exist.
+    bundle = jobs_mod._user_browser_bundles.get(job_id)
+    assert bundle is not None
+    assert bundle.ephemeral_cookies is not None
+    assert bundle.ephemeral_cookies.is_file()
+    text = bundle.ephemeral_cookies.read_text(encoding="utf-8")
+    assert "EPHEMERAL_SECRET" in text  # cookie file does have the value
+    # But the audit log doesn't.
+    audit = (await client.get("/api/audit")).json()
+    assert "EPHEMERAL_SECRET" not in json.dumps(audit)
+
+
+@pytest.mark.asyncio
+async def test_extension_capture_persistence_records_in_audit(client, capsule_dirs):
+    pair = (await client.post("/api/extension/pair", json={"label": "ext"})).json()
+    case = (await client.post("/api/cases", json={"name": "Op"})).json()
+    await client.post(
+        "/api/extension/capture",
+        json={
+            "case_id": case["id"],
+            "urls": ["https://example.com/x"],
+            "cookies": [{
+                "name": "k", "value": "v", "domain": "example.com",
+                "path": "/", "expirationDate": 9999999999, "secure": True,
+                "httpOnly": False, "hostOnly": False,
+            }],
+            "cookie_persistence": "ephemeral",
+        },
+        headers={"Authorization": f"Bearer {pair['token']}"},
+    )
+    audit = (await client.get("/api/audit")).json()
+    submitted = [
+        e for e in audit["entries"]
+        if e["action"] == "extension.capture_submitted"
+    ]
+    assert submitted
+    assert submitted[-1]["details"]["cookie_persistence"] == "ephemeral"
