@@ -99,52 +99,6 @@ async def version() -> str:
     return out.decode().strip()
 
 
-async def preflight(url: str, *, executable: str | None = None) -> dict:
-    """Ask yt-dlp how big this download would be — Plan Phase E.
-
-    Runs ``--simulate --print filesize_approx,duration,title`` so the
-    server can surface "this will take ~3h at your current speed" in the
-    Slow profile UI **before** the user commits to the bytes. No download
-    or HTTP fetch beyond what yt-dlp's metadata pass already needs.
-    """
-    binary = executable or _ytdlp_executable()
-    template = "%(filesize_approx)s\t%(duration)s\t%(title)s"
-    proc = await asyncio.create_subprocess_exec(
-        binary,
-        "--simulate",
-        "--no-warnings",
-        "--print", template,
-        url,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, err = await proc.communicate()
-    if proc.returncode != 0:
-        return {
-            "ok": False,
-            "returncode": proc.returncode,
-            "stderr_tail": err.decode(errors="replace")[-500:],
-        }
-    line = out.decode(errors="replace").strip().splitlines()[0] if out.strip() else ""
-    parts = line.split("\t") if line else []
-    size = parts[0] if parts else "NA"
-    duration = parts[1] if len(parts) > 1 else "NA"
-    title = parts[2] if len(parts) > 2 else None
-
-    def _to_int(v: str) -> int | None:
-        try:
-            return int(float(v)) if v and v != "NA" else None
-        except (TypeError, ValueError):
-            return None
-
-    return {
-        "ok": True,
-        "filesize_approx_bytes": _to_int(size),
-        "duration_seconds": _to_int(duration),
-        "title": title,
-    }
-
-
 _THUMBNAIL_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 _SUBTITLE_EXTS = (".vtt", ".srt", ".ass", ".ssa", ".ttml")
 _INFO_SUFFIXES = (".info.json", ".description")

@@ -38,15 +38,20 @@
 
   function safeJSON(s) { try { return JSON.parse(s); } catch (_) { return null; } }
 
-  function relTime(iso) {
+  // Locale-aware relative time. Uses Intl.RelativeTimeFormat so en/ja/ar/es
+  // (and any future locale) get correct words and digits with no extra i18n
+  // keys (CLAUDE.md §13 #6 — no hardcoded user-facing strings).
+  function relTime(iso, locale) {
     if (!iso) return '—';
     const t = new Date(iso).getTime();
     if (isNaN(t)) return iso;
-    const delta = Math.floor((Date.now() - t) / 1000);
-    if (delta < 60) return 'just now';
-    if (delta < 3600) return `${Math.floor(delta / 60)}m`;
-    if (delta < 86400) return `${Math.floor(delta / 3600)}h`;
-    return `${Math.floor(delta / 86400)}d`;
+    const delta = Math.round((t - Date.now()) / 1000); // negative ⇒ past
+    const rtf = new Intl.RelativeTimeFormat(locale || 'en', { numeric: 'auto' });
+    const a = Math.abs(delta);
+    if (a < 60) return rtf.format(delta, 'second');
+    if (a < 3600) return rtf.format(Math.round(delta / 60), 'minute');
+    if (a < 86400) return rtf.format(Math.round(delta / 3600), 'hour');
+    return rtf.format(Math.round(delta / 86400), 'day');
   }
 
   function formatBytes(n) {
@@ -80,6 +85,9 @@
 
   const TERMINAL_STATUSES = new Set(['done', 'failed_permanent', 'cancelled']);
   const FAILED_STATUSES = new Set(['failed_permanent', 'failed']);
+  // After this many consecutive EventSource transport errors with no
+  // intervening status event, surface a Reconnect affordance to the user.
+  const SSE_DISCONNECT_THRESHOLD = 3;
 
   window.capsule = function () {
     return {
@@ -101,6 +109,11 @@
       systemVersion: null,
       activeJobs: [],
       _jobSources: {}, // job_id -> EventSource
+      // Consecutive transport errors per job. Cleared whenever a 'status'
+      // event arrives. After SSE_DISCONNECT_THRESHOLD failures we flip
+      // job.disconnected so the UI surfaces a Reconnect affordance instead
+      // of leaving a phantom "running" card forever (CLAUDE.md §4.7).
+      _streamErrors: {},
 
       // --- Download visualizer ---
       // Rolling buffer of recent combined-speed samples (bytes/sec), pushed
@@ -119,7 +132,22 @@
       simpleUrls: '',
       recentCaptures: [],
       quickCaseId: null,
+      quickCaseSlug: null,
+      quickCaseName: null,
       pathCopied: false,
+      // Inline error banner shown when /api/jobs/batch fails (CLAUDE.md §4.7).
+      // Replaces the old browser alert(): translatable headline + optional
+      // technical-details block users can copy into a bug report.
+      batchError: null,             // { headline, technical } | null
+      // CLAUDE.md §15: surface the dedup outcome ("X new · Y already in
+      // this case") after every preflight run. Auto-clears on next submit.
+      batchSummary: null,           // { new, dup, ib, failed } | null
+      // CLAUDE.md §15 modal — queue of duplicates the user must resolve
+      // before the rest of the batch is submitted.
+      duplicateModal: null,         // { queue:[], index:0, pending:[], lang } | null
+      // Clear-list confirmation dialog (plan §I).
+      clearDialog: null,            // { open, count, case_name, freed_bytes_human } | null
+      clearInProgress: false,
 
       // --- Extension pairing (Settings → Browser extension) ---
       extension: {
@@ -211,9 +239,12 @@
 
         es.addEventListener('status', e => {
           const data = safeJSON(e.data) || {};
+          // Any successful event clears the SSE disconnect counter — the
+          // socket is alive again.
+          this._streamErrors[job_id] = 0;
           // Clear the lingering error banner once a retry kicks off — the
           // backend re-emits 'running' / 'classifying' / etc. on retry.
-          const mut = { status: data.status };
+          const mut = { status: data.status, disconnected: false };
           if (data.status && !FAILED_STATUSES.has(data.status) && data.status !== 'retrying') {
             mut.error = null;
           }
@@ -251,16 +282,35 @@
           es.close(); delete this._jobSources[job_id];
         });
         // EventSource auto-reconnects on transport error; close it explicitly
-        // after a final state to avoid noise.
+        // after a final state to avoid noise. After repeated transport
+        // errors with no successful event in between, surface a Reconnect
+        // affordance so the user isn't staring at a phantom "running" card.
         es.onerror = () => {
-          // Don't tear down a still-running stream just because the browser
-          // briefly lost its socket — only close if the job has reached a
-          // terminal state.
           const j = this.activeJobs.find(x => x.id === job_id);
-          if (j && TERMINAL_STATUSES.has(j.status)) {
+          if (!j) {
             es.close(); delete this._jobSources[job_id];
+            return;
+          }
+          if (TERMINAL_STATUSES.has(j.status)) {
+            es.close(); delete this._jobSources[job_id];
+            return;
+          }
+          this._streamErrors[job_id] = (this._streamErrors[job_id] || 0) + 1;
+          if (this._streamErrors[job_id] >= SSE_DISCONNECT_THRESHOLD && !j.disconnected) {
+            update({ disconnected: true });
           }
         };
+      },
+
+      reconnectJob(job_id) {
+        const src = this._jobSources[job_id];
+        if (src) { src.close(); delete this._jobSources[job_id]; }
+        this._streamErrors[job_id] = 0;
+        const idx = this.activeJobs.findIndex(j => j.id === job_id);
+        if (idx >= 0) {
+          this.activeJobs[idx] = { ...this.activeJobs[idx], disconnected: false };
+        }
+        this.subscribeJob(job_id);
       },
 
       dismissJob(job_id) {
@@ -475,13 +525,113 @@
       },
 
       async _postBatch(urls) {
-        const res = await fetch('/api/jobs/batch', {
-          method: 'POST',
-          headers: {'content-type': 'application/json'},
-          body: JSON.stringify({ urls }),
-        });
+        // Preflight-first flow (CLAUDE.md §15). Step 1: classify and
+        // dedup-probe every URL before running the capture pipeline.
+        this.batchError = null;
+        this.batchSummary = null;
+        let preflight;
+        try {
+          const r = await fetch('/api/jobs/preflight', {
+            method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify({ urls, case_id: this.quickCaseId || undefined }),
+          });
+          if (!r.ok) {
+            this.batchError = {
+              headline: this.t('errors.batch_submit_failed.headline'),
+              technical: `HTTP ${r.status}: preflight failed`,
+            };
+            return;
+          }
+          preflight = await r.json();
+        } catch (err) {
+          this.batchError = {
+            headline: this.t('errors.batch_submit_failed.headline'),
+            technical: String(err),
+          };
+          return;
+        }
+        this.quickCaseId = preflight.case_id;
+        this.batchSummary = {
+          new: preflight.summary.new,
+          dup: preflight.summary.duplicates_blocked,
+          ib: preflight.summary.within_batch_duplicates,
+          failed: preflight.summary.classification_failed,
+        };
+
+        // Step 2: split results into "submit now" (new) and "ask the
+        // user" (duplicate). Within-batch and classification_failed
+        // entries surface in the summary chip but don't queue a modal —
+        // they're either already-collapsed or unsubmittable.
+        const items = [];
+        const duplicateQueue = [];
+        for (const r of (preflight.results || [])) {
+          if (r.status === 'new') {
+            items.push({ url: r.url_submitted });
+          } else if (r.status === 'duplicate') {
+            duplicateQueue.push(r);
+          }
+        }
+
+        if (duplicateQueue.length > 0) {
+          // Open the §15 modal; the user resolves each duplicate; on the
+          // last decision we call _submitItems with whatever they kept.
+          this.duplicateModal = {
+            queue: duplicateQueue,
+            index: 0,
+            pending: items,
+            lang: this.locale,
+            current: duplicateQueue[0],
+          };
+          await this.$nextTick();
+          this.refreshIcons();
+          return;
+        }
+
+        await this._submitItems(items);
+      },
+
+      // Submit the resolved item list to /api/jobs/batch. ``items`` is
+      // ``[{url, force_recapture?, original_download_id?}]`` per the §15
+      // shape. Caller has already shown the user the summary chip.
+      async _submitItems(items) {
+        if (!items.length) {
+          await this.$nextTick();
+          this.refreshIcons();
+          return;
+        }
+        let res;
+        try {
+          res = await fetch('/api/jobs/batch', {
+            method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify({
+              items,
+              case_id: this.quickCaseId || undefined,
+              lang: this.locale,
+            }),
+          });
+        } catch (err) {
+          this.batchError = {
+            headline: this.t('errors.batch_submit_failed.headline'),
+            technical: String(err),
+          };
+          return;
+        }
         if (!res.ok) {
-          alert(this.t('common.error') + ': ' + res.statusText);
+          let detail = res.statusText || '';
+          try {
+            const errBody = await res.json();
+            if (errBody && errBody.detail !== undefined) {
+              detail = typeof errBody.detail === 'string'
+                ? errBody.detail
+                : JSON.stringify(errBody.detail);
+            }
+          } catch (_) { /* not JSON; keep statusText */ }
+          this.batchError = {
+            headline: this.t('errors.batch_submit_failed.headline'),
+            technical: `HTTP ${res.status}: ${detail}`,
+          };
           return;
         }
         const body = await res.json();
@@ -492,6 +642,178 @@
         }
         await this.$nextTick();
         this.refreshIcons();
+      },
+
+      batchSummaryText() {
+        if (!this.batchSummary) return '';
+        const parts = [
+          this.t('duplicate.batch.summary.new', {count: this.batchSummary.new}),
+        ];
+        if (this.batchSummary.dup > 0) {
+          parts.push(this.t('duplicate.batch.summary.dup', {count: this.batchSummary.dup}));
+        }
+        if (this.batchSummary.ib > 0) {
+          parts.push(this.t('duplicate.batch.summary.ib', {count: this.batchSummary.ib}));
+        }
+        return parts.join(' · ');
+      },
+
+      // ---- §15 duplicate-handling modal --------------------------------
+
+      // Apply the user's choice for the current duplicate, then advance
+      // the queue or — once all duplicates are resolved — submit the
+      // accumulated items list.
+      async duplicateOutcome(choice) {
+        if (!this.duplicateModal) return;
+        const m = this.duplicateModal;
+        const dup = m.current;
+        const existingId = dup.existing && dup.existing.id;
+        const caseId = this.quickCaseId;
+        if (choice === 'opened_existing') {
+          // Audit the choice, then ask the backend to reveal the folder.
+          await this._auditDuplicateOutcome(caseId, existingId, 'opened_existing');
+          if (dup.existing && dup.existing.item_dir) {
+            try {
+              await fetch('/api/system/reveal', {
+                method: 'POST',
+                headers: {'content-type': 'application/json'},
+                body: JSON.stringify({ relative_path: dup.existing.item_dir }),
+              });
+            } catch (_) { /* best-effort */ }
+          }
+        } else if (choice === 'recapture') {
+          // Append a forced-re-capture item to the pending list. The
+          // backend will suffix the url_hash with __c{N+1}.
+          m.pending.push({
+            url: dup.url_submitted,
+            force_recapture: true,
+            original_download_id: existingId,
+          });
+        } else if (choice === 'cancelled') {
+          await this._auditDuplicateOutcome(caseId, existingId, 'cancelled');
+        }
+
+        // Advance.
+        const nextIdx = m.index + 1;
+        if (nextIdx < m.queue.length) {
+          this.duplicateModal = {
+            ...m,
+            index: nextIdx,
+            current: m.queue[nextIdx],
+          };
+          await this.$nextTick();
+          this.refreshIcons();
+          return;
+        }
+        // Done — submit any accumulated items (new + forced re-captures).
+        const pending = m.pending;
+        this.duplicateModal = null;
+        await this._submitItems(pending);
+      },
+
+      async _auditDuplicateOutcome(caseId, existingId, outcome) {
+        if (!caseId || !existingId) return;
+        try {
+          await fetch('/api/jobs/duplicate-outcome', {
+            method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify({
+              case_id: caseId, existing_id: existingId, outcome,
+            }),
+          });
+        } catch (_) { /* best-effort audit; UI must keep moving */ }
+      },
+
+      dismissDuplicate() {
+        // Esc treated as Cancel for the *current* duplicate.
+        if (this.duplicateModal) this.duplicateOutcome('cancelled');
+      },
+
+      async copyBatchErrorTechnical() {
+        const t = this.batchError && this.batchError.technical;
+        if (!t) return;
+        try { await navigator.clipboard.writeText(t); } catch (_) { /* ignore */ }
+      },
+
+      // --- Per-job error card helpers (CLAUDE.md §4.7) ----------------
+      // The orchestrator emits an enriched ``error`` payload on permanent
+      // failure: { i18n_key, phase, exc_type, detail, cause_i18n_key,
+      // suggested_action_i18n_key, [stderr_tail, returncode, severity] }.
+      // These helpers translate that into the four UI affordances:
+      // headline / cause / action / technical-details.
+
+      // Phase string the orchestrator was in when the failure happened.
+      // Falls back to 'unknown' so the i18n key always resolves.
+      jobErrorPhase(j) {
+        const known = new Set(['classifying', 'snapshotting', 'downloading', 'finalizing']);
+        const p = j && j.error && j.error.phase;
+        return known.has(p) ? p : 'unknown';
+      },
+
+      // Phase-aware headline. For internal failures (errors.unknown +
+      // a captured phase), prefer "Capture failed during {phase}." over
+      // the generic "Something went wrong." so the investigator sees
+      // *which step* broke. For backend-classified errors (yt-dlp etc.)
+      // the orchestrator already supplies a domain-specific i18n_key —
+      // keep that.
+      jobErrorHeadline(j) {
+        if (!j || !j.error) return this.t('errors.unknown');
+        const key = j.error.i18n_key || 'errors.unknown';
+        if (key === 'errors.unknown' && j.error.phase) {
+          const phaseLabel = this.t('errors.phase.' + this.jobErrorPhase(j));
+          return this.t('errors.unknown_during', { phase: phaseLabel });
+        }
+        return this.t(key);
+      },
+
+      // Suggested-action button click. Routes by action key:
+      //   - rebuild_image  → open the README's troubleshooting section
+      //   - try_again      → re-submit the job's URL
+      //   - check_mounts   → open the README's troubleshooting section
+      //   - check_update   → open Settings (handled by route hash)
+      //   - add_cookies    → open Settings (handled by route hash)
+      //   - default        → re-submit the job's URL
+      jobErrorAction(j) {
+        const action = j && j.error && j.error.suggested_action_i18n_key;
+        const url = j && j.url;
+        if (action === 'errors.action.rebuild_image' || action === 'errors.action.check_mounts') {
+          // Open the README troubleshooting anchor in a new tab. README is
+          // bundled in the repo; the dist launcher copies it next to the
+          // image, but the GitHub link is a stable fallback.
+          window.open('https://github.com/bhngyn/ytdlp/blob/main/README.md#troubleshooting', '_blank', 'noopener');
+          return;
+        }
+        if (action === 'errors.action.check_update' || action === 'errors.action.add_cookies') {
+          this.route = 'settings';
+          window.location.hash = 'settings';
+          return;
+        }
+        // Default: try the same URL again. Dismiss the failed card first
+        // so the new submission's card replaces it cleanly.
+        if (!url) return;
+        this.dismissJob(j.id);
+        this._postBatch([url]);
+      },
+
+      // Multi-line technical detail for the <details> expander. Joins the
+      // most useful fields the backend provides — exc_type+detail for
+      // internal failures, stderr_tail for yt-dlp failures. Order matters:
+      // exc_type first so investigators paste the most actionable line.
+      jobErrorTechnical(j) {
+        if (!j || !j.error) return '';
+        const parts = [];
+        if (j.error.detail) parts.push(j.error.detail);
+        else if (j.error.exc_type) parts.push(j.error.exc_type);
+        if (j.error.returncode != null) parts.push(`exit code: ${j.error.returncode}`);
+        if (j.error.stderr_tail) parts.push(j.error.stderr_tail);
+        return parts.join('\n\n');
+      },
+
+      async copyJobErrorTechnical(job_id) {
+        const j = this.activeJobs.find(x => x.id === job_id);
+        const text = this.jobErrorTechnical(j);
+        if (!text) return;
+        try { await navigator.clipboard.writeText(text); } catch (_) { /* ignore */ }
       },
 
       async refreshRecentCaptures() {
@@ -506,7 +828,11 @@
             if (res.ok) {
               const body = await res.json();
               const c = (body.cases || []).find(x => x.slug === defaultSlug);
-              if (c) this.quickCaseId = c.id;
+              if (c) {
+                this.quickCaseId = c.id;
+                this.quickCaseSlug = c.slug;
+                this.quickCaseName = c.name;
+              }
             }
           } catch (_) { /* ignore — empty grid will render */ }
         }
@@ -520,6 +846,113 @@
         } catch (_) { /* ignore */ }
         await this.$nextTick();
         this.refreshIcons();
+      },
+
+      // ---- Recent-captures list helpers (CLAUDE.md §15 plan §H) --------
+
+      // Extract the host portion of the source URL for the secondary
+      // line of each list row. Falls back to the raw URL if URL parsing
+      // fails (rare — backend stores valid URLs).
+      recentRowHost(item) {
+        const raw = item.source_url || item.final_url || '';
+        try { return new URL(raw).host; }
+        catch (_) { return raw; }
+      },
+
+      async revealRecentItem(item) {
+        if (!item || !item.item_dir) return;
+        try {
+          const res = await fetch('/api/system/reveal', {
+            method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify({ relative_path: item.item_dir }),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (body && body.ok) return;
+        } catch (_) { /* fall through */ }
+        // Best-effort fallback: copy the host-side path so the user can
+        // paste it into Finder/Explorer.
+        const paths = this.systemVersion?.paths || {};
+        const root = paths.host_default_case_dir || paths.default_case_dir || '';
+        if (root) await this.copyPath(root + '/' + item.item_dir.split('/').slice(1).join('/'));
+      },
+
+      // ---- Clear-list flow (plan §I) ----------------------------------
+
+      // Build a human-readable byte estimate for the dialog. Sums
+      // ``file_size_bytes`` across recent captures (a lower bound — the
+      // sidecars/PDFs aren't included, but the order of magnitude is
+      // right and the backend reports the exact freed_bytes after).
+      _formatBytes(n) {
+        if (!n || n < 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0; let v = n;
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+        return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+      },
+
+      openClearDialog() {
+        if (!this.recentCaptures.length) return;
+        const total = this.recentCaptures.reduce(
+          (s, it) => s + (Number(it.file_size_bytes) || 0), 0,
+        );
+        this.clearDialog = {
+          open: true,
+          count: this.recentCaptures.length,
+          case_name: this.quickCaseName || this.quickCaseSlug || '',
+          freed_bytes_human: this._formatBytes(total),
+        };
+      },
+
+      closeClearDialog() {
+        if (this.clearInProgress) return;
+        this.clearDialog = null;
+      },
+
+      async confirmClear() {
+        if (!this.clearDialog || !this.quickCaseId || this.clearInProgress) return;
+        this.clearInProgress = true;
+        try {
+          const res = await fetch(`/api/cases/${this.quickCaseId}/clear`, {
+            method: 'POST',
+            headers: {'content-type': 'application/json'},
+          });
+          if (!res.ok) {
+            this.batchError = {
+              headline: this.t('recent.clear.error'),
+              technical: `HTTP ${res.status}`,
+            };
+            return;
+          }
+          const body = await res.json();
+          this.recentCaptures = [];
+          this.showToast(
+            this.t('recent.clear.snackbar', {
+              count: body.deleted_count,
+              freed_bytes: this._formatBytes(body.freed_bytes),
+            }),
+          );
+        } catch (err) {
+          this.batchError = {
+            headline: this.t('recent.clear.error'),
+            technical: String(err),
+          };
+        } finally {
+          this.clearInProgress = false;
+          this.clearDialog = null;
+          await this.$nextTick();
+          this.refreshIcons();
+        }
+      },
+
+      async exportThenClear() {
+        if (!this.quickCaseId) return;
+        // Trigger the case-export download in a separate tab so the
+        // dialog stays open. Recipient gets a signed bundle they can
+        // verify offline before the user blows away the originals.
+        const url = `/api/cases/${this.quickCaseId}/export?lang=${encodeURIComponent(this.locale)}`;
+        try { window.open(url, '_blank'); }
+        catch (_) { /* popup blocked — leave the dialog open */ }
       },
 
       async copyPath(p) {
@@ -688,7 +1121,9 @@
         }
       },
 
-      relTime,
+      relTime(iso) {
+        return relTime(iso, this.locale);
+      },
 
       renderAll() {
         document.querySelectorAll('[data-t]').forEach(el => {

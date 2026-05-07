@@ -29,7 +29,7 @@ docker run --rm -p 8080:8080 \
 
 Then open **http://localhost:8080**.
 
-The container bundles a full Chromium engine (Playwright) and yt-dlp; expect a ~2 GB image.
+The container bundles a headless Chromium engine (Playwright) and yt-dlp; the image is about 1.7 GB on disk after first launch, downloaded as a ~430 MB gzipped bundle in the dist archive (see [scripts/build-dist.sh](scripts/build-dist.sh)).
 
 For local development without Docker:
 

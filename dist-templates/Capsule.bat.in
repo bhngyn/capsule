@@ -102,7 +102,12 @@ if "!NEEDS_LOAD!"=="1" (
   rem Remove any existing image with this tag (possibly stale or wrong arch).
   docker rmi -f %IMAGE_TAG% >nul 2>&1
   echo Loading Capsule image ^(this takes about a minute on first launch^)...
-  docker load -i "%IMAGE_TAR%"
+  rem The image tar is gzip-compressed in the bundle (build-dist.sh) to keep
+  rem the download small. Windows 10+ ships tar.exe (libarchive) which can
+  rem stream the inner tar to stdout; pipe it into docker load so we never
+  rem materialize the uncompressed tar on disk.
+  rem Use cmd.exe's pipe — works in batch since both ends are binary-safe.
+  tar -xOzf "%IMAGE_TAR%" | docker load
   if errorlevel 1 (
     echo Could not load the Capsule image from %IMAGE_TAR%.
     echo The file may be corrupted; download the distribution package again.

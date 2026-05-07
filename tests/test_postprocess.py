@@ -189,6 +189,140 @@ def test_duplicate_raises(env):
     assert exc_info.value.existing_id > 0
 
 
+def test_force_recapture_creates_sibling_with_c2_url_hash(env):
+    """CLAUDE.md §15: ``force_recapture=True`` produces a sibling row.
+
+    The DB ``url_hash`` of the sibling is the original ``base_hash`` plus
+    a ``__c{N+1}`` suffix; ``meta.json.force_recapture_index`` records
+    the integer index. The on-disk per-item folder uses the matching
+    ``__c{N+1}`` stem.
+    """
+    media, info, desc = _stage_media(env)
+    pp = env["pp"]
+
+    def _input(force: bool, *, original_id: int | None = None):
+        m, i, d = _stage_media(env, name=f"abc-{id(force)}-{id(original_id)}.mp4")
+        return pp.CaptureInput(
+            case=env["case"],
+            job_uuid=pp.new_job_uuid(),
+            url_submitted="https://www.youtube.com/watch?v=abc",
+            url_final="https://www.youtube.com/watch?v=abc",
+            redirect_chain=["https://www.youtube.com/watch?v=abc"],
+            capture_date=pp.utc_now(),
+            media_files=[m],
+            info_json=json.loads(i.read_text()),
+            extra_sidecars=[i, d],
+            ytdlp_version="2026.03.17",
+            force_recapture=force,
+        )
+
+    # Original capture (from the staged fixture, force=False).
+    first = pp.finalize(env["conn"], pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://www.youtube.com/watch?v=abc",
+        url_final="https://www.youtube.com/watch?v=abc",
+        redirect_chain=["https://www.youtube.com/watch?v=abc"],
+        capture_date=pp.utc_now(),
+        media_files=[media],
+        info_json=json.loads(info.read_text()),
+        extra_sidecars=[info, desc],
+        ytdlp_version="2026.03.17",
+    ))
+
+    second = pp.finalize(env["conn"], _input(force=True))
+    third = pp.finalize(env["conn"], _input(force=True))
+
+    rows = list(env["conn"].execute(
+        "SELECT id, url_hash, item_dir FROM downloads WHERE case_id = ? "
+        "ORDER BY id", (env["case"].id,),
+    ))
+    hashes = [r["url_hash"] for r in rows]
+    assert len(hashes) == 3
+    base = hashes[0]
+    assert "__c" not in base, base
+    assert hashes[1] == base + "__c2"
+    assert hashes[2] == base + "__c3"
+
+    # meta.json.force_recapture_index reflects the suffix.
+    second_meta = json.loads(
+        (env["downloads"] / second.relative_item_dir / f"{second.stem}.meta.json").read_text()
+    )
+    third_meta = json.loads(
+        (env["downloads"] / third.relative_item_dir / f"{third.stem}.meta.json").read_text()
+    )
+    assert second_meta["force_recapture_index"] == 2
+    assert third_meta["force_recapture_index"] == 3
+    # And the per-item folders end with the matching suffix.
+    assert second.stem.endswith("__c2")
+    assert third.stem.endswith("__c3")
+
+
+def test_force_recapture_with_no_existing_row_is_a_normal_capture(env):
+    """Setting force_recapture on a URL that has no prior row is harmless.
+
+    The bare base_hash is still used (no spurious ``__c2`` suffix).
+    """
+    media, info, desc = _stage_media(env)
+    pp = env["pp"]
+    result = pp.finalize(env["conn"], pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://www.youtube.com/watch?v=abc",
+        url_final="https://www.youtube.com/watch?v=abc",
+        redirect_chain=["https://www.youtube.com/watch?v=abc"],
+        capture_date=pp.utc_now(),
+        media_files=[media],
+        info_json=json.loads(info.read_text()),
+        extra_sidecars=[info, desc],
+        ytdlp_version="2026.03.17",
+        force_recapture=True,
+    ))
+    row = env["conn"].execute(
+        "SELECT url_hash FROM downloads WHERE id = ?", (result.download_id,),
+    ).fetchone()
+    # No siblings → assigned __c2 (the original would have been __c1 implicitly)
+    # so the next free index is 2. This is by design — see CLAUDE.md §15.
+    assert row["url_hash"].endswith("__c2")
+
+
+def test_canonical_form_collapses_tracking_param_variants(env):
+    """Two URLs differing only in ``utm_*`` produce the same url_hash.
+
+    Without canonicalization the second capture would slip past the
+    UNIQUE constraint and create a duplicate row.
+    """
+    media, info, desc = _stage_media(env)
+    pp = env["pp"]
+    pp.finalize(env["conn"], pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://www.youtube.com/watch?v=abc&utm_source=email",
+        url_final="https://www.youtube.com/watch?v=abc&utm_source=email",
+        redirect_chain=["https://www.youtube.com/watch?v=abc&utm_source=email"],
+        capture_date=pp.utc_now(),
+        media_files=[media],
+        info_json=json.loads(info.read_text()),
+        extra_sidecars=[info, desc],
+        ytdlp_version="2026.03.17",
+    ))
+
+    media2, info2, desc2 = _stage_media(env, name="abc-tweet.mp4")
+    with pytest.raises(pp.DuplicateCapture):
+        pp.finalize(env["conn"], pp.CaptureInput(
+            case=env["case"],
+            job_uuid=pp.new_job_uuid(),
+            url_submitted="https://www.youtube.com/watch?v=abc&utm_source=tweet",
+            url_final="https://www.youtube.com/watch?v=abc&utm_source=tweet",
+            redirect_chain=["https://www.youtube.com/watch?v=abc&utm_source=tweet"],
+            capture_date=pp.utc_now(),
+            media_files=[media2],
+            info_json=json.loads(info2.read_text()),
+            extra_sidecars=[info2, desc2],
+            ytdlp_version="2026.03.17",
+        ))
+
+
 def test_collision_appends_suffix(env):
     """Pre-existing file with the canonical name forces a __c2 stem."""
     media, info, desc = _stage_media(env)
@@ -482,9 +616,12 @@ def test_manifest_pdf_hash_present_in_meta_and_checksums(env):
     assert meta["checksums"]["manifest_pdf"]["sha256"]
     cs_text = (result.meta_json_path.parent / f"{result.stem}.checksums.txt").read_text()
     assert ".manifest.pdf" in cs_text
-    # Schema v4: per-item report PDF joins the manifest PDF in the
-    # artifact set; both bound transitively by meta.json.sig.
-    assert meta["schema_version"] == 4
+    # Schema v5: adds url_canonical + force_recapture_index for the §15
+    # duplicate-handling flow. Manifest + report PDFs continue to ride
+    # the same artifact-binding transitive signature path.
+    assert meta["schema_version"] == 5
+    assert meta["url_canonical"]
+    assert meta["force_recapture_index"] is None
 
 
 def test_capture_input_lang_is_recorded_in_meta(env):

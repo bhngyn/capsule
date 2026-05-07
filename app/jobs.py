@@ -105,6 +105,24 @@ def _utcnow() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
 
+def _classify_internal_exception(exc: BaseException) -> tuple[str, str]:
+    """Map a Python exception raised inside the orchestrator to a pair of
+    i18n keys: ``(cause_key, suggested_action_key)``.
+
+    Counterpart to ``app.errors.classify`` (which speaks yt-dlp stderr) for
+    failures that originate inside our own code — most commonly when a hard
+    runtime dependency (WeasyPrint, cryptography) is missing because the
+    container was built from a stale Dockerfile.
+    """
+    if isinstance(exc, ModuleNotFoundError):
+        return ("errors.cause.dep_missing", "errors.action.rebuild_image")
+    if isinstance(exc, MemoryError):
+        return ("errors.cause.out_of_memory", "errors.action.try_again")
+    if isinstance(exc, (PermissionError, FileNotFoundError)):
+        return ("errors.cause.fs_permission", "errors.action.check_mounts")
+    return ("errors.cause.unknown", "errors.action.try_again")
+
+
 # --- Extension-supplied "user-browser" capture bundles ----------------------
 #
 # The Capsule extension can hand the orchestrator a set of supplementary
@@ -225,6 +243,15 @@ class Job:
     # right labels + direction + font stack. ``None`` ⇒ resolve to
     # ``config.DEFAULT_LANG`` at run time.
     lang: str | None = None
+    # CLAUDE.md §15: True iff the user clicked "Re-capture as new entry"
+    # in the duplicate-handling modal. ``finalize`` will then suffix the
+    # url_hash with ``__c{N+1}``. Not persisted across restarts — if the
+    # app crashes mid-recapture the user simply re-triggers the modal.
+    force_recapture: bool = False
+    # CLAUDE.md §15: when force_recapture is set, this is the id of the
+    # original ``downloads`` row the user is re-capturing. Used to bind
+    # the audit-log entries together so a verifier can trace the chain.
+    original_download_id: int | None = None
     created_at: str = field(default_factory=_utcnow)
     updated_at: str = field(default_factory=_utcnow)
 
@@ -480,6 +507,8 @@ class JobOrchestrator:
         task_kind: str = TASK_FULL,
         capture_group_id: str | None = None,
         lang: str | None = None,
+        force_recapture: bool = False,
+        original_download_id: int | None = None,
     ) -> Job:
         if task_kind not in TASK_KINDS:
             raise ValueError(f"unknown task_kind {task_kind!r}")
@@ -487,6 +516,9 @@ class JobOrchestrator:
         # the way to ``CaptureInput`` so the per-item manifest PDF
         # renders in the right script. Resolved lazily in ``_run_inner``
         # if the caller didn't supply one.
+        # ``force_recapture`` is set when the user picked "Re-capture as
+        # new entry" in the §15 modal — finalize() then suffixes the
+        # url_hash with ``__c{N+1}`` instead of raising DuplicateCapture.
         job = Job(
             id=str(uuid.uuid4()),
             case_id=case_id,
@@ -494,6 +526,8 @@ class JobOrchestrator:
             task_kind=task_kind,
             capture_group_id=capture_group_id,
             lang=lang,
+            force_recapture=force_recapture,
+            original_download_id=original_download_id,
         )
         # Plan §U6 / Phase D: every full submission gets a fresh capture
         # group; partial-task submissions (archive / media re-fetch) must
@@ -889,12 +923,40 @@ class JobOrchestrator:
                 try:
                     await self._run_inner(job)
                 except Exception as exc:  # pragma: no cover — defensive
+                    # Don't swallow silently. The investigator gets a §4.7-shaped
+                    # error card (phase + cause + action + technical detail), the
+                    # operator gets a full traceback in docker logs, and the
+                    # audit log records the failure for evidence-export honesty.
+                    _log.exception(
+                        "job %s failed unexpectedly during phase %r",
+                        job.id, job.phase,
+                    )
+                    cause_key, action_key = _classify_internal_exception(exc)
                     conn = db_mod.connect(self._db_path)
                     try:
-                        job.error = {"i18n_key": "errors.unknown", "detail": str(exc)}
+                        job.error = {
+                            "i18n_key": "errors.unknown",
+                            "phase": job.phase,
+                            "exc_type": type(exc).__name__,
+                            "detail": f"{type(exc).__name__}: {exc}",
+                            "cause_i18n_key": cause_key,
+                            "suggested_action_i18n_key": action_key,
+                        }
                         job.last_error_kind = "errors.unknown"
                         job.last_error_severity = "internal"
                         self._set_status(conn, job, STATUS_FAILED_PERMANENT)
+                        audit.append(
+                            conn,
+                            "job.unexpected_failure",
+                            case_id=job.case_id,
+                            actor="system",
+                            details={
+                                "job_id": job.id,
+                                "phase": job.phase,
+                                "exc_type": type(exc).__name__,
+                                "message": str(exc)[:500],
+                            },
+                        )
                     finally:
                         conn.close()
                     self._emit(job, "error", job.error)
@@ -1290,6 +1352,7 @@ class JobOrchestrator:
                 cookies_snapshot_sha256=cookies_snapshot_sha256,
                 ephemeral_cookies_used=ephemeral_cookies_path is not None,
                 lang=job.lang or config.DEFAULT_LANG,
+                force_recapture=job.force_recapture,
             )
 
             # Whether or not postprocess succeeds, the ephemeral cookie
@@ -1341,6 +1404,24 @@ class JobOrchestrator:
                 "relative_item_dir": result.relative_item_dir,
                 "capture_group_id": job.capture_group_id,
             }
+            # CLAUDE.md §15: when the user clicked "Re-capture as new
+            # entry", anchor the new row to the original via the audit
+            # log so the chain-of-custody is traceable. We log on success
+            # only — a failed re-capture leaves no row to point to.
+            if job.force_recapture:
+                audit.append(
+                    conn,
+                    "duplicate.recaptured",
+                    case_id=case.id,
+                    download_id=result.download_id,
+                    actor="user",
+                    details={
+                        "job_id": job.id,
+                        "original_id": job.original_download_id,
+                        "new_id": result.download_id,
+                        "stem": result.stem,
+                    },
+                )
             # Plan §U6 / Phase D: anchor the capture group to the library row
             # so future archive/media re-fetches know which item to extend.
             if job.capture_group_id:

@@ -56,20 +56,24 @@ This release assumes a **safe operating environment**: the investigator's device
                             │
                             ▼
 ┌──────────────────────────────────────────────────────────────┐
-│  Docker container (single image, ~2GB; investigator-grade)   │
+│  Docker container (single image, ~1.7GB; investigator-grade) │
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │  FastAPI backend (Python 3.12)                         │  │
-│  │  ─ /api/cases       CRUD                               │  │
-│  │  ─ /api/jobs        POST/GET — submit captures         │  │
+│  │  ─ /api/cases             POST/GET — list + create     │  │
+│  │  ─ /api/jobs/batch        POST — submit captures       │  │
 │  │  ─ /api/jobs/{id}/events  SSE — live progress          │  │
-│  │  ─ /api/library     GET — browse captures              │  │
-│  │  ─ /api/library/verify   POST — re-hash + sig check    │  │
-│  │  ─ /api/cases/{id}/export  GET — signed zip + PDF      │  │
-│  │  ─ /api/audit       GET — append-only audit log view   │  │
-│  │  ─ /api/cookies     POST — upload cookies.txt per case │  │
+│  │  ─ /api/library           GET — browse captures        │  │
+│  │  ─ /api/library/verify    POST — re-hash + sig check   │  │
+│  │  ─ /api/cases/{id}/export POST — signed zip + PDF      │  │
+│  │  ─ /api/audit             GET — append-only audit log  │  │
+│  │  ─ /api/cookies           POST — upload cookies.txt    │  │
+│  │  ─ /api/cookies/json      POST — extension cookies     │  │
 │  │  ─ /api/system/version    GET                          │  │
+│  │  ─ /api/system/profile    GET/PUT — speed profile      │  │
+│  │  ─ /api/system/reveal     POST — open folder           │  │
 │  │  ─ /api/system/update     POST — only when user clicks │  │
 │  │  ─ /api/i18n/{lang}       GET                          │  │
+│  │  ─ /api/extension/*       pair / capture / cases       │  │
 │  └────────────────────────────────────────────────────────┘  │
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │  Capture pipeline (per job, sequential, every URL):    │  │
@@ -106,7 +110,7 @@ This release assumes a **safe operating environment**: the investigator's device
 - **Playwright (Chromium)** — stable headless capture for MHTML and full-page screenshots; takes the same cookies as yt-dlp for authenticated sessions.
 - **browsertrix-crawler** — produces forensic-grade WARC files with the same Chromium engine; scoped to `page+resources` so we capture the source page and every sub-resource it loaded, but not the entire site.
 - **Ed25519 signing** — small keys, fast, widely supported. `cryptography` library provides everything.
-- **Single container** — easier for users than docker-compose with multiple services. We accept the ~2GB image size as the cost of bundling Chromium + browsertrix.
+- **Single container** — easier for users than docker-compose with multiple services. The image lands at ~1.7 GB on disk (~430 MB shipped, gzipped); we use `chromium --only-shell` so we ship the headless-shell variant only and skip the full headed Chromium.
 
 ---
 
@@ -121,7 +125,7 @@ This is the most common source of bugs in Dockerized GUI tools. Follow these rul
 - **Line endings:** sidecar `.txt` files use `\n` (LF). Document this in the README so Windows users opening in Notepad know to use VS Code or Notepad++.
 - **Default port 8080.** If unavailable, the docker run command should let users remap (`-p 9090:8080`).
 - **Time zone:** the database, audit log, sidecars, and evidence-export manifests use **UTC ISO 8601** strings exclusively. The UI displays the user's local time zone via `Intl.DateTimeFormat`. Never store local-time strings.
-- **Container size warning:** the image is ~2GB. Document this prominently in the README so users on metered connections aren't surprised.
+- **Container size warning:** the image is ~1.7 GB on disk; the dist bundle that ships to users is ~430 MB per architecture (gzipped tar inside the zip). Document this in the README so users on metered connections aren't surprised.
 - **Provide both `docker run` (one-liner) and `docker-compose.yml`** in the README. Most users will copy-paste the one-liner.
 
 ---
@@ -159,7 +163,7 @@ Rules:
 
 The v1 UI has two surfaces: the **Downloader** (home) and **Settings**. Backend resources (cases, library, item detail, audit log) are not exposed as UI; investigators reach the captured files via the host filesystem and the API. Onboarding has been omitted — the app opens directly on the downloader.
 
-- **Downloader (home).** Hero illustration + URL form (single-link or multi-line list, segmented pill toggle) + slow/fast speed pill + active-jobs panel (4-icon capture-phase progress strip per job, with retry/failure banners) + "where the files live" panel (host-side path with copy + open-folder buttons) + recent-captures grid (thumbnail-dominant, platform icon overlay, relative-time caption).
+- **Downloader (home).** Hero illustration + URL form (single-link or multi-line list, segmented pill toggle) + slow/fast speed pill + active-jobs panel (4-icon capture-phase progress strip per job, with retry/failure banners) + "where the files live" panel (host-side path with copy + open-folder buttons) + recent-captures **list** (one row per capture: platform icon, title, source-URL host on a secondary line, capture-kind chip, integrity badge, relative time, hover-revealed open-folder action; "Clear list" affordance gated by a destructive-action confirmation dialog per §15). The home view's recent strip is intentionally denser than the Library's thumbnail grid (§4.1 #5) — different surfaces, different goals: the home strip is an audit log of recent activity, the Library (no v1 UI yet) is for browsing.
 - **Settings.** Language picker, signing-key fingerprint card, browser-extension pairing (collapsible install instructions + token issuance + paired-list management), yt-dlp updater. Reachable via the settings cog in the header.
 
 ### 4.4 Update prompt UX
@@ -254,7 +258,7 @@ Per-item folder keeps the case folder browsable: each capture is a single, self-
 {platform}__{page_title}__{capture_date}__{url_hash}
 ```
 
-Where `url_hash` is the first 12 hex chars of `sha256(url_final)` — short enough to be readable, long enough to avoid collisions in a single case.
+Where `url_hash` is the first 12 hex chars of `sha256(canonical(url_final))` — short enough to be readable, long enough to avoid collisions in a single case. The canonical form (see [`app/url_canonical.py`](app/url_canonical.py)) lowercases scheme/host, drops the fragment, strips a curated tracking-param list (`utm_*`, `fbclid`, `gclid`, `igshid`, `mc_eid`, `mc_cid`, `_ga`, `_gl`, `yclid`, `msclkid`, `ref`, `ref_src`, `ref_url`, `share_id`, `si`, `feature`, `mkt_tok`, `_hsenc`, `_hsmi`, `spm`, `scm`), normalizes the trailing slash, and sorts remaining query keys — so two paste-variants of the same URL collapse to the same dedup key. The originals (`url_submitted`, `url_final`) are always preserved verbatim in `meta.json`. When the user picks "Re-capture as new entry" in the §15 modal, the new sibling row's `url_hash` becomes `{base}__c{N+1}` (counter starts at 2) and `meta.json.force_recapture_index` records the integer index for forensic clarity.
 
 ### Sanitization rules
 
@@ -263,7 +267,7 @@ Where `url_hash` is the first 12 hex chars of `sha256(url_final)` — short enou
 - **`title`** / **`page_title`** — sanitized, truncated to 80 chars. Preserve original capitalization.
 - **`upload_date`** / **`capture_date`** — `YYYY-MM-DD`. Use yt-dlp's `upload_date` if present; otherwise download/capture date prefixed with `dl-` (e.g. `dl-2026-05-06`).
 - **`video_id`** — yt-dlp's `id` field, raw. The unique anchor for media — never lose it.
-- **`url_hash`** — first 12 hex chars of `sha256(url_final)`. The unique anchor for page-only captures.
+- **`url_hash`** — first 12 hex chars of `sha256(canonical(url_final))` (see `app/url_canonical.py` for the canonicalization rules). The unique anchor for page-only captures and the dedup key against the `UNIQUE(case_id, capture_kind, url_hash)` constraint.
 - **Separator is `__` (double underscore).** Visually distinct, never appears naturally in titles after sanitization, survives copy-paste.
 - **Sanitization function** strips/replaces in this order: (1) Unicode NFKC normalize, (2) replace path-illegal chars with `-`, (3) collapse whitespace to single space, (4) strip leading/trailing whitespace and dots, (5) reject reserved Windows names, (6) truncate. Implement in `app/sanitize.py` with full test coverage including Arabic, Hebrew, and CJK fixtures.
 - **Collisions:** if the canonical filename or stem already exists, append `__c2`, `__c3`, etc.
@@ -367,6 +371,8 @@ CREATE TABLE audit_log (
 ```
 
 **Canonical encoding** is `JSON.dumps(row, sort_keys=True, separators=(",", ":"))` minus the `row_hash` field itself. Verifying the chain re-derives each `row_hash` and confirms continuity.
+
+**Cookie-value leak guard.** `audit.append()` rejects any `details` key whose lowered name *contains* `"cookie"` (catches `cookie`, `cookies`, `set_cookie`, `Set-Cookie`, `cookies_raw`, `cookieJar`, etc. at any depth) — except for the small spec-blessed metadata allow-list `{cookie_domains, cookie_persistence, cookies_snapshot_sha256}` per §11. A regression that tries to write a credential-bearing key fails fast with `DetailLeakError` rather than silently leaking into evidence.
 
 The audit log is **not** exposed in the UI in v1. Investigators get the full log on disk (`/config/library.db`, `audit_log` table), via `/api/audit`, and inside every evidence-export bundle (`audit_log.json`).
 
@@ -603,7 +609,7 @@ The README is the user's first contact. Write for an investigator who has never 
   - Mount a config folder.
   - Map port 8080.
   - Use `--restart unless-stopped` so it survives reboots.
-- **Image size note:** "The first launch downloads about 2GB. The app bundles a full browser engine and a web archiver so your captures are forensically complete."
+- **Image size note:** "The first launch unpacks about 1.7 GB on your disk; the actual download is a ~430 MB gzipped bundle. The app bundles a headless Chromium engine so your captures are forensically complete."
 - **"Then open http://localhost:8080 in your browser."** Bold, on its own line.
 - **A short "What this tool gives you" section** for the audience: page snapshot + screenshot + WARC for every URL, optional media download, canonical filenames, signed evidence bundles, manual update control. Three sentences each, no jargon.
 - **Troubleshooting section** for the three most common failures: port already in use, folder permission denied, Docker Desktop not running.
@@ -625,7 +631,7 @@ The README is the user's first contact. Write for an investigator who has never 
 - **Cases:** first-class on the backend (filesystem grouping under `/downloads/{case_slug}/`). The downloader uses a default case implicitly; v1 has no UI to switch cases, but the API and on-disk layout still support arbitrary cases. **Default slug:** `downloads` for fresh installs (folder: `~/Documents/Capsule/downloads/`). **Forward-only legacy fallback:** existing installs that already have a `quick-captures` case row keep using it — `cases.ensure_default_case()` prefers `downloads` first, then falls back to `quick-captures` if that row exists, else creates `downloads`. No on-disk migration; the legacy slug name is preserved indefinitely for those users so existing evidence chains stay intact.
 - **Accent color:** teal-600 throughout.
 - **Concurrent captures:** default 2 (Chromium memory contention beyond that). Configurable in Settings.
-- **Duplicate handling:** when a paste matches an existing `(case_id, capture_kind, url_hash)`, show a modal with the existing capture preview and three buttons: "Open existing," "Re-capture as new entry" (creates sibling with `__c2`/`__c3` suffix), "Cancel." All three outcomes recorded in audit log.
+- **Duplicate handling:** the duplicate-detection flow runs *before* the capture pipeline via `POST /api/jobs/preflight` — so duplicates surface as a modal in seconds, not after 30s of wasted yt-dlp + Playwright work. The modal shows the existing capture's preview (platform icon, title, capture date, source URL) and three buttons: "Open existing" (calls `/api/system/reveal` with the existing item's folder), "Re-capture as new entry" (re-submits with `force_recapture: true`; the new row's `url_hash` is suffixed `__c2`/`__c3`/…), "Cancel." Multi-duplicate batches queue with a "1 of N" indicator. Audit actions: `duplicate.detected` (preflight hit, before user choice), `duplicate.opened_existing`, `duplicate.recaptured` (logged from the orchestrator on the new row's successful finalize, with `original_id` and `new_id`), `duplicate.cancelled`. The legacy late-detection path (`postprocess.DuplicateCapture`) stays as defense in depth for callers that skip preflight (extension, races, future code).
 - **Capture scope:** every URL gets the full preservation package; media is optional.
 - **Cookies:** primary feature, per case, never logged, never exported. Auto-attach for social-media domains.
 - **Page capture:** MHTML + full-page PNG + WARC (browsertrix scope=`page+resources`).
@@ -635,7 +641,7 @@ The README is the user's first contact. Write for an investigator who has never 
 - **Raw fragment retention:** off by default. Per-case opt-in.
 - **Time:** UTC in storage; user's local TZ in display via `Intl.DateTimeFormat`.
 - **First-tier languages:** English + Japanese + Arabic (`ar`, generic — revisit if specific dialect requested).
-- **Image size:** ~2GB. Documented in README.
+- **Image size:** ~1.7 GB on disk (down from ~2 GB after switching off the Playwright/python base image). The shipped dist bundle is a ~430 MB gzipped tar per architecture (see [scripts/build-dist.sh](scripts/build-dist.sh)). Documented in README.
 - **Logo:** bell jar over a browser-window specimen on a plinth — preservation/museum metaphor, deliberately not a UI button. The mark stays neutral graphite; the accent dot inside the window's title bar uses the app accent (teal-600). Variants live under `app/static/icons/brand/` (`logo.svg`, `logo-mono.svg`, `logo-favicon.svg`, `logomark.svg`); the brand-mark section of `docs/DESIGN.md` is the canonical spec.
 
 ### Hardening pass (v0.2)
@@ -655,6 +661,46 @@ The README is the user's first contact. Write for an investigator who has never 
 - **Per-item PDF report** (`{stem}.report.pdf`, schema v4) — locale-aware human-readable companion to the manifest PDF. Provenance + full untruncated description + tools/versions + capture report. Hashed and added to `artifacts["report_pdf"]` *before* the manifest PDF renders so the manifest's file table includes the report row, and `meta.json.sig` transitively binds both PDFs.
 - **Layout:** per-item folder colocates media, snapshot, sidecars, and both PDFs under `/downloads/{case}/{stem}/`. Old `sidecars/{stem}/` subfolder removed.
 - **Distribution: per-arch image tags + reproducible build script.** `scripts/build-dist.sh` drives `docker buildx` for both arm64 and amd64, saves the per-arch tars with their content digests, and renders launchers from `dist-templates/Capsule.{command,bat}.in`. Bundled-tar launchers run with the explicit per-arch tag (`capsule:arm64` / `capsule:amd64`) and force-reload the bundled tar whenever the loaded image's digest doesn't match the one stamped into the launcher at build time. Fixes the "AMD64" warning chip on Apple Silicon hosts.
+
+### Simple-view consolidation (v0.3)
+
+The v1 UI is intentionally limited to two surfaces (Downloader + Settings, §4.3). The backend HTTP API was pruned to the intersection of "live consumed by the simple-view UI or the extension" + "load-bearing per CLAUDE.md §2 / §7 / §10 / §11." Internal orchestrator capabilities (NetworkMonitor, pause/resume/cancel, capture groups, retries) are unchanged — only their HTTP surfaces went.
+
+- **Removed HTTP routes (use the orchestrator or post-capture artifacts directly):**
+  - `GET /api/cases/{id}`, `PATCH /api/cases/{id}`, `POST /api/cases/{id}/status` — the simple view fetches the case list and matches by slug; mutation belongs to a future case-detail UI.
+  - `POST /api/jobs`, `GET /api/jobs`, `GET /api/jobs/{id}` — `POST /api/jobs/batch` is the only submission path; in-flight state lives in the SSE stream.
+  - `POST /api/jobs/{id}/{pause,resume,cancel}`, `POST /api/jobs/{pause-all,resume-all}` — internal orchestrator methods retained; HTTP exposure not yet justified by UI. (`POST /api/jobs/preflight` was removed in v0.3 and re-added in v0.4 with new semantics — duplicate-detection probe ahead of the capture pipeline; see §"Dedup pass (v0.4)".)
+  - `GET|PATCH /api/system/network`, `POST /api/system/network/probe` — `NetworkMonitor` still runs internally and auto-pauses jobs when offline; no HTTP surface.
+  - `GET|PUT /api/cases/{id}/profile` — speed profile is global; `/api/system/profile` is the live UI hook.
+  - `POST /api/library/{id}/refetch` — the underlying capture-group + `task_kind` mechanism is intact for orchestrator use.
+  - `GET /api/cookies`, `POST /api/cookies/preview`, `POST /api/cookies/text` — `POST /api/cookies` (Netscape-file multipart) and `POST /api/cookies/json` (extension) are the two surviving cookie paths per §11.
+- **Removed code:**
+  - Root `Capsule.command` / `Capsule.bat` — superseded by the rendered per-arch launchers in `dist/Capsule*/` (see Distribution above).
+  - `cases.QUICK_CASE_SLUG`, `cases.QUICK_CASE_NAME`, `cases.ensure_quick()` — deprecated aliases. The on-disk legacy `quick-captures` *slug fallback* inside `ensure_default_case()` is preserved indefinitely (existing evidence chains continue to resolve).
+  - `ytdlp_runner.preflight()` — sole caller was the removed `/api/jobs/preflight` route.
+  - `cookies.merge`, `cookies.merge_preview`, `cookies.save_merged`, `cookies.MergeStats` — sole callers were the removed `/api/cookies/text` and `/api/cookies/preview` routes.
+- **Correctness fixes that landed alongside the prune:**
+  - `signing.verify()` now narrows its catch to `cryptography.exceptions.InvalidSignature` only — corrupted-key failures propagate (CLAUDE.md §7).
+  - `audit.append()` substring blocklist on cookie-bearing keys with a tiny spec-blessed allow-list (see §8).
+  - `postprocess.finalize()` narrows its rollback `except` to `(OSError, sqlite3.Error, DuplicateCapture)` — unexpected failures preserve artifacts on disk for human inspection rather than silently cleaning up.
+  - Frontend `relTime()` uses `Intl.RelativeTimeFormat` keyed off the active locale instead of hard-coded English.
+  - `_postBatch()` errors render as an inline rose banner with copyable technical details, not a native `alert()` (§4.7).
+  - SSE transport-error counter + per-job amber Reconnect banner replaces the silent "phantom running" state when the EventSource socket dies.
+
+### Dedup pass (v0.4)
+
+Closes the long-standing §15 gaps: duplicates were being detected only at postprocess time (after ~30s of yt-dlp + Playwright work), surfaced as a generic red error banner, never modeled in the audit log, and treated `?utm_source=email` and `?utm_source=tweet` as different videos. The home view also had no way to clear the recent-captures list and rendered them as a thumbnail grid (heavier than the workflow benefits from).
+
+- **URL canonicalization** — new module [`app/url_canonical.py`](app/url_canonical.py) is the single source of truth for the canonical form of a URL. `url_hash = sha256(canonical(url_final))[:12]`. Originals (`url_submitted`, `url_final`) are preserved verbatim in `meta.json`; only the dedup key uses the canonical form.
+- **Preflight endpoint** — `POST /api/jobs/preflight` (re-introduced from v0.3 deletion with new semantics). Classifies each URL and probes the `downloads` table per `(case_id, capture_kind, url_hash)`. Returns `{results: [...], summary: {new, duplicates_blocked, within_batch_duplicates, classification_failed}}` for the frontend's batch-summary chip and §15 modal queue.
+- **Batch payload** — `POST /api/jobs/batch` now accepts either `urls: list[str]` (legacy / extension) or `items: list[JobBatchItem]`. The item shape carries `force_recapture: bool` and `original_download_id: int | None` for the §15 forced-re-capture path. Within-batch dedup keys on the canonical URL.
+- **Re-capture as new entry** — `CaptureInput.force_recapture=True` makes `postprocess.finalize` skip the early-dedup probe and instead derive `url_hash = base_hash + "__c{N+1}"`. The on-disk per-item folder picks up the matching `__c{N+1}` stem via the existing `_resolve_collisions` mechanism. `meta.json.force_recapture_index` records the integer index.
+- **Audit actions** — `duplicate.detected` (preflight hit, before user choice), `duplicate.opened_existing`, `duplicate.recaptured` (logged from the orchestrator on the new row's successful finalize, bound to `original_id` and `new_id`), `duplicate.cancelled`, `duplicate.url_canonicalized` (migration 004 summary).
+- **Migration 004** — recomputes `downloads.url_hash` for every existing row using the canonical form. Rows whose canonical hashes collide are resolved by the same `__c2/__c3` suffix mechanism (oldest row wins the unsuffixed slot in `capture_date` order). On-disk `meta.json` files are NOT touched — they're signed and frozen at capture time. Migration adds a single rolled-up `duplicate.url_canonicalized` audit row. The migrate runner also gained `.py` migration support (`def upgrade(conn)`); SQL migrations still work unchanged.
+- **Schema v5** — adds `url_canonical` (canonical form of url_final, used to derive url_hash) and `force_recapture_index` (integer or null) to `meta.json`. v4 → v5 upgrade is captured automatically by capturing a new row; the migration above handles existing rows' DB column.
+- **Clear list** — new `POST /api/cases/{id}/clear` deletes every per-item folder under `/downloads/{slug}/`, drops the `downloads` rows for the case, and cascades orphaned `capture_groups`. Preserves: the case row, the case directory itself, `/config/cases/{slug}/cookies.txt`, the signing key, and **every** prior `audit_log` row. Adds a single `library.cleared` row carrying a snapshot (id, url_hash, capture_date, media sha256, sha256 of meta.json) per deleted item — the chain-of-custody anchor for the deletion event. Frontend gates the call behind a destructive-action confirmation dialog with an "Export evidence bundle first" link.
+- **Recent-captures list** — replaces the home view's 4-column thumbnail grid with a one-row-per-capture list. Same visual cues (platform icon, capture-kind chip, integrity hint, relative time) at higher density. The Library proper (no v1 UI) keeps the §4.1 #5 thumbnail-grid spec for when it ships.
+- **i18n** — new keys under `duplicate.*` and `recent.clear.*`; `duplicate.batch.summary.{new,dup,ib}` are split rather than one mega ICU template so empty branches don't leave dangling separators. All four bundles (en/ja/ar/es) updated; Arabic uses the full six-form plural set.
 
 ## 16. Still open
 

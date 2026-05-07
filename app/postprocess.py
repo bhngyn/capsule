@@ -54,6 +54,7 @@ from . import (
     platforms,
     sanitize,
     signing,
+    url_canonical,
 )
 
 __all__ = [
@@ -133,6 +134,12 @@ class CaptureInput:
     # ``meta.json.capture.report_lang`` so a future evidence reviewer
     # can confirm what the investigator saw.
     lang: str = "en"
+    # CLAUDE.md §15: when the user picks "Re-capture as new entry" in the
+    # duplicate-handling modal, the orchestrator re-submits with
+    # ``force_recapture=True``. ``finalize`` then suffixes ``url_hash``
+    # with ``__c{N+1}`` so the UNIQUE(case_id, capture_kind, url_hash)
+    # constraint passes and the new row sits as a sibling of the original.
+    force_recapture: bool = False
 
 
 @dataclass(frozen=True)
@@ -207,6 +214,43 @@ def _stem_for(
     return stem, None
 
 
+def _suffix_for_recapture(
+    conn: sqlite3.Connection,
+    *,
+    case_id: int,
+    capture_kind: str,
+    base_hash: str,
+) -> tuple[str, int]:
+    """Pick the next ``__c{N}`` suffix for a forced re-capture (CLAUDE.md §15).
+
+    Returns ``(url_hash, force_recapture_index)``. The base row uses
+    ``base_hash`` (no suffix). Subsequent forced re-captures get
+    ``base_hash__c2``, ``base_hash__c3``, … in order. We count both the
+    bare ``base_hash`` row and any prior ``__c*`` siblings so the counter
+    monotonically increases even after intermediate rows are deleted.
+    """
+    rows = conn.execute(
+        "SELECT url_hash FROM downloads "
+        "WHERE case_id = ? AND capture_kind = ? "
+        "AND (url_hash = ? OR url_hash LIKE ?)",
+        (case_id, capture_kind, base_hash, base_hash + "__c%"),
+    ).fetchall()
+    highest = 1  # the bare base_hash counts as index 1
+    for row in rows:
+        h = row["url_hash"]
+        if h == base_hash:
+            continue
+        # Parse __cN suffix
+        try:
+            n = int(h.rsplit("__c", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        if n > highest:
+            highest = n
+    next_index = highest + 1
+    return f"{base_hash}__c{next_index}", next_index
+
+
 def _resolve_collisions(case_dir: Path, stem: str) -> str:
     """Pick a stem that does not collide with anything already on disk.
 
@@ -245,15 +289,29 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
     # Step 1: capture_kind
     capture_kind = "media" if capture_input.media_files else "page_only"
 
-    # url_hash for de-dup. We compute this before doing any disk work so a
-    # duplicate fails fast with no side effects.
-    url_hash = hashlib.sha256(capture_input.url_final.encode("utf-8")).hexdigest()[:12]
-    existing = conn.execute(
-        "SELECT id FROM downloads WHERE case_id = ? AND capture_kind = ? AND url_hash = ?",
-        (case.id, capture_kind, url_hash),
-    ).fetchone()
-    if existing is not None:
-        raise DuplicateCapture(existing_id=int(existing["id"]))
+    # url_hash for de-dup. We compute this from the *canonical* form of
+    # url_final so two paste-variants of the same URL collapse to the
+    # same dedup key. We do this before any disk work so a duplicate
+    # fails fast with no side effects.
+    canonical_url = url_canonical.canonicalize(capture_input.url_final)
+    base_hash = hashlib.sha256(canonical_url.encode("utf-8")).hexdigest()[:12]
+
+    if capture_input.force_recapture:
+        # User chose "Re-capture as new entry" in the §15 modal: append a
+        # ``__c{N+1}`` suffix so the UNIQUE constraint passes. The counter
+        # is derived from existing siblings sharing this base_hash.
+        url_hash, force_recapture_index = _suffix_for_recapture(
+            conn, case_id=case.id, capture_kind=capture_kind, base_hash=base_hash
+        )
+    else:
+        url_hash = base_hash
+        force_recapture_index = None
+        existing = conn.execute(
+            "SELECT id FROM downloads WHERE case_id = ? AND capture_kind = ? AND url_hash = ?",
+            (case.id, capture_kind, url_hash),
+        ).fetchone()
+        if existing is not None:
+            raise DuplicateCapture(existing_id=int(existing["id"]))
 
     # Step 2-3: stem + collision suffix. The per-item folder lives directly
     # under the case dir.
@@ -453,12 +511,15 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         capture_block = capture_block_for_report
 
         meta = {
-            "schema_version": 4,
+            "schema_version": 5,
             "job_uuid": capture_input.job_uuid,
             "capture_kind": capture_kind,
             "case": {"id": case.id, "slug": case.slug, "name": case.name},
             "url_submitted": capture_input.url_submitted,
             "url_final": capture_input.url_final,
+            # Canonical form used for dedup (CLAUDE.md §15). Originals
+            # ``url_submitted`` and ``url_final`` stay verbatim.
+            "url_canonical": canonical_url,
             "url_redirect_chain": capture_input.redirect_chain,
             "platform": platforms.friendly_name(info.get("extractor_key", ""))
             if info
@@ -493,6 +554,9 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             "capture": capture_block,
             "cookies_snapshot_sha256": capture_input.cookies_snapshot_sha256,
             "ephemeral_cookies_used": capture_input.ephemeral_cookies_used,
+            # Set when this row was an intentional re-capture per §15.
+            # ``None`` for the original / non-forced captures.
+            "force_recapture_index": force_recapture_index,
             "audit_log_entry_id": None,  # filled below
             "signing_key_fp": fp,
         }
@@ -629,7 +693,15 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             audit_log_entry_id=audit_id,
         )
 
-    except Exception:
+    except (OSError, sqlite3.Error, DuplicateCapture):
+        # Expected failure modes during finalize:
+        #   * OSError — disk full, permission, partial _move_into mid-flight
+        #   * sqlite3.Error — IntegrityError from the duplicate-race window,
+        #     or operational/programming errors propagated through the inner
+        #     try/except above
+        #   * DuplicateCapture — raced past the early de-dup probe; the row
+        #     already exists, so our just-moved siblings need to go before
+        #     they shadow the canonical capture.
         # Best-effort rollback of just the FS moves we made; if a move
         # already replaced an in-place file we leave it alone (preserving
         # evidence integrity over rollback purity).
@@ -645,6 +717,10 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         except OSError:
             pass
         raise
+    # Anything not in the tuple above is unexpected (programming bug,
+    # cryptography corruption, …): let it propagate so the artifacts on
+    # disk are preserved for human inspection rather than being silently
+    # cleaned up. CLAUDE.md §7 + §13 #13 (preserve, don't modify).
 
 
 def extend_capture(

@@ -30,11 +30,8 @@ __all__ = [
     "CASE_STATUSES",
     "DEFAULT_CASE_SLUG",
     "DEFAULT_CASE_NAME",
-    "QUICK_CASE_SLUG",
-    "QUICK_CASE_NAME",
     "create",
     "ensure_default_case",
-    "ensure_quick",
     "get",
     "get_by_slug",
     "list_all",
@@ -61,11 +58,6 @@ CASE_STATUSES = frozenset({"open", "closed", "archived"})
 DEFAULT_CASE_SLUG = "downloads"
 DEFAULT_CASE_NAME = "Downloads"
 _LEGACY_DEFAULT_CASE_SLUG = "quick-captures"
-
-# Deprecated: remove after vN+1. Kept so callers that import these names keep
-# working through one release while the orchestrator migrates them.
-QUICK_CASE_SLUG = DEFAULT_CASE_SLUG
-QUICK_CASE_NAME = DEFAULT_CASE_NAME
 
 
 def _utcnow() -> str:
@@ -246,12 +238,6 @@ def ensure_default_case(conn: sqlite3.Connection) -> Case:
         },
     )
     return _require(conn, case_id)
-
-
-# Deprecated: remove after vN+1. Thin alias so callers that still import the
-# legacy name keep working through one release.
-def ensure_quick(conn: sqlite3.Connection) -> Case:
-    return ensure_default_case(conn)
 
 
 def _require(conn: sqlite3.Connection, case_id: int) -> Case:

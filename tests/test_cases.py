@@ -220,14 +220,6 @@ def test_ensure_default_case_creates_downloads_when_neither_exists(
     assert cases_mod.get_by_slug(conn, "downloads") is not None
 
 
-def test_ensure_quick_alias_still_works(conn, capsule_dirs):
-    """Deprecated ``ensure_quick`` alias defers to ``ensure_default_case``."""
-    from app import cases as cases_mod
-
-    case = cases_mod.ensure_quick(conn)
-    assert case.slug == cases_mod.DEFAULT_CASE_SLUG == "downloads"
-
-
 def test_audit_chain_holds_after_case_lifecycle(conn, capsule_dirs):
     from app import cases as cases_mod
 

@@ -12,9 +12,11 @@ Every state-changing operation calls ``append(conn, action, …)`` which:
 ``verify_chain(conn)`` re-derives every hash and reports the first broken
 row id, if any. The Audit Log view in the UI calls this on page load.
 
-**Cookie values are forbidden in ``details``.** ``append`` rejects keys named
-``cookie``, ``cookies`` or ``set_cookie`` so a regression in a caller can't
-leak credentials into evidence.
+**Cookie values are forbidden in ``details``.** ``append`` rejects any key
+whose lowered name *contains* ``cookie`` (so ``cookie``, ``cookies``,
+``set_cookie``, ``Set-Cookie``, ``cookies_raw``, nested header dicts, etc.
+all trip the guard) so a regression in a caller can't leak credentials
+into evidence.
 """
 
 from __future__ import annotations
@@ -28,7 +30,8 @@ from typing import Any
 
 __all__ = [
     "ZERO_HASH",
-    "FORBIDDEN_DETAIL_KEYS",
+    "FORBIDDEN_DETAIL_SUBSTRING",
+    "ALLOWED_COOKIE_METADATA_KEYS",
     "canonical_encode",
     "row_hash_for",
     "append",
@@ -38,7 +41,20 @@ __all__ = [
 ]
 
 ZERO_HASH = "0" * 64
-FORBIDDEN_DETAIL_KEYS = frozenset({"cookie", "cookies", "set_cookie"})
+# Any key whose case-insensitive name *contains* this substring is rejected,
+# unless it is on the metadata allow-list below. Catches "cookie", "cookies",
+# "set_cookie", "Set-Cookie", "cookies_raw", "cookieJar", etc. — the audit
+# log refuses to record cookie values in any shape (CLAUDE.md §8 + §11).
+FORBIDDEN_DETAIL_SUBSTRING = "cookie"
+# CLAUDE.md §11 explicitly permits logging "the list of authenticated
+# domains, the cookie-set SHA-256, and the persistence mode." These are
+# metadata, not values; they are the only "cookie*" keys allowed in
+# ``details``. Match is case-insensitive.
+ALLOWED_COOKIE_METADATA_KEYS = frozenset({
+    "cookie_domains",          # list[str] of authenticated domains
+    "cookie_persistence",      # "case" | "ephemeral"
+    "cookies_snapshot_sha256", # hex digest of the cookies file
+})
 
 
 class DetailLeakError(ValueError):
@@ -75,13 +91,26 @@ def row_hash_for(row: dict[str, Any]) -> str:
 
 
 def _check_details(details: dict[str, Any]) -> None:
-    """Reject forbidden keys at any depth (cookies hide in nested dicts too)."""
+    """Reject forbidden keys at any depth (cookies hide in nested dicts too).
+
+    Substring match: any key whose lowered form contains ``"cookie"`` trips
+    the guard, unless that exact lowered name is on
+    :data:`ALLOWED_COOKIE_METADATA_KEYS` (the spec-blessed metadata keys
+    from CLAUDE.md §11). This catches dashed/cased variants
+    (``Set-Cookie``) and suffixed variants (``cookies_raw``, ``cookie_jar``)
+    the old exact-match set missed, while still allowing the documented
+    metadata keys investigators rely on.
+    """
     stack: list[Any] = [details]
     while stack:
         v = stack.pop()
         if isinstance(v, dict):
             for k, vv in v.items():
-                if k.lower() in FORBIDDEN_DETAIL_KEYS:
+                lk = k.lower()
+                if (
+                    FORBIDDEN_DETAIL_SUBSTRING in lk
+                    and lk not in ALLOWED_COOKIE_METADATA_KEYS
+                ):
                     raise DetailLeakError(
                         f"forbidden audit detail key: {k!r}"
                     )
