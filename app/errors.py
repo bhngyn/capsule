@@ -48,6 +48,31 @@ class ErrorClassification:
 
 # ``(pattern, i18n_key, suggested_action, severity)``. Patterns are case-insensitive.
 ERROR_PATTERNS: list[tuple[re.Pattern[str], str, SuggestedAction | None, Severity]] = [
+    # gallery-dl rate limiting — must come before the generic 429 catch
+    # below so the gallery-specific i18n key (which suggests "wait until
+    # the listed time") wins over the generic "try again in 5 minutes."
+    # gallery-dl prints "Waiting until HH:MM:SS (rate limit)" and pauses
+    # internally; if the orchestrator surfaces it that means it bubbled
+    # up as a non-zero exit.
+    (
+        re.compile(r"Waiting until .* \(rate limit\)|rate ?limit", re.IGNORECASE),
+        "errors.gallery_rate_limited",
+        ACTION_TRY_AGAIN,
+        "transient",
+    ),
+    # gallery-dl auth wall — Pixiv, Twitter, Instagram all surface
+    # "AuthenticationError" or "Login rejected" here when cookies are
+    # missing or expired. We tag this as ``permanent`` so the orchestrator
+    # doesn't retry; the user action is "add cookies."
+    (
+        re.compile(
+            r"AuthenticationError|Login (rejected|required)|Authorization required",
+            re.IGNORECASE,
+        ),
+        "errors.gallery_auth_required",
+        ACTION_ADD_COOKIES,
+        "permanent",
+    ),
     (
         re.compile(r"HTTP Error 429", re.IGNORECASE),
         "errors.rate_limited",
@@ -111,6 +136,17 @@ ERROR_PATTERNS: list[tuple[re.Pattern[str], str, SuggestedAction | None, Severit
         re.compile(r"extractor.*outdated|please update", re.IGNORECASE),
         "errors.extractor_outdated",
         ACTION_CHECK_UPDATE,
+        "permanent",
+    ),
+    # gallery-dl "no extractor matched this URL" — the user pasted
+    # something neither yt-dlp nor gallery-dl recognizes. Distinct from
+    # ``errors.no_media`` (yt-dlp 'No video formats found' for a
+    # supported site) so the headline can read "no images on this page"
+    # rather than "no media."
+    (
+        re.compile(r"NoExtractorError|no extractor found", re.IGNORECASE),
+        "errors.gallery_no_images",
+        None,
         "permanent",
     ),
 ]
