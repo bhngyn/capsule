@@ -859,6 +859,26 @@
         catch (_) { return raw; }
       },
 
+      // Capture-kind → Lucide icon name. Three known kinds today:
+      // ``media`` (yt-dlp video), ``gallery`` (gallery-dl images,
+      // CLAUDE.md §15 v0.5), ``page_only`` (page snapshot only).
+      // Unknown kinds fall back to the layout-template icon.
+      captureKindIcon(kind) {
+        if (kind === 'media') return 'film';
+        if (kind === 'gallery') return 'images';
+        return 'layout-template';
+      },
+
+      // Capture-kind → i18n key for the chip label. Same three-way split
+      // as captureKindIcon. ``recent.row.kind.gallery`` is rendered with
+      // an ICU plural so locales with rich plural rules (Arabic) can pick
+      // the right form for "{count} images".
+      captureKindLabel(kind) {
+        if (kind === 'media') return 'recent.row.kind.media';
+        if (kind === 'gallery') return 'recent.row.kind.gallery';
+        return 'recent.row.kind.page_only';
+      },
+
       async revealRecentItem(item) {
         if (!item || !item.item_dir) return;
         try {

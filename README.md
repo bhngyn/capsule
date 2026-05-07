@@ -8,6 +8,7 @@ A web-evidence capture tool for investigators — researchers, journalists, lawy
 
 - **Page snapshot** — MHTML + full-page PNG + WARC (browsertrix `page+resources`) of every URL.
 - **Media** — yt-dlp downloads anything yt-dlp can; full info.json + description + thumbnail preserved.
+- **Image galleries** — when yt-dlp finds no video, gallery-dl steps in for image-only sources: Twitter image threads, Imgur albums, Pixiv posts, DeviantArt pages, Reddit galleries, Tumblr posts, image-board threads. Every image is hashed, indexed, and listed in the per-item manifest PDF.
 - **Canonical filenames** — `{platform}__{uploader}__{title}__{date}__{id}.{ext}` so a library copied between machines stays browsable.
 - **Cryptographic integrity** — every artifact has MD5 + SHA-256; every meta.json is signed with an Ed25519 keypair generated on first launch.
 - **Tamper-evident audit log** — every state-changing operation is hash-chained; tampering breaks the chain at the modified row.

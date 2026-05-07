@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from contextlib import asynccontextmanager
@@ -49,6 +50,7 @@ from . import (
     db as db_mod,
     evidence_export,
     extension_tokens,
+    gallery_dl_runner,
     i18n,
     jobs as jobs_mod,
     paths,
@@ -945,6 +947,10 @@ async def system_version() -> dict[str, Any]:
         ytdlp_v = await ytdlp_runner.version()
     except Exception:
         ytdlp_v = "unknown"
+    try:
+        gallery_dl_v = await gallery_dl_runner.version()
+    except Exception:
+        gallery_dl_v = "unknown"
     kp = signing.ensure_keypair()
     # Translate a container path under DOWNLOADS_DIR to its host equivalent
     # when the launcher passed CAPSULE_HOST_DOWNLOADS_DIR. Used by the UI to
@@ -977,6 +983,7 @@ async def system_version() -> dict[str, Any]:
     return {
         "app": __version__,
         "yt_dlp": ytdlp_v,
+        "gallery_dl": gallery_dl_v,
         "chromium": "0",          # Phase 2 sets this
         "browsertrix": "0",       # Phase 2 sets this
         "signing_key_fingerprint": signing.fingerprint(kp.public),
@@ -1028,15 +1035,38 @@ async def reveal(body: RevealRequest) -> dict[str, Any]:
     return {"ok": True, "target": str(target)}
 
 
+# Components updatable via /api/system/update. Each entry is the user-facing
+# component name → (pip package, version-fetcher coroutine). Adding a new
+# updatable runtime is one entry here plus the ``Settings.update_*`` button in
+# the UI.
+_UPDATABLE_COMPONENTS: dict[str, tuple[str, Callable[[], Awaitable[str]]]] = {
+    "yt-dlp": ("yt-dlp", ytdlp_runner.version),
+    "gallery-dl": ("gallery-dl", gallery_dl_runner.version),
+}
+
+
 @app.post("/api/system/update")
-async def system_update() -> dict[str, Any]:
-    """User-triggered yt-dlp upgrade. Never invoked automatically."""
+async def system_update(component: str = "yt-dlp") -> dict[str, Any]:
+    """User-triggered runtime upgrade. Never invoked automatically.
+
+    ``component`` selects which downloader to upgrade — ``yt-dlp`` (default,
+    back-compat) or ``gallery-dl``. Both run the same ``pip install
+    --upgrade <pkg>`` flow, fetch the new version, and audit-log the result
+    with the component label.
+    """
+    if component not in _UPDATABLE_COMPONENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown component: {component}",
+        )
+    pkg_name, version_fn = _UPDATABLE_COMPONENTS[component]
+
     pip = shutil.which("pip") or sys.executable
     # Match exactly ``pip`` / ``pip3`` (or ``pip.exe`` / ``pip3.exe``) — anything
     # else (e.g. ``pipx``) falls through to the explicit ``python -m pip`` form.
     pip_name = Path(pip).stem if pip else ""
-    cmd = [pip, "install", "--upgrade", "yt-dlp"] if pip_name in {"pip", "pip3"} else [
-        sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"
+    cmd = [pip, "install", "--upgrade", pkg_name] if pip_name in {"pip", "pip3"} else [
+        sys.executable, "-m", "pip", "install", "--upgrade", pkg_name
     ]
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -1046,7 +1076,7 @@ async def system_update() -> dict[str, Any]:
     out, err = await proc.communicate()
     new_version = "unknown"
     try:
-        new_version = await ytdlp_runner.version()
+        new_version = await version_fn()
     except Exception:
         pass
     conn = _conn()
@@ -1056,7 +1086,7 @@ async def system_update() -> dict[str, Any]:
             "system.updated",
             actor="user",
             details={
-                "component": "yt-dlp",
+                "component": component,
                 "returncode": proc.returncode,
                 "new_version": new_version,
             },
@@ -1065,6 +1095,7 @@ async def system_update() -> dict[str, Any]:
         conn.close()
     return {
         "ok": proc.returncode == 0,
+        "component": component,
         "returncode": proc.returncode,
         "new_version": new_version,
         "stdout_tail": out.decode(errors="replace")[-2000:],

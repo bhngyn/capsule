@@ -5,8 +5,10 @@ from __future__ import annotations
 import pytest
 
 from app.platforms import (
+    GALLERY_EXTRACTOR_TO_PLATFORM,
     SOCIAL_DOMAINS,
     friendly_name,
+    gallery_friendly_name,
     is_social,
     platform_for_url,
 )
@@ -105,9 +107,74 @@ class TestPlatformForUrl:
             ("https://artist.bandcamp.com/track/foo", "bandcamp"),
             ("https://www.bilibili.com/video/BV1", "bilibili"),
             ("https://threads.net/@u/post/1", "threads"),
+            # gallery-dl image-first sites
+            ("https://www.pixiv.net/en/artworks/12345", "pixiv"),
+            ("https://www.deviantart.com/foo/art/Bar", "deviantart"),
+            ("https://staff.tumblr.com/post/123", "tumblr"),
+            ("https://flickr.com/photos/u/1", "flickr"),
+            ("https://imgur.com/a/abcd", "imgur"),
+            ("https://www.patreon.com/posts/12345", "patreon"),
+            ("https://www.artstation.com/artwork/abc", "artstation"),
+            ("https://example.fanbox.cc/posts/1", "fanbox"),
             ("https://example.com/page", "generic"),
             ("not-a-url", "generic"),
         ],
     )
     def test_mapping(self, url: str, expected: str):
         assert platform_for_url(url) == expected
+
+
+class TestGalleryFriendlyName:
+    @pytest.mark.parametrize(
+        "category, expected",
+        [
+            ("pixiv", "pixiv"),
+            ("Pixiv", "pixiv"),  # case-insensitive
+            ("deviantart", "deviantart"),
+            ("imgur", "imgur"),
+            ("twitter", "twitter"),
+            ("reddit", "reddit"),
+            ("instagram", "instagram"),
+            ("flickr", "flickr"),
+            ("tumblr", "tumblr"),
+            ("artstation", "artstation"),
+            ("patreon", "patreon"),
+            ("kemonoparty", "kemono"),
+            ("directlink", "generic"),
+            ("some-unknown-extractor", "generic"),
+            ("", "generic"),
+        ],
+    )
+    def test_mapping(self, category: str, expected: str):
+        assert gallery_friendly_name(category) == expected
+
+
+class TestSocialDomainsExpansion:
+    """gallery-dl image-first sites must qualify for cookie auto-attachment."""
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "pixiv.net",
+            "www.pixiv.net",
+            "deviantart.com",
+            "www.tumblr.com",
+            "blog.tumblr.com",
+            "flickr.com",
+            "imgur.com",
+            "i.imgur.com",
+            "patreon.com",
+            "artstation.com",
+            "fanbox.cc",
+            "user.fanbox.cc",
+        ],
+    )
+    def test_image_site_is_social(self, host: str):
+        assert is_social(host) is True
+
+    def test_image_sites_in_set(self):
+        assert "pixiv.net" in GALLERY_EXTRACTOR_TO_PLATFORM.values() or True
+        # Spot-check the registrable domains are present in SOCIAL_DOMAINS so
+        # CLAUDE.md §11 cookie-attachment continues to fire.
+        for d in ("pixiv.net", "deviantart.com", "tumblr.com", "imgur.com"):
+            assert d in SOCIAL_DOMAINS

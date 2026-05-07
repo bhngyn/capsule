@@ -19,6 +19,7 @@ Sits between the API layer and the capture primitives. Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import shutil
 import contextlib
 import datetime as _dt
 import json
@@ -41,6 +42,7 @@ from . import (
     cookies as cookies_mod,
     db as db_mod,
     errors as errors_mod,
+    gallery_dl_runner,
     network as network_mod,
     postprocess,
     profiles as profiles_mod,
@@ -1317,6 +1319,160 @@ class JobOrchestrator:
                 p for p in run_result.produced_files if p not in media_files
             ]
 
+            # CLAUDE.md §15 Gallery pass v0.5: when yt-dlp returns no
+            # media, fall back to gallery-dl. Image-only sources
+            # (Twitter image threads, Imgur albums, Pixiv posts, Reddit
+            # galleries, etc.) become a ``gallery`` capture instead of
+            # collapsing to ``page_only``.
+            gallery_files: list[Path] = []
+            gallery_metadata_files: list[Path] = []
+            gallery_extractor: str | None = None
+            gallery_dl_version: str | None = None
+            gallery_outcome = "skipped"
+            gallery_work_dir: Path | None = None
+            gallery_enabled = bool(case_settings.get("gallery_enabled", True))
+            gallery_max_items = int(
+                case_settings.get("gallery_max_items", gallery_dl_runner.DEFAULT_MAX_ITEMS)
+            )
+            if not media_files and gallery_enabled:
+                audit.append(
+                    conn,
+                    "gallery.started",
+                    case_id=case.id,
+                    actor="system",
+                    details={
+                        "job_id": job.id,
+                        "url_hash": classification.url_hash,
+                        "max_items": gallery_max_items,
+                    },
+                )
+                gallery_work_dir = (
+                    cases.downloads_dir_for(case.slug) / f"_gallery_{job.id}"
+                )
+                gallery_work_dir.mkdir(parents=True, exist_ok=True)
+                gallery_progress_q: asyncio.Queue = asyncio.Queue()
+                gallery_proc_holder: list = []
+                self._emit(
+                    job,
+                    "progress",
+                    {
+                        "status": "downloading",
+                        "downloaded_bytes": None,
+                        "total_bytes": None,
+                        "speed": None,
+                        "eta": None,
+                        "filename": None,
+                        "sub_status": "gallery_image",
+                    },
+                )
+                g_run_task = asyncio.create_task(
+                    gallery_dl_runner.run(
+                        url=classification.url_final,
+                        work_dir=gallery_work_dir,
+                        cookies_file=cookies_path,
+                        max_items=gallery_max_items,
+                        progress_queue=gallery_progress_q,
+                        proxy_url=proxy_url,
+                        proc_holder=gallery_proc_holder,
+                        socket_timeout_s=profile.socket_timeout_s,
+                    )
+                )
+                g_forward_task = asyncio.create_task(
+                    self._forward_progress(job, gallery_progress_q)
+                )
+                while not gallery_proc_holder and not g_run_task.done():
+                    await asyncio.sleep(0.02)
+                if gallery_proc_holder:
+                    self._procs[job.id] = gallery_proc_holder[0]
+                gallery_result = await g_run_task
+                await g_forward_task
+                self._procs.pop(job.id, None)
+
+                # Honour pause/cancel intent received during gallery-dl
+                # (same flow as the yt-dlp branch).
+                intent = self._user_intent.pop(job.id, None)
+                if intent == "pause":
+                    self._set_status(conn, job, STATUS_PAUSED)
+                    audit.append(
+                        conn, "job.paused",
+                        case_id=case.id, actor="user",
+                        details={"job_id": job.id, "from": "gallery_running"},
+                    )
+                    return
+                if intent == "cancel":
+                    self._set_status(conn, job, STATUS_CANCELLED)
+                    audit.append(
+                        conn, "job.cancelled",
+                        case_id=case.id, actor="user",
+                        details={"job_id": job.id, "from": "gallery_running"},
+                    )
+                    self._close_channel(job)
+                    return
+
+                try:
+                    gallery_dl_version = await gallery_dl_runner.version()
+                except (RuntimeError, OSError):
+                    gallery_dl_version = None
+
+                if gallery_result.image_files:
+                    gallery_files = list(gallery_result.image_files)
+                    gallery_metadata_files = list(gallery_result.metadata_files)
+                    gallery_extractor = gallery_result.extractor
+                    gallery_outcome = "captured"
+                    audit.append(
+                        conn,
+                        "gallery.captured",
+                        case_id=case.id,
+                        actor="system",
+                        details={
+                            "job_id": job.id,
+                            "url_hash": classification.url_hash,
+                            "image_count": len(gallery_files),
+                            "extractor": gallery_extractor,
+                        },
+                    )
+                else:
+                    # Differentiate the no-image outcomes — auth wall, rate
+                    # limit, generic failure, or simply "no images." The
+                    # postprocessor will finalize as page_only either way;
+                    # the audit row is the chain-of-custody record.
+                    stderr = (gallery_result.stderr or "")[-2000:]
+                    g_classified = errors_mod.classify(stderr)
+                    if g_classified.i18n_key == "errors.gallery_rate_limited":
+                        gallery_outcome = "rate_limited"
+                        action = "gallery.rate_limited"
+                    elif g_classified.i18n_key == "errors.gallery_auth_required":
+                        gallery_outcome = "auth_required"
+                        action = "gallery.auth_required"
+                    elif gallery_result.returncode == 0:
+                        gallery_outcome = "empty"
+                        action = "gallery.empty"
+                    else:
+                        gallery_outcome = "failed"
+                        action = "gallery.failed"
+                    audit.append(
+                        conn,
+                        action,
+                        case_id=case.id,
+                        actor="system",
+                        details={
+                            "job_id": job.id,
+                            "url_hash": classification.url_hash,
+                            "returncode": gallery_result.returncode,
+                            "i18n_key": g_classified.i18n_key,
+                        },
+                    )
+
+            # Record the gallery outcome on the capture report so it
+            # rides into meta.json.capture (and the report PDF).
+            # ``CaptureReport`` is frozen for safety; we patch the
+            # serialized dict directly rather than mutate the dataclass.
+            capture_report_dict = report.to_dict()
+            capture_report_dict["gallery_attempted"] = bool(
+                not media_files and gallery_enabled
+            )
+            capture_report_dict["gallery_outcome"] = gallery_outcome
+
             # Drain any extension-supplied bundle so postprocess can move
             # those files into the canonical sidecar dir alongside the
             # clean-Chromium capture. ``pop`` returns None when no
@@ -1332,6 +1488,10 @@ class JobOrchestrator:
                 media_files=media_files,
                 info_json=run_result.info,
                 extra_sidecars=extra_sidecars,
+                gallery_files=gallery_files,
+                gallery_metadata_files=gallery_metadata_files,
+                gallery_extractor=gallery_extractor,
+                gallery_dl_version=gallery_dl_version,
                 page_mhtml=bundle.mhtml,
                 page_screenshot=bundle.screenshot,
                 page_warc=bundle.warc,
@@ -1348,7 +1508,7 @@ class JobOrchestrator:
                 user_browser_session_state=user_bundle.session_state if user_bundle else None,
                 user_browser_dom_snapshot_html=user_bundle.dom_snapshot_html if user_bundle else None,
                 user_browser_dom_snapshot_meta=user_bundle.dom_snapshot_meta if user_bundle else None,
-                capture_report=report.to_dict(),
+                capture_report=capture_report_dict,
                 cookies_snapshot_sha256=cookies_snapshot_sha256,
                 ephemeral_cookies_used=ephemeral_cookies_path is not None,
                 lang=job.lang or config.DEFAULT_LANG,
@@ -1385,6 +1545,10 @@ class JobOrchestrator:
                         p.unlink()
                     except OSError:
                         pass
+                # Same logic for the gallery work dir: postprocess didn't
+                # consume it, so we have to remove it here.
+                if gallery_work_dir is not None:
+                    shutil.rmtree(gallery_work_dir, ignore_errors=True)
                 job.error = {
                     "i18n_key": "errors.duplicate",
                     "severity": "permanent",
@@ -1395,6 +1559,14 @@ class JobOrchestrator:
                 self._set_status(conn, job, STATUS_FAILED_PERMANENT)
                 self._emit(job, "error", job.error)
                 return
+
+            # Clean up the gallery work dir on the happy path too:
+            # postprocess moved every image / metadata / info.json out, but
+            # gallery-dl's per-extractor subdirs remain as empty
+            # scaffolding. shutil.rmtree handles the recursive cleanup
+            # without us having to walk them.
+            if gallery_work_dir is not None:
+                shutil.rmtree(gallery_work_dir, ignore_errors=True)
 
             job.result = {
                 "download_id": result.download_id,

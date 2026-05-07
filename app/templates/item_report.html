@@ -111,6 +111,39 @@
       color: #64748b;
       font-size: 9pt;
     }
+    /* Gallery thumbnail strip — present only when capture_kind == "gallery"
+       (CLAUDE.md §15 v0.5). A 4-column grid of small thumbnails so a
+       court reviewer can confirm at a glance what the gallery preserved.
+       The full-resolution images live next to this PDF in the per-item
+       folder (artifacts.gallery_NNN), each individually hashed. */
+    .gallery-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6pt;
+      margin: 0;
+    }
+    .gallery-strip li {
+      list-style: none;
+      page-break-inside: avoid;
+      border: 1px solid #e2e8f0;
+      padding: 3pt;
+      background: #f8fafc;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      aspect-ratio: 1 / 1;
+      overflow: hidden;
+    }
+    .gallery-strip li img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    .gallery-meta {
+      color: #64748b;
+      font-size: 9pt;
+      margin: 0 0 6pt 0;
+    }
     bdi { unicode-bidi: isolate; }
   </style>
 </head>
@@ -162,6 +195,8 @@
     </dl>
   </section>
 
+  {{gallery_section}}
+
   <section class="description-section">
     <h2>{{label.heading_description}}</h2>
     {{description_block}}
@@ -173,6 +208,7 @@
       <tbody>
         <tr><td class="label">{{label.app_version}}</td>         <td><code>{{tool_app_version}}</code></td></tr>
         <tr><td class="label">{{label.ytdlp_version}}</td>       <td><code>{{tool_ytdlp_version}}</code></td></tr>
+        {{tool_gallery_dl_row}}
         <tr><td class="label">{{label.chromium_version}}</td>    <td><code>{{tool_chromium_version}}</code></td></tr>
         <tr><td class="label">{{label.browsertrix_version}}</td> <td><code>{{tool_browsertrix_version}}</code></td></tr>
       </tbody>

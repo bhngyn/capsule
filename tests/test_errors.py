@@ -104,6 +104,47 @@ from app import errors
             errors.ACTION_CHECK_UPDATE,
             "permanent",
         ),
+        # gallery-dl rate-limit messages — must take the gallery-specific
+        # key, not the generic 429 rule below it.
+        (
+            "[twitter] Waiting until 03:14:15 (rate limit)",
+            "errors.gallery_rate_limited",
+            errors.ACTION_TRY_AGAIN,
+            "transient",
+        ),
+        (
+            "gallery-dl: rate limit exceeded for pixiv.net",
+            "errors.gallery_rate_limited",
+            errors.ACTION_TRY_AGAIN,
+            "transient",
+        ),
+        # gallery-dl auth-required cluster.
+        (
+            "AuthenticationError: invalid credentials",
+            "errors.gallery_auth_required",
+            errors.ACTION_ADD_COOKIES,
+            "permanent",
+        ),
+        (
+            "Login required for this resource",
+            "errors.gallery_auth_required",
+            errors.ACTION_ADD_COOKIES,
+            "permanent",
+        ),
+        (
+            "[pixiv] Login rejected by the server",
+            "errors.gallery_auth_required",
+            errors.ACTION_ADD_COOKIES,
+            "permanent",
+        ),
+        # gallery-dl unsupported URL — distinct from yt-dlp's no_media so
+        # the headline can read "no images on this page."
+        (
+            "gallery-dl: NoExtractorError: https://example.com/foo",
+            "errors.gallery_no_images",
+            None,
+            "permanent",
+        ),
     ],
 )
 def test_classification_table(stderr, expected_key, expected_action, expected_severity):

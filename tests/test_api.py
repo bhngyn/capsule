@@ -121,6 +121,16 @@ async def test_system_version(client):
     assert body["app"]
     assert "signing_key_fingerprint" in body
     assert len(body["signing_key_fingerprint"]) == 32
+    # Gallery pass v0.5: gallery-dl version reported alongside yt-dlp.
+    assert "yt_dlp" in body
+    assert "gallery_dl" in body
+
+
+@pytest.mark.asyncio
+async def test_system_update_rejects_unknown_component(client):
+    """Only yt-dlp and gallery-dl can be upgraded via the API."""
+    resp = await client.post("/api/system/update?component=evil-pkg")
+    assert resp.status_code == 400
 
 
 @pytest.mark.asyncio

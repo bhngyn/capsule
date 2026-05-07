@@ -496,6 +496,62 @@ def _render_item_report_html(
     capture = dict(item_view.get("capture") or {})
     capture_block = _format_capture_report(capture, labels)
 
+    # Gallery section — only emitted for capture_kind == "gallery"
+    # (CLAUDE.md §15 v0.5). Renders a grid of thumbnails (the actual
+    # files in the per-item folder, referenced by relative path) plus a
+    # short caption with the image count and gallery-dl extractor.
+    capture_kind = item_view.get("capture_kind")
+    gallery_thumbnails = list(item_view.get("gallery_thumbnails") or [])
+    if capture_kind == "gallery" and gallery_thumbnails:
+        gallery_count = int(item_view.get("gallery_count") or len(gallery_thumbnails))
+        extractor = item_view.get("gallery_extractor")
+        meta_label = labels["pdf.report.heading.gallery"]
+        meta_caption_template = labels["pdf.report.field.gallery_meta"]
+        meta_caption = (
+            meta_caption_template
+            .replace("{count}", str(gallery_count))
+            .replace("{extractor}", str(extractor or labels["pdf.report.field.unknown"]))
+        )
+        # Resolve thumbnail paths under DOWNLOADS_DIR and feed WeasyPrint
+        # ``file://`` URIs so it can read the bytes off disk. We cap the
+        # rendered thumbnails at 20 so a 200-image gallery doesn't blow
+        # up the report PDF — the manifest PDF lists every image
+        # regardless, so no evidence is lost.
+        thumb_cap = 20
+        thumb_uris: list[str] = []
+        for rel in gallery_thumbnails[:thumb_cap]:
+            abs_path = (config.DOWNLOADS_DIR / rel).resolve()
+            try:
+                abs_path.relative_to(config.DOWNLOADS_DIR.resolve())
+            except ValueError:
+                continue  # path escapes DOWNLOADS_DIR; skip defensively
+            thumb_uris.append(abs_path.as_uri())
+        items_html = "".join(
+            f"<li><img src=\"{html.escape(uri)}\" alt=\"\"></li>"
+            for uri in thumb_uris
+        )
+        gallery_section = (
+            f"<section class='gallery-section'>"
+            f"<h2>{html.escape(meta_label)}</h2>"
+            f"<p class='gallery-meta'>{html.escape(meta_caption)}</p>"
+            f"<ul class='gallery-strip'>{items_html}</ul>"
+            f"</section>"
+        )
+    else:
+        gallery_section = ""
+
+    # gallery-dl version row in the tools table — only when gallery-dl
+    # ran or was attempted; otherwise the row is suppressed so video
+    # captures keep the same compact 4-row table they had pre-v0.5.
+    gallery_dl_version = tools.get("gallery_dl_version")
+    if gallery_dl_version:
+        tool_gallery_dl_row = (
+            f"<tr><td class='label'>{html.escape(labels['pdf.report.field.gallery_dl_version'])}</td>"
+            f"<td><code>{html.escape(str(gallery_dl_version))}</code></td></tr>"
+        )
+    else:
+        tool_gallery_dl_row = ""
+
     footer_template = labels.get(
         "pdf.footer",
         "Capsule evidence export · {context} · page {page} of {pages}",
@@ -539,6 +595,8 @@ def _render_item_report_html(
         "{{tool_chromium_version}}": html.escape(str(tools.get("chromium_version") or dash)),
         "{{tool_browsertrix_version}}": html.escape(str(tools.get("browsertrix_version") or dash)),
         "{{capture_block}}": capture_block,
+        "{{gallery_section}}": gallery_section,
+        "{{tool_gallery_dl_row}}": tool_gallery_dl_row,
         "{{footer_note}}": html.escape(footer_note),
         "{{label.brand_name}}": html.escape(labels["pdf.brand.name"]),
         "{{label.brand_tagline}}": html.escape(labels["pdf.brand.tagline.report"]),
