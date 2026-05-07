@@ -297,8 +297,18 @@ For a media capture `foo.mp4`, write into `sidecars/foo/`. For a page-only captu
 | `{stem}.description.txt`   | Media kind only  | Video description, plain text, LF line endings (yt-dlp `--write-description`)                                                                                                                                                                                                                                                                                                      |
 | `{stem}.thumbnail.{ext}`   | Media kind only  | Best available thumbnail (yt-dlp `--write-thumbnail`)                                                                                                                                                                                                                                                                                                                              |
 | `{stem}.{lang}.vtt`        | When requested   | Subtitles per language (yt-dlp `--write-subs`)                                                                                                                                                                                                                                                                                                                                     |
+| `{stem}.user-browser.tab-context.json`    | Extension live capture | Investigator's UA / viewport / scroll / timezone / referrer / color-scheme. The backend canonical capture mirrors these fields. (v2)                                                                                                                                                                                                          |
+| `{stem}.user-browser.session-state.json`  | Extension live capture | Per-origin localStorage and sessionStorage. Some sites carry session JWTs in localStorage; without this the backend re-fetch may render as logged-out even with valid cookies. (v2)                                                                                                                                                            |
+| `{stem}.user-browser.dom-snapshot.html`   | Extension live capture | Click-time `document.documentElement.outerHTML` from the user's authenticated browser. Distinct from the Playwright MHTML — locks in exactly what the investigator was looking at. (v2)                                                                                                                                                       |
+| `{stem}.user-browser.dom-snapshot.json`   | Extension live capture | Structural counts that go with the DOM HTML (node count, iframe count, video count, image total + visible). (v2)                                                                                                                                                                                                                              |
 
-`{stem}.meta.json` is the canonical record. Schema lives at `/app/schemas/meta.schema.json` and is versioned (`"schema_version": 1`). When the schema changes, write a migration.
+`{stem}.meta.json` is the canonical record. Schema lives at `/app/schemas/meta.schema.json` and is versioned (`"schema_version": 2`). When the schema changes, write a migration. v2 (hardening pass) adds:
+
+- `capture` — the capture report: render-wait outcomes (`load`, `fonts`, `images`, `video`, `lazy_load`, `networkidle`), blocked-request count + sample, `blocklist_version`, `banner_hide_applied`, `banner_hide_version`, `tab_context_used`.
+- `cookies_snapshot_sha256` — SHA-256 of the cookies file the job consumed; binds the capture to the exact cookie set without ever logging values.
+- `ephemeral_cookies_used` — true iff the job used a one-shot ephemeral cookie file (extension-supplied, never persisted to the case directory).
+
+The new sidecars are referenced by hash in `meta.json` and therefore transitively signed by `meta.json.sig` — no extra signing path required.
 
 ---
 
@@ -458,11 +468,13 @@ The script is checked into the repo at `app/templates/verify.py.tmpl` and copied
 
 Investigators commonly need cookies/logged-in sessions. The cookies workflow is a **primary feature**, not Advanced.
 
-- Per-case cookies file: `/config/cases/{case_slug}/cookies.txt` (Netscape format, 0600).
-- Upload via UI: case detail → Cookies tab → upload `cookies.txt`. Server parses, lists domains and expirations, stores at the path above.
+- **Recommended path: the Capsule browser extension.** Pair it with the Capsule UI; click "Send this tab" and the extension iterates every cookie store (default + container + partitioned), strips the values to a Netscape file the backend writes, and submits the URL as a job. The extension handles HttpOnly cookies (which `document.cookie` cannot expose) and partitioned third-party cookies, and runs a pre-capture readiness gate so the live snapshot reflects a stable page.
+- Fallback: per-case cookies file at `/config/cases/{case_slug}/cookies.txt` (Netscape format, 0600). Upload via UI: case detail → Cookies tab → upload `cookies.txt`. Same downstream consumers — yt-dlp, Playwright, browsertrix all read the same file.
 - **Auto-attach for social-media domains.** When a pasted URL matches a domain that has cookies in the active case, the UI shows an "Authenticated as {domain}" chip on the capture preview, and the cookies are passed to **both yt-dlp and Playwright/browsertrix**. This ensures the page snapshot and the media come from the same authenticated session. The list of social-media domains is maintained in `app/platforms.py` (`is_social(domain)`), covering at minimum: Twitter/X, Facebook, Instagram, TikTok, LinkedIn, Reddit, YouTube (private/age-gated), Threads.
-- Cookies are **never logged**, **never included in evidence exports**, and **never echoed in audit-log details**. Only the list of authenticated domains is logged.
-- Provide `/docs/COOKIES.md` explaining how to export cookies from common browsers via established extensions (we do not ship a browser extension).
+- **Ephemeral cookies (one-shot).** The extension popup exposes a per-submission "Ephemeral cookies" toggle. When set, cookies ride to the backend in a per-job tmpdir, are used by Playwright/browsertrix/yt-dlp for that one job, and are discarded after the job ends — never written to the case directory. The audit log records `cookies.ephemeral_used` with the snapshot hash, never values.
+- **Freshness validation.** At job start, the backend hashes the cookies file (`cookies_snapshot_sha256`, recorded in `meta.json` and the audit log) and reports any expired or expiring-soon domains. Stale cookies are still attached (we don't second-guess the user) but the audit log gets a `cookies.stale_at_capture` entry and the SSE stream emits a warning event.
+- Cookies are **never logged**, **never included in evidence exports**, and **never echoed in audit-log details**. Only the list of authenticated domains, the cookie-set SHA-256, and the persistence mode are logged.
+- Provide `/docs/COOKIES.md` explaining how to export cookies from common browsers via established extensions (the Capsule first-party extension is the recommended path; the legacy `cookies.txt` upload remains for users who prefer it).
 
 ---
 
@@ -557,6 +569,7 @@ When working on this project:
 11. **Document as you go.** Public functions get docstrings. The README updates when behavior changes. Integrity-affecting changes update `/docs/VERIFYING_EVIDENCE.md`. Visual-language changes update `/docs/DESIGN.md`.
 12. **When in doubt, choose boring.** Boring is debuggable, translatable, and shippable.
 13. **Preserve, don't modify.** Suppress yt-dlp's metadata muxing. When transformation is unavoidable (e.g., merging separate video+audio streams), log it in the audit log with input and output hashes.
+14. **Capture-side mutations are recorded, never silent.** Network blocks (ad/tracker blocklist) and CSS-only banner hides are explicitly recorded in `meta.json.capture.*` and the audit log (`capture.ads_blocked`, `capture.banners_hidden`, `capture.readiness_timed_out`). Mutations that touch the DOM — auto-clicking consent banners, removing tracker pixel elements, modifying the source HTML — remain forbidden. CSS hiding is OK because the underlying DOM is preserved in the MHTML and WARC; clicking would change the site's consent state and we don't.
 
 ---
 
@@ -606,6 +619,20 @@ The README is the user's first contact. Write for an investigator who has never 
 - **First-tier languages:** English + Arabic (`ar`, generic — revisit if specific dialect requested). Spanish + French follow.
 - **Image size:** ~2GB. Documented in README.
 - **Logo:** bell jar over a browser-window specimen on a plinth — preservation/museum metaphor, deliberately not a UI button. The mark stays neutral graphite; the accent dot inside the window's title bar uses the app accent (teal-600). Variants live under `app/static/icons/brand/` (`logo.svg`, `logo-mono.svg`, `logo-favicon.svg`, `logomark.svg`); the brand-mark section of `docs/DESIGN.md` is the canonical spec.
+
+### Hardening pass (v0.2)
+
+- **Browser extension is the recommended cookie path.** The legacy `cookies.txt` upload remains as a fallback for users who prefer it.
+- **Ad/tracker blocking default ON** at both the backend Playwright capture and the extension's user tab. Single source-of-truth blocklist at `app/static/blocklists/easylist-essentials.json`; extension copy is byte-identical (asserted by `tests/test_blocklist.py`). Toggle: `case.settings_json.block_ads`.
+- **Cookie/consent banner CSS-hide default ON** at the backend Playwright capture. CSS-only — DOM preserved in MHTML and WARC. Toggle: `case.settings_json.hide_cookie_banners`.
+- **Auto-clicking banners forbidden.** CLAUDE.md §13 #14 codifies this.
+- **Real HAR via `chrome.debugger`** is opt-in (default OFF). The yellow Chrome banner is intentional: elevated capability is visible to the user.
+- **Render-wait default profile = "standard"** with caps: load (45s) → fonts (5s) → visible images (10s) → video readyState (8s) → lazy-scroll → networkidle (15s); 60s outer ceiling.
+- **Extension-ID binding enforced for new tokens.** Tokens minted with `extension_id` reject requests whose `X-Extension-Id` header doesn't match. Legacy unbound tokens grandfathered.
+- **Token rotation** via `POST /api/extension/pair/{token_id}/rotate` — new raw token issued, old revoked, label and binding carry over.
+- **Ephemeral cookies opt-in per submission** via `cookie_persistence: "ephemeral"` on `POST /api/extension/capture`. One-shot tmpdir, never written to the case directory, discarded after job completion.
+- **Cookie-set provenance hash** (`cookies_snapshot_sha256`) recorded per job in `meta.json` and the audit log.
+- **New audit actions:** `extension.tab_context_received`, `extension.id_mismatch`, `extension.token_rotated`, `cookies.stale_at_capture`, `cookies.ephemeral_used`, `capture.ads_blocked`, `capture.banners_hidden`, `capture.readiness_timed_out`.
 
 ## 16. Still open
 
