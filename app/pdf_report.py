@@ -217,12 +217,16 @@ class FileEntry:
 
 
 def _file_row_html(entry: FileEntry) -> str:
+    # Forensic re-verification requires the full hex digests — truncated
+    # values can't be recomputed by ``md5sum``/``sha256sum``. The template
+    # uses ``word-break: break-all`` on ``td.hash`` so the long strings
+    # wrap inside the column rather than overflow the page.
     return (
         "<tr>"
         f"<td class='path'><bdi>{html.escape(entry.relpath)}</bdi></td>"
         f"<td class='size'>{html.escape(_format_bytes(entry.size))}</td>"
-        f"<td class='hash'><code>{html.escape(entry.md5[:16])}…</code></td>"
-        f"<td class='hash'><code>{html.escape(entry.sha256[:16])}…</code></td>"
+        f"<td class='hash'><code>{html.escape(entry.md5)}</code></td>"
+        f"<td class='hash'><code>{html.escape(entry.sha256)}</code></td>"
         "</tr>"
     )
 

@@ -5,8 +5,12 @@
   <title>Capsule item manifest — {{title}}</title>
   <style>
     @page {
-      size: A4;
-      margin: 18mm 16mm 22mm 16mm;
+      /* Landscape so the full 32-hex MD5 and 64-hex SHA-256 fit alongside
+         the relative path and size without overflow. Forensic
+         re-verification requires the full digests; truncating them would
+         make ``sha256sum -c`` impossible. */
+      size: A4 landscape;
+      margin: 14mm 14mm 18mm 14mm;
       @bottom-center {
         content: "{{label.footer_prefix}} " counter(page) " / " counter(pages);
         font-family: "Inter", "Noto Sans CJK JP", "Noto Sans CJK KR",
@@ -56,28 +60,34 @@
     }
     .header dt { color: #475569; font-weight: 600; }
     .header dd { margin: 0; word-break: break-all; }
-    code { font-family: "Menlo", "Courier New", monospace; font-size: 9pt; }
+    code { font-family: "Menlo", "Courier New", monospace; font-size: 7.5pt; }
     .manifest-table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 9pt;
+      /* 8pt + landscape leaves comfortable room for the full 32-hex MD5
+         and 64-hex SHA-256 alongside the relative path. */
+      font-size: 8pt;
+      table-layout: fixed;
     }
     .manifest-table thead th {
       text-align: start;
       font-weight: 600;
       color: #475569;
       border-bottom: 1px solid #cbd5e1;
-      padding: 4pt 6pt;
+      padding: 3pt 5pt;
       background: #f8fafc;
     }
     .manifest-table tbody td {
       border-bottom: 1px solid #f1f5f9;
-      padding: 3pt 6pt;
+      padding: 2pt 5pt;
       vertical-align: top;
     }
     .manifest-table td.path { word-break: break-all; }
     .manifest-table td.size { white-space: nowrap; color: #475569; }
-    .manifest-table td.hash { white-space: nowrap; }
+    /* Full hex digests wrap inside the cell — never truncated, never
+       overflow the page. */
+    .manifest-table td.hash { word-break: break-all; }
+    .manifest-table td.hash code { display: inline-block; line-height: 1.25; }
     .empty { color: #94a3b8; font-style: italic; }
     bdi { unicode-bidi: isolate; }
   </style>
