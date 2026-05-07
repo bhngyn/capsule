@@ -616,10 +616,12 @@ def test_manifest_pdf_hash_present_in_meta_and_checksums(env):
     assert meta["checksums"]["manifest_pdf"]["sha256"]
     cs_text = (result.meta_json_path.parent / f"{result.stem}.checksums.txt").read_text()
     assert ".manifest.pdf" in cs_text
-    # Schema v5: adds url_canonical + force_recapture_index for the §15
-    # duplicate-handling flow. Manifest + report PDFs continue to ride
-    # the same artifact-binding transitive signature path.
-    assert meta["schema_version"] == 5
+    # Schema v6: adds the gallery capture_kind (gallery_count /
+    # gallery_extractor / gallery_NNN artifact roles), tools.gallery_dl_version,
+    # and capture.gallery_attempted / .gallery_outcome. Per CLAUDE.md §13.15,
+    # schema and producer move in lockstep. Manifest + report PDFs continue
+    # to ride the same artifact-binding transitive signature path.
+    assert meta["schema_version"] == 6
     assert meta["url_canonical"]
     assert meta["force_recapture_index"] is None
 

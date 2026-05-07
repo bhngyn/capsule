@@ -96,6 +96,17 @@ class CaptureInput:
     page_screenshot: Path | None = None  # Phase 2
     page_warc: Path | None = None  # Phase 2
     extra_sidecars: list[Path] = field(default_factory=list)  # description, thumbnail, subs
+    # Gallery pass v0.5: gallery-dl producer outputs. Used when yt-dlp
+    # returned no media but gallery-dl pulled images from the URL — see
+    # CLAUDE.md §15. ``gallery_files`` are the images themselves;
+    # ``gallery_metadata_files`` are gallery-dl's per-image JSON
+    # sidecars + the gallery-level info.json. ``gallery_extractor`` is
+    # gallery-dl's ``category`` (e.g. ``"pixiv"``, ``"twitter"``); used
+    # to pick the friendly platform slug.
+    gallery_files: list[Path] = field(default_factory=list)
+    gallery_metadata_files: list[Path] = field(default_factory=list)
+    gallery_extractor: str | None = None
+    gallery_dl_version: str | None = None
     authenticated_domains: list[str] = field(default_factory=list)
     chromium_version: str = "0"  # Phase 2 sets this
     browsertrix_version: str = "0"  # Phase 2 sets this
@@ -179,12 +190,21 @@ def compute_hashes(path: Path) -> dict[str, Any]:
 def _stem_for(
     capture_input: CaptureInput, info: dict[str, Any], capture_kind: str
 ) -> tuple[str, str | None]:
-    """Return ``(stem, ext)``. ``ext`` is None for page-only captures."""
-    platform = (
-        platforms.friendly_name(info.get("extractor_key", ""))
-        if info
-        else platforms.platform_for_url(capture_input.url_final)
-    )
+    """Return ``(stem, ext)``. ``ext`` is None for page-only and gallery captures."""
+    if capture_kind == "gallery":
+        # gallery-dl publishes its extractor as ``category`` (lower-case);
+        # fall back to the URL hint when category is missing.
+        platform = (
+            platforms.gallery_friendly_name(capture_input.gallery_extractor)
+            if capture_input.gallery_extractor
+            else platforms.platform_for_url(capture_input.url_final)
+        )
+    else:
+        platform = (
+            platforms.friendly_name(info.get("extractor_key", ""))
+            if info
+            else platforms.platform_for_url(capture_input.url_final)
+        )
     if capture_kind == "media":
         ext = info.get("ext", "") if info else ""
         upload_date_raw = info.get("upload_date") if info else None
@@ -203,8 +223,18 @@ def _stem_for(
         )
         # canonical_filename appends ``.{ext}`` only when ``ext`` is truthy.
         return stem_no_ext.rstrip("."), ext
-    # page_only
-    page_title = (info.get("title") if info else None) or capture_input.url_final
+    # page_only OR gallery — both reuse the page-only stem pattern. Gallery
+    # captures don't have a single video_id but do have a page title (from
+    # the gallery's info.json) and a URL.
+    if capture_kind == "gallery" and capture_input.gallery_extractor:
+        gi = info or {}
+        page_title = (
+            gi.get("title")
+            or gi.get("subcategory")
+            or capture_input.url_final
+        )
+    else:
+        page_title = (info.get("title") if info else None) or capture_input.url_final
     stem = sanitize.canonical_page_only_stem(
         platform=platform,
         page_title=page_title,
@@ -286,8 +316,18 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
     items_root = cases.item_dir_for(case.slug)
     items_root.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: capture_kind
-    capture_kind = "media" if capture_input.media_files else "page_only"
+    # Step 1: capture_kind. Three-way decision (CLAUDE.md §15 Gallery
+    # pass v0.5): ``media`` wins (yt-dlp produced a video/audio file);
+    # else ``gallery`` if gallery-dl produced any images; else
+    # ``page_only`` (the page snapshot is still preserved). The
+    # orchestrator only invokes gallery-dl in the no-media branch, so the
+    # ``media`` and ``gallery`` cases here are mutually exclusive.
+    if capture_input.media_files:
+        capture_kind = "media"
+    elif capture_input.gallery_files:
+        capture_kind = "gallery"
+    else:
+        capture_kind = "page_only"
 
     # url_hash for de-dup. We compute this from the *canonical* form of
     # url_final so two paste-variants of the same URL collapse to the
@@ -362,6 +402,78 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             moved.append(dest)
             artifacts[f"sidecar_{rel_name}"] = paths.relative_to_downloads(dest)
 
+        # Gallery pass v0.5: gallery-dl outputs.
+        #
+        # Each image becomes one ``gallery_NNN`` artifact (NNN is a 1-based
+        # 3-digit zero-padded index). gallery-dl's per-image metadata
+        # sidecar (``<image>.json`` next to each image) becomes
+        # ``gallery_NNN_meta``. The gallery-level ``info.json`` becomes
+        # ``gallery_info``. Any other metadata file (rare; e.g. ``--write-tags``
+        # output) lands as ``gallery_extra_NNN_meta``.
+        #
+        # We sort the image list before indexing so that NNN order is
+        # deterministic across capture / re-verify, regardless of
+        # filesystem walk order.
+        if capture_kind == "gallery":
+            sorted_galleries = sorted(
+                (p for p in capture_input.gallery_files if p.exists()),
+                key=lambda p: (p.name, str(p)),
+            )
+            # Map the gallery-dl per-image JSON sidecars (named
+            # ``<image-name>.<image-ext>.json``) by their *image* path so we
+            # can pair them up after the move. Path equality is post-move
+            # because we move images first.
+            metadata_by_image: dict[str, Path] = {}
+            other_metadata: list[Path] = []
+            gallery_info_src: Path | None = None
+            for m in capture_input.gallery_metadata_files:
+                if not m.exists():
+                    continue
+                if m.name == "info.json":
+                    gallery_info_src = m
+                    continue
+                # gallery-dl writes ``<image>.json`` — strip the trailing
+                # ``.json`` to recover the image name.
+                if m.name.endswith(".json"):
+                    image_name = m.name[: -len(".json")]
+                    metadata_by_image[image_name] = m
+                    continue
+                other_metadata.append(m)
+
+            for idx, src in enumerate(sorted_galleries, start=1):
+                role = f"gallery_{idx:03d}"
+                ext_clean = src.suffix.lstrip(".") or "bin"
+                tail = f"{stem}.{idx:03d}.{ext_clean}"
+                dest = _move_into(item_dir, src, new_name=tail)
+                moved.append(dest)
+                artifacts[role] = paths.relative_to_downloads(dest)
+                meta_src = metadata_by_image.pop(src.name, None)
+                if meta_src is not None:
+                    meta_tail = f"{stem}.{idx:03d}.json"
+                    meta_dest = _move_into(item_dir, meta_src, new_name=meta_tail)
+                    moved.append(meta_dest)
+                    artifacts[f"{role}_meta"] = paths.relative_to_downloads(meta_dest)
+
+            if gallery_info_src is not None:
+                info_dest = _move_into(
+                    item_dir, gallery_info_src, new_name=f"{stem}.gallery_info.json"
+                )
+                moved.append(info_dest)
+                artifacts["gallery_info"] = paths.relative_to_downloads(info_dest)
+
+            # Orphan per-image metadata (image was filtered out by suffix
+            # check, e.g. unrecognized extension) and other metadata
+            # outputs (``--write-tags``, etc.). Preserve them under
+            # ``gallery_extra_NNN_meta`` roles so they get hashed too.
+            extras = list(metadata_by_image.values()) + other_metadata
+            for j, src in enumerate(extras, start=1):
+                if not src.exists():
+                    continue
+                tail = f"{stem}.gallery_extra_{j:03d}{src.suffix}"
+                dest = _move_into(item_dir, src, new_name=tail)
+                moved.append(dest)
+                artifacts[f"gallery_extra_{j:03d}_meta"] = paths.relative_to_downloads(dest)
+
         # Page-snapshot artifacts (Phase 2 fills these in; Phase 1 stubs allowed).
         # Extension-supplied user-browser artifacts ride the same loop —
         # additive supplementary evidence; canonical capture is unchanged.
@@ -424,6 +536,32 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         # ``artifacts`` BEFORE the manifest PDF renders so the manifest's
         # file table includes the ``report_pdf`` row, AND meta.json.sig
         # transitively binds it through the manifest's checksum entry.
+        # Platform slug for the report PDF mirrors meta.platform: gallery
+        # captures use gallery-dl's category, others use yt-dlp's
+        # extractor_key (or the URL hint when info is missing).
+        if capture_kind == "gallery" and capture_input.gallery_extractor:
+            report_platform = platforms.gallery_friendly_name(capture_input.gallery_extractor)
+        else:
+            report_platform = (
+                platforms.friendly_name(info.get("extractor_key", ""))
+                if info
+                else platforms.platform_for_url(capture_input.url_final)
+            )
+
+        # Gallery thumbnail strip — the report PDF renders an <img>-strip
+        # of the first N images so a court reviewer can see the gallery's
+        # contents at a glance. We pass the relative paths only; the
+        # template resolves them against ``DOWNLOADS_DIR``.
+        gallery_thumbnails = (
+            [
+                artifacts[k]
+                for k in sorted(artifacts)
+                if len(k) == 11 and k.startswith("gallery_") and k[8:11].isdigit()
+            ]
+            if capture_kind == "gallery"
+            else []
+        )
+
         report_view = {
             "title": title_sanitized_for_pdf,
             "source_url": capture_input.url_submitted,
@@ -431,11 +569,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             "redirect_chain": list(capture_input.redirect_chain or []),
             "captured_utc": capture_input.capture_date,
             "signing_key_fp": fp,
-            "platform": (
-                platforms.friendly_name(info.get("extractor_key", ""))
-                if info
-                else platforms.platform_for_url(capture_input.url_final)
-            ),
+            "platform": report_platform,
             "uploader": (info.get("uploader") or info.get("channel")) if info else None,
             "upload_date": info.get("upload_date") if info else None,
             "duration_seconds": info.get("duration") if info else None,
@@ -446,9 +580,15 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 "ytdlp_version": capture_input.ytdlp_version,
                 "chromium_version": capture_input.chromium_version,
                 "browsertrix_version": capture_input.browsertrix_version,
+                "gallery_dl_version": capture_input.gallery_dl_version,
             },
             "capture": capture_block_for_report,
             "manifest_filename": f"{stem}.manifest.pdf",
+            # Gallery pass v0.5
+            "capture_kind": capture_kind,
+            "gallery_count": len(gallery_thumbnails),
+            "gallery_extractor": capture_input.gallery_extractor if capture_kind == "gallery" else None,
+            "gallery_thumbnails": gallery_thumbnails,
         }
         report_pdf_bytes = pdf_report.render_item_report(
             case=case, item_view=report_view, lang=capture_input.lang,
@@ -518,8 +658,34 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         # the report-PDF-renderer view and the meta record agree.
         capture_block = capture_block_for_report
 
+        # ``platform`` slug: gallery captures derive theirs from gallery-dl's
+        # extractor (``category``); media + page-only use yt-dlp's
+        # ``extractor_key`` or the URL hint.
+        if capture_kind == "gallery" and capture_input.gallery_extractor:
+            meta_platform = platforms.gallery_friendly_name(capture_input.gallery_extractor)
+        else:
+            meta_platform = (
+                platforms.friendly_name(info.get("extractor_key", ""))
+                if info
+                else platforms.platform_for_url(capture_input.url_final)
+            )
+
+        # Count only the image artifact roles (``gallery_NNN``), not their
+        # per-image ``gallery_NNN_meta`` siblings nor ``gallery_info`` /
+        # ``gallery_extra_*``. The role pattern is exactly
+        # ``gallery_<3-digit>``: 11 chars, last 3 are digits.
+        gallery_count = (
+            sum(
+                1
+                for k in artifacts
+                if len(k) == 11 and k.startswith("gallery_") and k[8:11].isdigit()
+            )
+            if capture_kind == "gallery"
+            else None
+        )
+
         meta = {
-            "schema_version": 5,
+            "schema_version": 6,
             "job_uuid": capture_input.job_uuid,
             "capture_kind": capture_kind,
             "case": {"id": case.id, "slug": case.slug, "name": case.name},
@@ -529,9 +695,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             # ``url_submitted`` and ``url_final`` stay verbatim.
             "url_canonical": canonical_url,
             "url_redirect_chain": capture_input.redirect_chain,
-            "platform": platforms.friendly_name(info.get("extractor_key", ""))
-            if info
-            else platforms.platform_for_url(capture_input.url_final),
+            "platform": meta_platform,
             "video_id": info.get("id") if info else None,
             "uploader": info.get("uploader") or info.get("channel") if info else None,
             "uploader_original": info.get("uploader") or info.get("channel") if info else None,
@@ -553,6 +717,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 "ytdlp_version": capture_input.ytdlp_version,
                 "chromium_version": capture_input.chromium_version,
                 "browsertrix_version": capture_input.browsertrix_version,
+                "gallery_dl_version": capture_input.gallery_dl_version,
             },
             # Hardening pass: capture-side mutations and the cookie-set
             # provenance hash. Per CLAUDE.md §13, every blocking and every
@@ -565,6 +730,11 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             # Set when this row was an intentional re-capture per §15.
             # ``None`` for the original / non-forced captures.
             "force_recapture_index": force_recapture_index,
+            # Gallery pass v0.5: count and extractor surfaced at the root
+            # so callers can discriminate without parsing artifact keys.
+            # ``null`` for non-gallery kinds.
+            "gallery_count": gallery_count,
+            "gallery_extractor": capture_input.gallery_extractor if capture_kind == "gallery" else None,
             "audit_log_entry_id": None,  # filled below
             "signing_key_fp": fp,
         }
@@ -634,19 +804,27 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 raise DuplicateCapture(existing_id=int(row["id"])) from exc
             raise
 
+        download_details: dict[str, Any] = {
+            "stem": stem,
+            "capture_kind": capture_kind,
+            "url_hash": url_hash,
+            "platform": meta["platform"],
+            "authenticated_domains": list(capture_input.authenticated_domains),
+        }
+        if capture_kind == "gallery":
+            # Pinning the count + extractor on the audit row gives an
+            # evidence reviewer a quick "what does this row preserve?"
+            # answer without having to read the meta.json — the same role
+            # that ``video_id`` plays for media kinds.
+            download_details["gallery_count"] = gallery_count
+            download_details["gallery_extractor"] = capture_input.gallery_extractor
         audit_id = audit.append(
             conn,
             "download.created",
             case_id=case.id,
             download_id=download_id,
             actor="system",
-            details={
-                "stem": stem,
-                "capture_kind": capture_kind,
-                "url_hash": url_hash,
-                "platform": meta["platform"],
-                "authenticated_domains": list(capture_input.authenticated_domains),
-            },
+            details=download_details,
         )
 
         # Per-item manifest PDF event — recorded so a future evidence

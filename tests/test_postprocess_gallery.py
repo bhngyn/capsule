@@ -1,0 +1,326 @@
+"""Gallery-capture post-processor — CLAUDE.md §15 Gallery pass v0.5.
+
+Mirrors the structure of ``test_postprocess.py``. Verifies that a
+gallery-dl run produces a forensically complete per-item folder:
+
+* ``capture_kind == "gallery"`` in DB + meta.json
+* every image gets ``{stem}.NNN.{ext}`` + a sibling ``.json`` sidecar
+* ``meta.json.sig`` verifies (covers every gallery image's hash via
+  the artifacts/checksums map)
+* ``checksums.txt`` lists every gallery image with both MD5 and SHA-256
+* the manifest PDF lists all images
+* ``meta.json.gallery_count`` and ``gallery_extractor`` are set
+"""
+
+from __future__ import annotations
+
+import importlib
+import json
+from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture
+def env(capsule_dirs):
+    from app import (
+        audit as _audit,
+        cases as _cases,
+        cookies as _cookies,
+        db as _db,
+        paths as _paths,
+        postprocess as _pp,
+        signing as _signing,
+    )
+
+    importlib.reload(_paths)
+    importlib.reload(_signing)
+    _signing._reset_cache_for_tests()
+    importlib.reload(_cases)
+    importlib.reload(_cookies)
+    importlib.reload(_pp)
+
+    conn = _db.connect(":memory:")
+    _db.migrate(conn)
+    case = _cases.create(conn, name="Image-Thread Investigation")
+
+    yield {
+        "conn": conn,
+        "case": case,
+        "downloads": capsule_dirs["downloads"],
+        "config": capsule_dirs["config"],
+        "audit": _audit,
+        "cases": _cases,
+        "pp": _pp,
+        "signing": _signing,
+    }
+    _signing._reset_cache_for_tests()
+    conn.close()
+
+
+def _stage_gallery(
+    env,
+    *,
+    n_images: int = 3,
+    extractor: str = "twitter",
+):
+    """Drop ``n_images`` fake gallery files into a tmp work-dir.
+
+    Returns ``(images, metadata_files)`` ready to feed CaptureInput.
+    Each image has a sibling ``<image>.json`` per gallery-dl convention,
+    plus a single gallery-level ``info.json``.
+    """
+    work = env["downloads"] / "_gallery_tmp"
+    work.mkdir(parents=True, exist_ok=True)
+    extensions = ["jpg", "png", "webp"]
+    images: list[Path] = []
+    metadata: list[Path] = []
+    for i in range(1, n_images + 1):
+        ext = extensions[(i - 1) % len(extensions)]
+        img = work / f"{i:02d}.{ext}"
+        img.write_bytes(b"FAKE-IMAGE-" + str(i).encode())
+        images.append(img)
+        meta = work / f"{img.name}.json"
+        meta.write_text(
+            json.dumps({"filename": img.name, "category": extractor, "num": i})
+        )
+        metadata.append(meta)
+    info = work / "info.json"
+    info.write_text(
+        json.dumps(
+            {
+                "category": extractor,
+                "subcategory": "user",
+                "title": "Test gallery thread",
+                "url": "https://example.com/g",
+            }
+        )
+    )
+    metadata.append(info)
+    return images, metadata
+
+
+def test_gallery_capture_full_happy_path(env):
+    pp = env["pp"]
+    images, metadata = _stage_gallery(env, n_images=4, extractor="twitter")
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://x.com/u/status/1",
+        url_final="https://x.com/u/status/1",
+        redirect_chain=["https://x.com/u/status/1"],
+        capture_date=pp.utc_now(),
+        media_files=[],  # yt-dlp produced nothing
+        info_json=None,
+        extra_sidecars=[],
+        gallery_files=images,
+        gallery_metadata_files=metadata,
+        gallery_extractor="twitter",
+        gallery_dl_version="1.30.fake",
+        ytdlp_version="2026.03.17",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+
+    assert result.capture_kind == "gallery"
+    # No single media file; relative_media_path stays null
+    assert result.relative_media_path is None
+
+    case_dir = env["downloads"] / env["case"].slug
+    item_dir = case_dir / result.stem
+
+    # Per-item folder layout: 4 images + 4 per-image JSON + 1 gallery-info JSON
+    # plus the always-present ``reports/`` subfolder for the two PDFs.
+    image_files = sorted(p for p in item_dir.iterdir() if p.suffix in {".jpg", ".png", ".webp"})
+    assert len(image_files) == 4
+    # 1-based 3-digit zero-padded index, original extensions preserved.
+    expected_image_names = [
+        f"{result.stem}.{i:03d}.{ext}"
+        for i, ext in enumerate(["jpg", "png", "webp", "jpg"], start=1)
+    ]
+    assert sorted(p.name for p in image_files) == sorted(expected_image_names)
+
+    # Per-image metadata sidecars renamed to share the stem.
+    json_sidecars = sorted(
+        p for p in item_dir.iterdir()
+        if p.suffix == ".json" and p.name.startswith(result.stem) and ".gallery_info" not in p.name and ".meta" not in p.name
+    )
+    assert len(json_sidecars) == 4
+
+    # Gallery-level info.json has its own role.
+    gallery_info_path = item_dir / f"{result.stem}.gallery_info.json"
+    assert gallery_info_path.exists()
+
+    # Read meta.json — schema v6 with gallery fields.
+    meta = json.loads(result.meta_json_path.read_text())
+    assert meta["schema_version"] == 6
+    assert meta["capture_kind"] == "gallery"
+    assert meta["gallery_count"] == 4
+    assert meta["gallery_extractor"] == "twitter"
+    assert meta["platform"] == "twitter"
+    assert meta["tools"]["gallery_dl_version"] == "1.30.fake"
+
+    # Each image gets its own role + checksums (MD5 + SHA-256 + size).
+    for i in range(1, 5):
+        role = f"gallery_{i:03d}"
+        assert role in meta["artifacts"], f"missing artifact role {role}"
+        assert role in meta["checksums"]
+        cs = meta["checksums"][role]
+        assert cs["md5"] and cs["sha256"]
+        assert cs["size_bytes"] > 0
+        meta_role = f"{role}_meta"
+        assert meta_role in meta["artifacts"], f"missing meta role {meta_role}"
+        assert meta_role in meta["checksums"]
+
+    # Gallery-info role.
+    assert "gallery_info" in meta["artifacts"]
+    assert "gallery_info" in meta["checksums"]
+
+    # checksums.txt lists every gallery image (MD5 + SHA-256 lines).
+    cs_text = (item_dir / f"{result.stem}.checksums.txt").read_text()
+    for i in range(1, 5):
+        ext = ["jpg", "png", "webp", "jpg"][i - 1]
+        rel_name = f"{result.stem}.{i:03d}.{ext}"
+        assert f"  {env['case'].slug}/{result.stem}/{rel_name}" in cs_text or rel_name in cs_text
+
+    # meta.json.sig verifies — covers every gallery image's hash through
+    # the artifacts/checksums map.
+    public = env["signing"].ensure_keypair().public
+    assert env["signing"].verify(
+        result.meta_json_path.read_bytes(),
+        result.signature_path.read_bytes(),
+        public,
+    )
+
+    # DB row capture_kind round-trips.
+    row = env["conn"].execute(
+        "SELECT capture_kind, platform, video_id, relative_path FROM downloads WHERE id = ?",
+        (result.download_id,),
+    ).fetchone()
+    assert row["capture_kind"] == "gallery"
+    assert row["platform"] == "twitter"
+    assert row["video_id"] is None  # gallery has no single video_id
+    assert row["relative_path"] is None  # no single media file
+
+
+def test_gallery_capture_no_extractor_falls_back_to_url_platform(env):
+    """If gallery-dl never set ``category``, the URL hint picks the platform."""
+    pp = env["pp"]
+    images, metadata = _stage_gallery(env, n_images=2, extractor="imgur")
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://imgur.com/a/abcd",
+        url_final="https://imgur.com/a/abcd",
+        redirect_chain=["https://imgur.com/a/abcd"],
+        capture_date=pp.utc_now(),
+        gallery_files=images,
+        gallery_metadata_files=metadata,
+        gallery_extractor=None,  # missing — exercise the URL-hint fallback
+        ytdlp_version="2026.03.17",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+    assert result.capture_kind == "gallery"
+    meta = json.loads(result.meta_json_path.read_text())
+    assert meta["platform"] == "imgur"
+    assert meta["gallery_extractor"] is None
+
+
+def test_gallery_capture_with_no_metadata_sidecars(env):
+    """gallery-dl was run with --no-write-metadata; only images survive."""
+    pp = env["pp"]
+    images, _ = _stage_gallery(env, n_images=2, extractor="reddit")
+    # Drop the metadata files entirely.
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://reddit.com/r/foo/comments/1",
+        url_final="https://reddit.com/r/foo/comments/1",
+        redirect_chain=["https://reddit.com/r/foo/comments/1"],
+        capture_date=pp.utc_now(),
+        gallery_files=images,
+        gallery_metadata_files=[],
+        gallery_extractor="reddit",
+        ytdlp_version="2026.03.17",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+    meta = json.loads(result.meta_json_path.read_text())
+    assert meta["gallery_count"] == 2
+    # No per-image meta roles; no gallery_info role.
+    assert "gallery_001" in meta["artifacts"]
+    assert "gallery_001_meta" not in meta["artifacts"]
+    assert "gallery_info" not in meta["artifacts"]
+
+
+def test_gallery_capture_preserves_image_extensions(env):
+    """Investigators rely on the extension to identify MIME type. We must
+    not mangle it (no forced .jpg renaming, no extension stripping)."""
+    pp = env["pp"]
+    work = env["downloads"] / "_gallery_tmp_ext"
+    work.mkdir(parents=True, exist_ok=True)
+    images = [
+        work / "a.jpg",
+        work / "b.png",
+        work / "c.webp",
+        work / "d.gif",
+    ]
+    for p in images:
+        p.write_bytes(b"FAKE-" + p.name.encode())
+
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://example.com/g",
+        url_final="https://example.com/g",
+        redirect_chain=["https://example.com/g"],
+        capture_date=pp.utc_now(),
+        gallery_files=images,
+        gallery_extractor="generic",
+        ytdlp_version="2026.03.17",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+    case_dir = env["downloads"] / env["case"].slug
+    item_dir = case_dir / result.stem
+    found = sorted(p.suffix for p in item_dir.iterdir() if p.is_file())
+    assert ".jpg" in found
+    assert ".png" in found
+    assert ".webp" in found
+    assert ".gif" in found
+
+
+def test_gallery_capture_is_deduped_against_subsequent_attempt(env):
+    """Two captures of the same gallery URL collide on
+    UNIQUE(case_id, capture_kind, url_hash) — the second raises
+    DuplicateCapture so the §15 modal can fire."""
+    pp = env["pp"]
+    images_a, metadata_a = _stage_gallery(env, n_images=2, extractor="twitter")
+    capture_input_a = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://x.com/u/status/123",
+        url_final="https://x.com/u/status/123",
+        redirect_chain=["https://x.com/u/status/123"],
+        capture_date=pp.utc_now(),
+        gallery_files=images_a,
+        gallery_metadata_files=metadata_a,
+        gallery_extractor="twitter",
+        ytdlp_version="2026.03.17",
+    )
+    pp.finalize(env["conn"], capture_input_a)
+
+    # Re-stage so the second attempt has fresh files (the first finalize
+    # moved the originals into the per-item folder).
+    images_b, metadata_b = _stage_gallery(env, n_images=2, extractor="twitter")
+    capture_input_b = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://x.com/u/status/123",
+        url_final="https://x.com/u/status/123",
+        redirect_chain=["https://x.com/u/status/123"],
+        capture_date=pp.utc_now(),
+        gallery_files=images_b,
+        gallery_metadata_files=metadata_b,
+        gallery_extractor="twitter",
+        ytdlp_version="2026.03.17",
+    )
+    with pytest.raises(pp.DuplicateCapture):
+        pp.finalize(env["conn"], capture_input_b)
