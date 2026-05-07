@@ -25,9 +25,9 @@ CONFIG_DIR = Path(os.environ.get("CAPSULE_CONFIG_DIR", "/config"))
 HOST_DOWNLOADS_DIR = os.environ.get("CAPSULE_HOST_DOWNLOADS_DIR", "").strip() or None
 
 DEFAULT_LANG = "en"
-# Bundles ship for en/ar (translated) and es/fr (stubbed — values mirror EN
-# until translation lands; merged_with_fallback guarantees no missing keys).
-SUPPORTED_LANGS = ("en", "ar", "es", "fr")
+# Bundles ship for en/ar/ja, all fully translated. merged_with_fallback
+# still guarantees no missing keys if a future bundle drifts.
+SUPPORTED_LANGS = ("en", "ar", "ja")
 RTL_LANGS = frozenset({"ar", "he", "fa", "ur"})
 
 

@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const LANGS = ['en', 'ar', 'es', 'fr'];
+  const LANGS = ['en', 'ar', 'ja'];
   const ROUTES = ['home', 'settings'];
 
   function readPref(key, fallback) {

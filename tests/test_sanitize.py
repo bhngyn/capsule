@@ -82,6 +82,22 @@ class TestSanitizeComponent:
     def test_cjk_passthrough(self):
         assert sanitize_component("你好世界") == "你好世界"
 
+    def test_japanese_hiragana_passthrough(self):
+        assert sanitize_component("あいうえお") == "あいうえお"
+
+    def test_japanese_katakana_passthrough(self):
+        assert sanitize_component("アイウエオ") == "アイウエオ"
+
+    def test_japanese_kanji_passthrough(self):
+        assert sanitize_component("日本語キャプチャ") == "日本語キャプチャ"
+
+    def test_japanese_halfwidth_katakana_nfkc_normalises(self):
+        # NFKC converts half-width to full-width katakana
+        assert sanitize_component("ｱｲｳ") == "アイウ"
+
+    def test_japanese_fullwidth_romaji_nfkc_normalises(self):
+        assert sanitize_component("Ｃａｐｓｕｌｅ") == "Capsule"
+
     def test_emoji_passthrough(self):
         # Emoji are not in the illegal set; they survive.
         assert sanitize_component("hi 👋") == "hi 👋"
