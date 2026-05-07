@@ -26,6 +26,7 @@ def test_migrate_creates_all_tables(conn):
     # Migrations apply in order; assert at least the base versions are present.
     assert 0 in applied
     assert 1 in applied
+    assert 3 in applied  # Track A: sidecar_dir → item_dir rename
     rows = {
         row["name"]
         for row in conn.execute(
@@ -57,13 +58,13 @@ def test_unique_capture_constraint(conn):
     base = (
         case_id, "j1", "media", "https://x.com/1", "https://x.com/1",
         "twitter", "1", "abcdef012345", "u", "t", "T", None,
-        "2026-05-06T00:00:00+00:00", None, "downloads/c/sidecars/x",
+        "2026-05-06T00:00:00+00:00", None, "c/x",
         None, None, None, None, "1.0", "0", "0", "0.1.0", "fp", "{}",
     )
     cols = (
         "case_id, job_uuid, capture_kind, source_url, final_url, platform, "
         "video_id, url_hash, uploader, title, title_original, upload_date, "
-        "capture_date, relative_path, sidecar_dir, file_size_bytes, md5, "
+        "capture_date, relative_path, item_dir, file_size_bytes, md5, "
         "sha256, duration_seconds, ytdlp_version, chromium_version, "
         "browsertrix_version, app_version, signing_key_fp, meta_json"
     )

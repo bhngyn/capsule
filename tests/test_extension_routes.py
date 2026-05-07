@@ -69,7 +69,10 @@ async def client(capsule_dirs, monkeypatch):
             }
 
     class _StubOrchestrator:
-        async def submit(self, *, case_id, url):
+        async def submit(self, *, case_id, url, lang=None, **_kwargs):
+            # Accept (and ignore) the Track A ``lang`` kwarg so the
+            # stub matches the real signature; the real orchestrator
+            # threads it into ``CaptureInput.lang``.
             return _StubJob(case_id, url)
 
         async def rehydrate(self):

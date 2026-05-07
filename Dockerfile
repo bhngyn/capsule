@@ -22,8 +22,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # ffmpeg: required for yt-dlp's video+audio mux fallback path.
 # tini: PID 1 reaper so SIGINT/SIGTERM propagate cleanly to uvicorn.
+# fonts-noto-cjk + fonts-noto: provide Japanese, Chinese, Korean, and
+# Arabic glyph coverage for WeasyPrint-rendered PDFs (case_report.pdf
+# and the per-item manifest PDF). Without these, RTL Arabic and CJK
+# locales render as tofu boxes in evidence bundles.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg tini \
+ && apt-get install -y --no-install-recommends \
+        ffmpeg tini fonts-noto-cjk fonts-noto \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
