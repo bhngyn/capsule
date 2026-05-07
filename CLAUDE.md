@@ -233,18 +233,19 @@ Every capture produces, at minimum, a page snapshot package (MHTML + screenshot 
 ### Path layout
 
 ```
-/downloads/{case_slug}/{stem}/                          ← per-item folder
-/downloads/{case_slug}/{stem}/{stem}.{ext}              ← media file (if any)
-/downloads/{case_slug}/{stem}/{stem}.manifest.pdf       ← per-item manifest PDF (full hashes, A4 landscape)
-/downloads/{case_slug}/{stem}/{stem}.report.pdf         ← per-item human-readable report PDF
-/downloads/{case_slug}/{stem}/{stem}.meta.json          ← canonical record
+/downloads/{case_slug}/{stem}/                              ← per-item folder
+/downloads/{case_slug}/{stem}/{stem}.{ext}                  ← media file (if any)
+/downloads/{case_slug}/{stem}/{stem}.meta.json              ← canonical record
 /downloads/{case_slug}/{stem}/{stem}.meta.json.sig
 /downloads/{case_slug}/{stem}/{stem}.checksums.txt
 /downloads/{case_slug}/{stem}/{stem}.page.{mhtml,png,warc.gz}
-...                                                     ← per-item folder is flat
+/downloads/{case_slug}/{stem}/reports/                      ← human-readable PDFs
+/downloads/{case_slug}/{stem}/reports/{stem}.manifest.pdf   ← per-item manifest PDF (full hashes, A4 landscape)
+/downloads/{case_slug}/{stem}/reports/{stem}.report.pdf     ← per-item human-readable report PDF
+...
 ```
 
-Per-item folder keeps the case folder browsable: each capture is a single, self-contained folder with the media file, the page snapshot, the manifest PDF, and forensic sidecars all colocated.
+Per-item folder keeps the case folder browsable: each capture is a single, self-contained folder with the media file, the page snapshot, and the forensic sidecars at the top tier, plus a `reports/` subfolder grouping the two human-readable PDFs so the case directory stays scannable. The PDFs render in the UI locale active at submission time (`lang` flows from the frontend through `JobBatch` → `JobOrchestrator.submit` → `CaptureInput.lang` → `pdf_report.render_item_{report,manifest}`).
 
 ### Canonical filename pattern (media kind)
 
@@ -293,12 +294,12 @@ twitter__Some_Important_Tweet_Title__dl-2026-05-06__a1b2c3d4e5f6        (page_on
 
 ## 6. Item folder contents
 
-For every capture, all files live together in `/downloads/{case_slug}/{stem}/`. The media file (if any) and every sidecar are stem-prefixed so they remain forensically identifiable when copied or extracted from the folder.
+For every capture, all files live together in `/downloads/{case_slug}/{stem}/`. The media file (if any) and every sidecar are stem-prefixed so they remain forensically identifiable when copied or extracted from the folder. The two human-readable PDFs live in a `reports/` subfolder so the case directory stays scannable; both are still referenced by hash in `meta.json` and therefore signed transitively via `meta.json.sig`.
 
-| File                       | Always present? | Source / contents                                                                                                                                                                                                                                                                                                                                                                  |
-|----------------------------|------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `{stem}.manifest.pdf`      | Yes              | Locale-aware per-item evidence manifest (PDF, A4 landscape). Header with source URL, capture timestamp UTC, and signing-key fingerprint, then a table of every file in the item folder with **full** MD5 (32 hex) and **full** SHA-256 (64 hex) — verifier-ready, no truncation. Hash recorded in `meta.json` and `checksums.txt` and transitively signed via `meta.json.sig`. |
-| `{stem}.report.pdf`        | Yes              | Locale-aware per-item human-readable report (PDF). Provenance (URLs, redirects, capture timestamp UTC, uploader, title, upload date, duration, authenticated domains), full untruncated description (paginated), tools/versions table, and capture-side report (render-wait outcomes, blocked-request count, banner-hide flags, readiness, report locale). Companion to `{stem}.manifest.pdf`. Hash recorded in `meta.json` and `checksums.txt` and transitively signed via `meta.json.sig`. |
+| File                              | Always present? | Source / contents                                                                                                                                                                                                                                                                                                                                                                  |
+|-----------------------------------|------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `reports/{stem}.manifest.pdf`     | Yes              | Locale-aware per-item evidence manifest (PDF, A4 landscape). Header with source URL, capture timestamp UTC, and signing-key fingerprint, then a table of every file in the item folder with **full** MD5 (32 hex) and **full** SHA-256 (64 hex) — verifier-ready, no truncation. Rendered in the UI locale active at submission time. Hash recorded in `meta.json` and `checksums.txt` and transitively signed via `meta.json.sig`. |
+| `reports/{stem}.report.pdf`       | Yes              | Locale-aware per-item human-readable report (PDF). Provenance (URLs, redirects, capture timestamp UTC, uploader, title, upload date, duration, authenticated domains), full untruncated description (paginated), tools/versions table, and capture-side report (render-wait outcomes, blocked-request count, banner-hide flags, readiness, report locale). Companion to `reports/{stem}.manifest.pdf`. Rendered in the UI locale active at submission time. Hash recorded in `meta.json` and `checksums.txt` and transitively signed via `meta.json.sig`. |
 | `{stem}.meta.json`         | Yes              | **Our** structured metadata. Includes capture_kind, filenames, original/final URLs, redirect chain, response headers, platform, uploader, title (sanitized + original), description, upload_date, capture_date (UTC), duration, format details, file sizes, MD5/SHA-256 of every artifact, app/yt-dlp/browsertrix/Chromium versions, signing key fingerprint, audit-log entry id, list of authenticated domains (no cookie values) |
 | `{stem}.meta.json.sig`     | Yes              | Detached Ed25519 signature of `meta.json`                                                                                                                                                                                                                                                                                                                                          |
 | `{stem}.checksums.txt`     | Yes              | Lines of `MD5  <hash>  <relpath>` and `SHA256  <hash>  <relpath>` for every artifact (compatible with `md5sum -c` / `sha256sum -c`)                                                                                                                                                                                                                                              |
@@ -455,16 +456,18 @@ Per-case export bundle:
 ├── verify.py                         ← standalone verifier (only `cryptography` dependency)
 ├── README.txt                        ← short instructions for the recipient
 └── downloads/
-    └── {stem}/                       ← per-item folder, flat
-        ├── {stem}.{ext}              ← media file (present for media kind)
-        ├── {stem}.manifest.pdf       ← per-item manifest PDF
+    └── {stem}/                                 ← per-item folder
+        ├── {stem}.{ext}                        ← media file (present for media kind)
         ├── {stem}.meta.json
         ├── {stem}.meta.json.sig
         ├── {stem}.checksums.txt
         ├── {stem}.page.mhtml
         ├── {stem}.page.png
         ├── {stem}.page.warc.gz
-        └── ...                       ← media-only sidecars (info.json, description.txt, thumbnail) per §6
+        ├── reports/
+        │   ├── {stem}.manifest.pdf             ← per-item manifest PDF
+        │   └── {stem}.report.pdf               ← per-item human-readable report PDF
+        └── ...                                 ← media-only sidecars (info.json, description.txt, thumbnail) per §6
 ```
 
 ### PDF report
@@ -657,9 +660,10 @@ The README is the user's first contact. Write for an investigator who has never 
 - **Ephemeral cookies opt-in per submission** via `cookie_persistence: "ephemeral"` on `POST /api/extension/capture`. One-shot tmpdir, never written to the case directory, discarded after job completion.
 - **Cookie-set provenance hash** (`cookies_snapshot_sha256`) recorded per job in `meta.json` and the audit log.
 - **New audit actions:** `extension.tab_context_received`, `extension.id_mismatch`, `extension.token_rotated`, `cookies.stale_at_capture`, `cookies.ephemeral_used`, `capture.ads_blocked`, `capture.banners_hidden`, `capture.readiness_timed_out`.
-- **Per-item PDF manifest** at capture time, locale-aware, hashed in `meta.json` and signed transitively via `meta.json.sig`. Lives at `{stem}.manifest.pdf` inside the per-item folder. As of schema v3, the file table emits **full** MD5 (32 hex) and SHA-256 (64 hex) — no truncation — and the page is A4 landscape so the hashes wrap inside their column without overflow.
-- **Per-item PDF report** (`{stem}.report.pdf`, schema v4) — locale-aware human-readable companion to the manifest PDF. Provenance + full untruncated description + tools/versions + capture report. Hashed and added to `artifacts["report_pdf"]` *before* the manifest PDF renders so the manifest's file table includes the report row, and `meta.json.sig` transitively binds both PDFs.
-- **Layout:** per-item folder colocates media, snapshot, sidecars, and both PDFs under `/downloads/{case}/{stem}/`. Old `sidecars/{stem}/` subfolder removed.
+- **Per-item PDF manifest** at capture time, locale-aware, hashed in `meta.json` and signed transitively via `meta.json.sig`. Lives at `reports/{stem}.manifest.pdf` inside the per-item folder. As of schema v3, the file table emits **full** MD5 (32 hex) and SHA-256 (64 hex) — no truncation — and the page is A4 landscape so the hashes wrap inside their column without overflow.
+- **Per-item PDF report** (`reports/{stem}.report.pdf`, schema v4) — locale-aware human-readable companion to the manifest PDF. Provenance + full untruncated description + tools/versions + capture report. Hashed and added to `artifacts["report_pdf"]` *before* the manifest PDF renders so the manifest's file table includes the report row, and `meta.json.sig` transitively binds both PDFs.
+- **Layout:** per-item folder holds media, snapshot, and forensic sidecars at the root tier; the two human-readable PDFs are grouped under a `reports/` subfolder so the case directory stays scannable. Old `sidecars/{stem}/` subfolder removed.
+- **PDF locale follows the active UI language at submission time.** The frontend submits `lang: this.locale` with each `/api/jobs/batch` body; `JobBatch.lang` flows through `JobOrchestrator.submit` → `Job.lang` → `CaptureInput.lang` → `pdf_report.render_item_{report,manifest}`. Falls back to `config.DEFAULT_LANG` when the caller (e.g. extension) omits the field.
 - **Distribution: per-arch image tags + reproducible build script.** `scripts/build-dist.sh` drives `docker buildx` for both arm64 and amd64, saves the per-arch tars with their content digests, and renders launchers from `dist-templates/Capsule.{command,bat}.in`. Bundled-tar launchers run with the explicit per-arch tag (`capsule:arm64` / `capsule:amd64`) and force-reload the bundled tar whenever the loaded image's digest doesn't match the one stamped into the launcher at build time. Fixes the "AMD64" warning chip on Apple Silicon hosts.
 
 ### Simple-view consolidation (v0.3)
