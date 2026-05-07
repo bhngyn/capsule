@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "__MSG_extName__",
   "short_name": "Capsule",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "default_locale": "en",
   "description": "__MSG_extDescription__",
   "minimum_chrome_version": "116",
@@ -11,7 +11,12 @@
     "tabs",
     "activeTab",
     "storage",
-    "scripting"
+    "scripting",
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback"
+  ],
+  "optional_permissions": [
+    "debugger"
   ],
   "host_permissions": [
     "http://localhost:8080/*",
@@ -40,6 +45,17 @@
     "service_worker": "background.js",
     "type": "module"
   },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "content/readiness.js",
+        "content/dom-snapshot.js",
+        "content/storage-probe.js",
+        "blocklists/easylist-essentials.json"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "browser_specific_settings": {
     "gecko": {
       "id": "capsule@anthropic.example",
