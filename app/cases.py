@@ -5,7 +5,7 @@ inside a case, every evidence export is per-case, every cookies.txt is
 per-case. We keep three things in sync:
 
 * a row in ``cases`` (DB)
-* a folder ``$CAPSULE_DOWNLOADS_DIR/{slug}/`` (with ``sidecars/`` inside)
+* a folder ``$CAPSULE_DOWNLOADS_DIR/{slug}/`` (with per-item folders inside)
 * a folder ``$CAPSULE_CONFIG_DIR/cases/{slug}/`` (cookies live here)
 
 Soft delete (``status = 'archived'``) is the only flavour exposed in v1 —
@@ -40,7 +40,7 @@ __all__ = [
     "update_settings",
     "update_status",
     "downloads_dir_for",
-    "sidecars_dir_for",
+    "item_dir_for",
     "case_config_dir_for",
 ]
 
@@ -90,8 +90,16 @@ def downloads_dir_for(slug: str) -> Path:
     return config.DOWNLOADS_DIR / slug
 
 
-def sidecars_dir_for(slug: str) -> Path:
-    return downloads_dir_for(slug) / "sidecars"
+def item_dir_for(slug: str) -> Path:
+    """Return the case directory under which per-item folders live.
+
+    Track A layout (CLAUDE.md §5/§6): each capture gets its own folder
+    directly under ``downloads_dir_for(slug)`` named after the canonical
+    stem — there is no longer a ``sidecars/`` intermediate. The function
+    therefore returns the case directory itself; the per-item folder is
+    constructed by callers as ``item_dir_for(slug) / stem``.
+    """
+    return downloads_dir_for(slug)
 
 
 def case_config_dir_for(slug: str) -> Path:
@@ -100,7 +108,6 @@ def case_config_dir_for(slug: str) -> Path:
 
 def _provision_dirs(slug: str) -> None:
     downloads_dir_for(slug).mkdir(parents=True, exist_ok=True)
-    sidecars_dir_for(slug).mkdir(parents=True, exist_ok=True)
     case_config_dir_for(slug).mkdir(parents=True, exist_ok=True)
 
 

@@ -1324,7 +1324,7 @@ class JobOrchestrator:
                 "stem": result.stem,
                 "capture_kind": result.capture_kind,
                 "relative_media_path": result.relative_media_path,
-                "relative_sidecar_dir": result.relative_sidecar_dir,
+                "relative_item_dir": result.relative_item_dir,
                 "capture_group_id": job.capture_group_id,
             }
             # Plan §U6 / Phase D: anchor the capture group to the library row

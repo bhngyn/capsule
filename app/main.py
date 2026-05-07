@@ -834,7 +834,7 @@ async def list_library(
         # meta_json blob avoids parsing JSON for every row in a large library.
         sql = (
             "SELECT id, case_id, capture_kind, source_url, final_url, platform, "
-            "video_id, uploader, title, capture_date, relative_path, sidecar_dir, "
+            "video_id, uploader, title, capture_date, relative_path, item_dir, "
             "file_size_bytes, md5, sha256, signing_key_fp, "
             "(meta_json LIKE '%\"user_browser_%') AS has_user_browser_capture "
             "FROM downloads WHERE 1=1"
@@ -931,10 +931,10 @@ async def verify_library(download_id: int | None = None) -> dict[str, Any]:
         for row in rows:
             r = dict(row)
             meta = json.loads(r["meta_json"])
-            sidecar_dir = config.DOWNLOADS_DIR / r["sidecar_dir"]
-            stem = sidecar_dir.name
-            meta_path = sidecar_dir / f"{stem}.meta.json"
-            sig_path = sidecar_dir / f"{stem}.meta.json.sig"
+            item_dir = config.DOWNLOADS_DIR / r["item_dir"]
+            stem = item_dir.name
+            meta_path = item_dir / f"{stem}.meta.json"
+            sig_path = item_dir / f"{stem}.meta.json.sig"
             issues: list[str] = []
             sig_ok = False
             if meta_path.is_file() and sig_path.is_file():

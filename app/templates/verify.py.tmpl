@@ -88,22 +88,16 @@ def _verify_per_item_signatures(export_dir: Path, public_key) -> tuple[bool, lis
     for stem_dir in sorted(downloads.iterdir()):
         if not stem_dir.is_dir():
             continue
-        sidecars = stem_dir / "sidecars"
-        if not sidecars.is_dir():
+        stem = stem_dir.name
+        meta = stem_dir / f"{stem}.meta.json"
+        sig = stem_dir / f"{stem}.meta.json.sig"
+        if not meta.is_file() or not sig.is_file():
+            issues.append(f"meta or sig missing for {stem}")
             continue
-        for inner in sorted(sidecars.iterdir()):
-            if not inner.is_dir():
-                continue
-            stem = inner.name
-            meta = inner / f"{stem}.meta.json"
-            sig = inner / f"{stem}.meta.json.sig"
-            if not meta.is_file() or not sig.is_file():
-                issues.append(f"meta or sig missing for {stem}")
-                continue
-            if not _verify_signature(
-                public_key, meta.read_bytes(), sig.read_bytes()
-            ):
-                issues.append(f"meta.json signature invalid for {stem}")
+        if not _verify_signature(
+            public_key, meta.read_bytes(), sig.read_bytes()
+        ):
+            issues.append(f"meta.json signature invalid for {stem}")
     return not issues, issues
 
 

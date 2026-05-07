@@ -96,19 +96,19 @@ def test_media_capture_full_happy_path(env):
     assert "youtube__veritasium__Hello World__2024-08-12__abc" in result.stem
 
     case_dir = env["downloads"] / env["case"].slug
-    media_path = case_dir / f"{result.stem}.mp4"
+    item_dir = case_dir / result.stem
+    media_path = item_dir / f"{result.stem}.mp4"
     assert media_path.exists()
 
-    sidecar_dir = case_dir / "sidecars" / result.stem
-    assert (sidecar_dir / f"{result.stem}.info.json").exists()
-    assert (sidecar_dir / f"{result.stem}.description").exists()
-    assert (sidecar_dir / f"{result.stem}.checksums.txt").exists()
-    assert (sidecar_dir / f"{result.stem}.meta.json").exists()
-    assert (sidecar_dir / f"{result.stem}.meta.json.sig").exists()
+    assert (item_dir / f"{result.stem}.info.json").exists()
+    assert (item_dir / f"{result.stem}.description").exists()
+    assert (item_dir / f"{result.stem}.checksums.txt").exists()
+    assert (item_dir / f"{result.stem}.meta.json").exists()
+    assert (item_dir / f"{result.stem}.meta.json.sig").exists()
 
     # Signature verifies against the active public key.
-    meta_bytes = (sidecar_dir / f"{result.stem}.meta.json").read_bytes()
-    sig_bytes = (sidecar_dir / f"{result.stem}.meta.json.sig").read_bytes()
+    meta_bytes = (item_dir / f"{result.stem}.meta.json").read_bytes()
+    sig_bytes = (item_dir / f"{result.stem}.meta.json.sig").read_bytes()
     assert env["signing"].verify(meta_bytes, sig_bytes) is True
 
     # DB row inserted.
@@ -148,7 +148,7 @@ def test_page_only_capture(env):
     assert result.relative_media_path is None
     assert result.stem.startswith("generic__")
     case_dir = env["downloads"] / env["case"].slug
-    assert (case_dir / "sidecars" / result.stem / f"{result.stem}.meta.json").exists()
+    assert (case_dir / result.stem / f"{result.stem}.meta.json").exists()
 
 
 def test_duplicate_raises(env):
@@ -300,7 +300,7 @@ def _stage_user_browser(env, *, stem_dir: str = "user-bundle") -> dict:
     return {"mhtml": mhtml, "screenshot": shot, "har": har, "environment": env_json}
 
 
-def test_user_browser_artifacts_are_moved_into_sidecar_dir(env):
+def test_user_browser_artifacts_are_moved_into_item_dir(env):
     media, info, desc = _stage_media(env)
     pp = env["pp"]
     user = _stage_user_browser(env)
@@ -322,11 +322,11 @@ def test_user_browser_artifacts_are_moved_into_sidecar_dir(env):
         user_browser_label="My laptop",
     )
     result = pp.finalize(env["conn"], capture_input)
-    sidecar = env["downloads"] / result.relative_sidecar_dir
+    item_dir = env["downloads"] / result.relative_item_dir
     stem = result.stem
     for tail in (".user-browser.mhtml", ".user-browser.png",
                  ".user-browser.har", ".user-browser.environment.json"):
-        assert (sidecar / f"{stem}{tail}").is_file(), tail
+        assert (item_dir / f"{stem}{tail}").is_file(), tail
 
 
 def test_user_browser_artifacts_are_listed_in_meta_and_checksums(env):
