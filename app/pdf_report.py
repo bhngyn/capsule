@@ -18,15 +18,21 @@ import datetime as _dt
 import html
 import json
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from . import __version__, cases, config, i18n, signing
 
-__all__ = ["render_case_report"]
+__all__ = [
+    "FileEntry",
+    "render_case_report",
+    "render_item_manifest",
+]
 
 
 _TEMPLATE_PATH = config.APP_DIR / "templates" / "case_report.html"
+_ITEM_TEMPLATE_PATH = config.APP_DIR / "templates" / "item_manifest.html"
 
 
 # Subset of i18n keys consumed by the PDF templates. Centralised so the
@@ -188,5 +194,124 @@ def render_case_report(
     from weasyprint import HTML  # heavy import deferred
 
     html_doc = _render_html(case, items, lang=lang)
+    pdf = HTML(string=html_doc, base_url=str(config.APP_DIR)).write_pdf()
+    return pdf
+
+
+# --- Per-item manifest PDF -------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FileEntry:
+    """One row in the per-item manifest table.
+
+    ``relpath`` is the file's path relative to ``/downloads`` so the
+    manifest stays portable across machines (CLAUDE.md §3 — never
+    write absolute host paths into evidence).
+    """
+
+    relpath: str
+    size: int
+    md5: str
+    sha256: str
+
+
+def _file_row_html(entry: FileEntry) -> str:
+    return (
+        "<tr>"
+        f"<td class='path'><bdi>{html.escape(entry.relpath)}</bdi></td>"
+        f"<td class='size'>{html.escape(_format_bytes(entry.size))}</td>"
+        f"<td class='hash'><code>{html.escape(entry.md5[:16])}…</code></td>"
+        f"<td class='hash'><code>{html.escape(entry.sha256[:16])}…</code></td>"
+        "</tr>"
+    )
+
+
+def _render_item_manifest_html(
+    *,
+    case: cases.Case,
+    item_view: Mapping[str, Any],
+    files: list[FileEntry],
+    lang: str,
+) -> str:
+    labels = _load_pdf_strings(lang)
+    direction = "rtl" if config.is_rtl(lang) else "ltr"
+    template = _ITEM_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    title = html.escape(str(item_view.get("title") or "untitled"))
+    source_url = html.escape(str(item_view.get("source_url") or ""))
+    captured_utc = html.escape(_format_dt(str(item_view.get("captured_utc") or "")))
+    fp = html.escape(str(item_view.get("signing_key_fp") or ""))
+    case_name = html.escape(case.name)
+
+    if files:
+        rows = "\n".join(_file_row_html(f) for f in files)
+        rows_block = (
+            "<table class='manifest-table'>"
+            "<thead><tr>"
+            f"<th>{html.escape(labels['manifest.col.path'])}</th>"
+            f"<th>{html.escape(labels['manifest.col.size'])}</th>"
+            f"<th>{html.escape(labels['manifest.col.md5'])}</th>"
+            f"<th>{html.escape(labels['manifest.col.sha256'])}</th>"
+            "</tr></thead>"
+            f"<tbody>{rows}</tbody>"
+            "</table>"
+        )
+    else:
+        rows_block = (
+            f"<p class='empty'>{html.escape(labels['manifest.empty'])}</p>"
+        )
+
+    footer_template = labels.get(
+        "pdf.footer",
+        "Capsule evidence export · {context} · page {page} of {pages}",
+    )
+
+    rendered = template
+    for needle, replacement in {
+        "{{lang}}": html.escape(lang),
+        "{{dir}}": direction,
+        "{{case_name}}": case_name,
+        "{{title}}": title,
+        "{{source_url}}": source_url,
+        "{{captured_utc}}": captured_utc,
+        "{{fingerprint}}": fp,
+        "{{rows_block}}": rows_block,
+        "{{label.brand_name}}": html.escape(labels["pdf.brand.name"]),
+        "{{label.brand_tagline}}": html.escape(labels["pdf.brand.tagline.item"]),
+        "{{label.heading}}": html.escape(labels["manifest.heading"]),
+        "{{label.source_url}}": html.escape(labels["pdf.item.source_url"]),
+        "{{label.captured_utc}}": html.escape(labels["pdf.item.captured_utc"]),
+        "{{label.signing_key}}": html.escape(labels["pdf.item.signing_key"]),
+        "{{label.footer_prefix}}": _footer_prefix_for(footer_template, case_name),
+    }.items():
+        rendered = rendered.replace(needle, replacement)
+    return rendered
+
+
+def render_item_manifest(
+    *,
+    case: cases.Case,
+    item_view: Mapping[str, Any],
+    item_dir: Path,
+    files: list[FileEntry],
+    lang: str = "en",
+) -> bytes:
+    """Render the per-item manifest PDF and return its bytes.
+
+    ``item_view`` is a small mapping with the fields the template needs
+    (``title``, ``source_url``, ``captured_utc``, ``signing_key_fp``).
+    The library row hasn't been inserted into ``downloads`` at the
+    call site — the postprocess hook builds the dict from the
+    ``CaptureInput`` it has on hand. ``item_dir`` is accepted for
+    symmetry with the postprocess code path; the renderer doesn't
+    consume it.
+    """
+    from weasyprint import HTML  # heavy import deferred
+
+    del item_dir  # symmetry with the postprocess call site
+    html_doc = _render_item_manifest_html(
+        case=case, item_view=item_view, files=files, lang=lang,
+    )
     pdf = HTML(string=html_doc, base_url=str(config.APP_DIR)).write_pdf()
     return pdf

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="{{lang}}" dir="{{dir}}">
+<head>
+  <meta charset="utf-8">
+  <title>Capsule item manifest — {{title}}</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 18mm 16mm 22mm 16mm;
+      @bottom-center {
+        content: "{{label.footer_prefix}} " counter(page) " / " counter(pages);
+        font-family: "Inter", "Noto Sans CJK JP", "Noto Sans CJK KR",
+                     "Noto Sans Arabic", "Helvetica", "Arial", sans-serif;
+        font-size: 8pt;
+        color: #64748b;
+      }
+    }
+    body {
+      font-family: "Inter", "Noto Sans CJK JP", "Noto Sans CJK KR",
+                   "Noto Sans Arabic", "Helvetica", "Arial", sans-serif;
+      color: #0f172a;
+      font-size: 10pt;
+      line-height: 1.45;
+    }
+    h1 { font-size: 18pt; margin: 0 0 4pt 0; }
+    h2 {
+      font-size: 11pt;
+      margin: 18pt 0 6pt 0;
+      color: #475569;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8pt;
+      margin: 0 0 12pt 0;
+      color: #1e293b;
+    }
+    .brand svg { display: inline-block; width: 18pt; height: 18pt; }
+    .brand .wordmark { font-size: 12pt; font-weight: 600; letter-spacing: -0.01em; }
+    .brand .tagline { font-size: 9pt; color: #64748b; }
+    .header {
+      margin: 12pt 0 18pt 0;
+      padding: 10pt 12pt;
+      border: 1px solid #e2e8f0;
+      border-inline-start: 4px solid #0d9488;
+      background: #f8fafc;
+      page-break-inside: avoid;
+    }
+    .header dl {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 4pt 14pt;
+      margin: 0;
+    }
+    .header dt { color: #475569; font-weight: 600; }
+    .header dd { margin: 0; word-break: break-all; }
+    code { font-family: "Menlo", "Courier New", monospace; font-size: 9pt; }
+    .manifest-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 9pt;
+    }
+    .manifest-table thead th {
+      text-align: start;
+      font-weight: 600;
+      color: #475569;
+      border-bottom: 1px solid #cbd5e1;
+      padding: 4pt 6pt;
+      background: #f8fafc;
+    }
+    .manifest-table tbody td {
+      border-bottom: 1px solid #f1f5f9;
+      padding: 3pt 6pt;
+      vertical-align: top;
+    }
+    .manifest-table td.path { word-break: break-all; }
+    .manifest-table td.size { white-space: nowrap; color: #475569; }
+    .manifest-table td.hash { white-space: nowrap; }
+    .empty { color: #94a3b8; font-style: italic; }
+    bdi { unicode-bidi: isolate; }
+  </style>
+</head>
+<body>
+  <!-- Brand mark mirrors the case_report (CLAUDE.md §10 keeps the visual
+       language consistent between case-level and item-level evidence). -->
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#1e293b" stroke-width="1.5"
+         stroke-linecap="round" stroke-linejoin="round" aria-label="{{label.brand_name}}">
+      <rect x="2.75" y="20.5" width="18.5" height="2" rx="0.5"
+            fill="#1e293b" fill-opacity="0.15" stroke-width="1.5"/>
+      <path d="M 5.25 20.5 L 5.25 11.5 Q 5.25 4.25 12 4.25 Q 18.75 4.25 18.75 11.5 L 18.75 20.5"/>
+      <line x1="12" y1="4.25" x2="12" y2="2.85"/>
+      <circle cx="12" cy="2.1" r="0.85" fill="#1e293b" stroke="none"/>
+      <rect x="7.5" y="8" width="9" height="8" rx="0.7" stroke-width="1.4"/>
+      <line x1="7.5" y1="10.5" x2="16.5" y2="10.5" stroke-width="1.2"/>
+      <circle cx="8.4"  cy="9.25" r="0.42" fill="#1e293b" stroke="none"/>
+      <circle cx="9.3"  cy="9.25" r="0.42" fill="#1e293b" fill-opacity="0.55" stroke="none"/>
+      <circle cx="10.2" cy="9.25" r="0.42" fill="#1e293b" fill-opacity="0.55" stroke="none"/>
+      <line x1="8.7" y1="12.6" x2="15.3" y2="12.6" stroke-width="0.9" stroke-opacity="0.55"/>
+      <line x1="8.7" y1="14"   x2="13.5" y2="14"   stroke-width="0.9" stroke-opacity="0.55"/>
+    </svg>
+    <span class="wordmark">{{label.brand_name}}</span>
+    <span class="tagline">· {{label.brand_tagline}}</span>
+  </div>
+
+  <h1><bdi>{{title}}</bdi></h1>
+
+  <section class="header">
+    <dl>
+      <dt>{{label.source_url}}</dt>     <dd><bdi>{{source_url}}</bdi></dd>
+      <dt>{{label.captured_utc}}</dt>   <dd>{{captured_utc}}</dd>
+      <dt>{{label.signing_key}}</dt>    <dd><code>{{fingerprint}}</code></dd>
+    </dl>
+  </section>
+
+  <h2>{{label.heading}}</h2>
+  {{rows_block}}
+</body>
+</html>

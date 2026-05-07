@@ -128,6 +128,11 @@ class CaptureInput:
     # persistent case file). Recorded for audit; does not affect on-disk
     # artifacts.
     ephemeral_cookies_used: bool = False
+    # UI locale at the time of submission. Drives the per-item manifest
+    # PDF's labels + direction + font stack. Recorded in
+    # ``meta.json.capture.report_lang`` so a future evidence reviewer
+    # can confirm what the investigator saw.
+    lang: str = "en"
 
 
 @dataclass(frozen=True)
@@ -334,13 +339,58 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             moved.append(dest)
             artifacts[role] = paths.relative_to_downloads(dest)
 
-        # Step 5: hash everything we kept (excluding the about-to-be-written
-        # meta.json + sig + checksums file).
+        # Step 5a: hash every non-PDF artifact. The manifest PDF (rendered
+        # next) is hashed afterwards so the table inside it lists every
+        # other file's MD5/SHA-256.
         checksums: dict[str, dict[str, Any]] = {}
         for role, rel in artifacts.items():
             abs_path = config.DOWNLOADS_DIR / rel
             checksums[role] = compute_hashes(abs_path)
 
+        # Step 5b: render the per-item manifest PDF.
+        # Imported lazily to avoid pulling weasyprint at module-import
+        # time (it's a heavy dep — every test that imports
+        # ``app.postprocess`` would otherwise pay the cost).
+        from . import pdf_report  # noqa: PLC0415
+
+        kp = signing.ensure_keypair()
+        fp = signing.fingerprint(kp.public)
+        title_sanitized_for_pdf = sanitize.sanitize_component(
+            info.get("title") or capture_input.url_final, max_len=sanitize.TITLE_MAX
+        )
+        manifest_files = [
+            pdf_report.FileEntry(
+                relpath=artifacts[role],
+                size=int(checksums[role]["size_bytes"]),
+                md5=checksums[role]["md5"],
+                sha256=checksums[role]["sha256"],
+            )
+            for role in sorted(artifacts.keys())
+        ]
+        manifest_pdf_bytes = pdf_report.render_item_manifest(
+            case=case,
+            item_view={
+                "title": title_sanitized_for_pdf,
+                "source_url": capture_input.url_final or capture_input.url_submitted,
+                "captured_utc": capture_input.capture_date,
+                "signing_key_fp": fp,
+            },
+            item_dir=item_dir,
+            files=manifest_files,
+            lang=capture_input.lang,
+        )
+        manifest_pdf_path = item_dir / f"{stem}.manifest.pdf"
+        manifest_pdf_path.write_bytes(manifest_pdf_bytes)
+        moved.append(manifest_pdf_path)
+
+        # Step 5c: hash the manifest PDF and record it under the
+        # ``manifest_pdf`` role so it gets the same chain-of-custody
+        # treatment as every other artifact.
+        manifest_pdf_relpath = paths.relative_to_downloads(manifest_pdf_path)
+        artifacts["manifest_pdf"] = manifest_pdf_relpath
+        checksums["manifest_pdf"] = compute_hashes(manifest_pdf_path)
+
+        # Step 5d: write checksums.txt now that the manifest PDF is hashed.
         checksums_path = item_dir / f"{stem}.checksums.txt"
         with checksums_path.open("w", encoding="utf-8") as fh:
             for role, h in sorted(checksums.items()):
@@ -348,11 +398,14 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 fh.write(f"MD5    {h['md5']}  {rel}\n")
                 fh.write(f"SHA256 {h['sha256']}  {rel}\n")
 
-        # Step 6: meta.json
-        kp = signing.ensure_keypair()
-        fp = signing.fingerprint(kp.public)
+        # Step 6: meta.json — captures both the artifact set (including
+        # the manifest PDF, so the signature transitively binds it) and
+        # the locale used to render the manifest.
+        capture_block = dict(capture_input.capture_report or {})
+        capture_block["report_lang"] = capture_input.lang
+
         meta = {
-            "schema_version": 2,
+            "schema_version": 3,
             "job_uuid": capture_input.job_uuid,
             "capture_kind": capture_kind,
             "case": {"id": case.id, "slug": case.slug, "name": case.name},
@@ -386,8 +439,10 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             },
             # Hardening pass: capture-side mutations and the cookie-set
             # provenance hash. Per CLAUDE.md §13, every blocking and every
-            # banner-hide is recorded — never silent.
-            "capture": capture_input.capture_report or {},
+            # banner-hide is recorded — never silent. ``report_lang`` is
+            # the UI locale at submission time; the manifest PDF was
+            # rendered with it.
+            "capture": capture_block,
             "cookies_snapshot_sha256": capture_input.cookies_snapshot_sha256,
             "ephemeral_cookies_used": capture_input.ephemeral_cookies_used,
             "audit_log_entry_id": None,  # filled below
@@ -471,6 +526,24 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 "url_hash": url_hash,
                 "platform": meta["platform"],
                 "authenticated_domains": list(capture_input.authenticated_domains),
+            },
+        )
+
+        # Per-item manifest PDF event — recorded so a future evidence
+        # reviewer can see exactly when (and at what locale) the manifest
+        # was rendered. The PDF itself is bound to the meta.json by hash,
+        # which the meta signature transitively covers.
+        audit.append(
+            conn,
+            "item.manifest_rendered",
+            case_id=case.id,
+            download_id=download_id,
+            actor="system",
+            details={
+                "stem": stem,
+                "lang": capture_input.lang,
+                "size_bytes": int(checksums["manifest_pdf"]["size_bytes"]),
+                "sha256": checksums["manifest_pdf"]["sha256"],
             },
         )
 
