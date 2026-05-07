@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://capsule.example/schemas/meta.schema.json",
   "title": "Capsule capture metadata (meta.json)",
-  "description": "Per-capture forensic record. Source of truth for the integrity story; signed by the case keypair. Schema v2 (hardening pass) adds tab_context, capture-side mutations (blocking + banner hide), render-wait outcomes, and cookie-set provenance hash. Schema v3 (Track A) adds the per-item manifest PDF artifact role + checksum, plus capture.report_lang for the locale the manifest PDF was rendered in.",
+  "description": "Per-capture forensic record. Source of truth for the integrity story; signed by the case keypair. Schema v2 (hardening pass) adds tab_context, capture-side mutations (blocking + banner hide), render-wait outcomes, and cookie-set provenance hash. Schema v3 (Track A) adds the per-item manifest PDF artifact role + checksum, plus capture.report_lang for the locale the manifest PDF was rendered in. Schema v4 adds the per-item report PDF (``report_pdf`` artifact role) — a human-readable companion to the manifest PDF carrying provenance, full description, tools, and the capture report; its hash is bound to meta.json by the same signature.",
   "type": "object",
   "required": [
     "schema_version",
@@ -22,7 +22,7 @@
     "signing_key_fp"
   ],
   "properties": {
-    "schema_version": { "enum": [1, 2, 3] },
+    "schema_version": { "enum": [1, 2, 3, 4] },
     "job_uuid": { "type": "string" },
     "capture_kind": { "enum": ["media", "page_only"] },
     "case": {
@@ -52,7 +52,7 @@
     "authenticated_domains": { "type": "array", "items": { "type": "string" } },
     "artifacts": {
       "type": "object",
-      "description": "Artifact role → relative path under /downloads. Roles include page_mhtml, page_screenshot, page_warc, user_browser_*, plus tab_context / session_state / dom_snapshot_* (v2). v3 adds ``manifest_pdf`` — the per-item evidence manifest PDF; its hash is bound to meta.json via the signature.",
+      "description": "Artifact role → relative path under /downloads. Roles include page_mhtml, page_screenshot, page_warc, user_browser_*, plus tab_context / session_state / dom_snapshot_* (v2). v3 adds ``manifest_pdf`` — the per-item evidence manifest PDF; its hash is bound to meta.json via the signature. v4 adds ``report_pdf`` — the human-readable per-item report PDF (provenance, description, tools, capture report); its hash is bound the same way.",
       "additionalProperties": { "type": "string" }
     },
     "checksums": {

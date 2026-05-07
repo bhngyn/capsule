@@ -482,8 +482,9 @@ def test_manifest_pdf_hash_present_in_meta_and_checksums(env):
     assert meta["checksums"]["manifest_pdf"]["sha256"]
     cs_text = (result.meta_json_path.parent / f"{result.stem}.checksums.txt").read_text()
     assert ".manifest.pdf" in cs_text
-    # Schema version was bumped for the manifest PDF + report_lang.
-    assert meta["schema_version"] == 3
+    # Schema v4: per-item report PDF joins the manifest PDF in the
+    # artifact set; both bound transitively by meta.json.sig.
+    assert meta["schema_version"] == 4
 
 
 def test_capture_input_lang_is_recorded_in_meta(env):
