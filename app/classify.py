@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import cookies, platforms
+from . import cookies, platforms, url_canonical
 
 __all__ = [
     "Classification",
@@ -47,6 +47,7 @@ _WALK_BUDGET_S = 15.0
 class Classification:
     url_submitted: str
     url_final: str
+    url_canonical: str
     redirect_chain: list[str]
     platform: str
     authenticated_domains: list[str]
@@ -57,6 +58,7 @@ class Classification:
         d = {
             "url_submitted": self.url_submitted,
             "url_final": self.url_final,
+            "url_canonical": self.url_canonical,
             "redirect_chain": list(self.redirect_chain),
             "platform": self.platform,
             "authenticated_domains": list(self.authenticated_domains),
@@ -68,7 +70,14 @@ class Classification:
 
 
 def _url_hash(url: str) -> str:
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+    """Stable 12-char digest over the **canonical** form of ``url``.
+
+    Two paste-variants of the same URL (different tracking params, scheme
+    case, trailing slash) collapse to the same digest, so duplicate
+    detection is robust against the noise users actually paste.
+    """
+    canonical = url_canonical.canonicalize(url)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
 def _hostname(url: str) -> str:
@@ -182,6 +191,7 @@ async def classify(
     return Classification(
         url_submitted=submitted,
         url_final=final_url,
+        url_canonical=url_canonical.canonicalize(final_url),
         redirect_chain=chain,
         platform=platforms.platform_for_url(final_url),
         authenticated_domains=_authenticated_domains(chain, cookie_domains),

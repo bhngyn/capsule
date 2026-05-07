@@ -237,6 +237,58 @@
         </div>
       </form>
 
+      <!-- Inline batch-submit error banner. Replaces the legacy alert() per
+           CLAUDE.md §4.7: friendly headline + collapsible technical details
+           the investigator can copy into a bug report or court annex. -->
+      <div x-show="batchError" x-cloak
+           class="mt-4 rounded-2xl border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/30 px-4 py-3"
+           role="alert">
+        <div class="flex items-start gap-3">
+          <i data-lucide="alert-triangle" class="size-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" aria-hidden="true"></i>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-medium text-rose-900 dark:text-rose-100"
+                 x-text="batchError && batchError.headline"></div>
+            <details class="mt-1.5">
+              <summary class="text-xs text-rose-700 dark:text-rose-300 cursor-pointer select-none"
+                       x-text="t('errors.show_technical')"></summary>
+              <div class="mt-2 flex items-start gap-2">
+                <pre class="flex-1 text-xs font-mono text-rose-900/90 dark:text-rose-200 whitespace-pre-wrap break-all bg-rose-100/70 dark:bg-rose-950/60 rounded px-2 py-1.5"
+                     x-text="batchError && batchError.technical"></pre>
+                <button @click="copyBatchErrorTechnical()"
+                        class="text-xs text-rose-700 dark:text-rose-300 hover:text-rose-900 dark:hover:text-rose-100 inline-flex items-center gap-1 px-2 py-1.5"
+                        :aria-label="t('errors.copy_technical')">
+                  <i data-lucide="clipboard" class="size-3.5"></i>
+                </button>
+              </div>
+            </details>
+          </div>
+          <button @click="batchError = null"
+                  class="text-rose-700 dark:text-rose-300 hover:text-rose-900 dark:hover:text-rose-100"
+                  :aria-label="t('common.dismiss')">
+            <i data-lucide="x" class="size-4"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Batch-summary banner (CLAUDE.md §15 plan §B). Replaces the
+           silent within-batch dedup with a "X new · Y already in this
+           case" message after every preflight run. Auto-dismisses on
+           the next submit. -->
+      <div x-show="batchSummary" x-cloak
+           class="mt-4 rounded-2xl border border-teal-200 dark:border-teal-900/60 bg-teal-50 dark:bg-teal-950/30 px-4 py-3"
+           role="status">
+        <div class="flex items-start gap-3">
+          <i data-lucide="info" class="size-5 text-accent shrink-0 mt-0.5" aria-hidden="true"></i>
+          <div class="flex-1 text-sm text-teal-900 dark:text-teal-100"
+               x-text="batchSummaryText()"></div>
+          <button @click="batchSummary = null"
+                  class="text-teal-700 dark:text-teal-300 hover:text-teal-900 dark:hover:text-teal-100"
+                  :aria-label="t('common.dismiss')">
+            <i data-lucide="x" class="size-4"></i>
+          </button>
+        </div>
+      </div>
+
       <!-- Active jobs (each phase gets a small visible label). -->
       <div class="mt-8 space-y-4">
         <!-- Aggregate "Downloads now" visualizer. Visible only while at least
@@ -270,6 +322,19 @@
               <i data-lucide="x" class="size-4"></i>
             </button>
             <bdi class="block font-mono text-sm truncate text-zinc-500 dark:text-zinc-400 mb-3 pe-7" x-text="j.url"></bdi>
+            <!-- SSE transport disconnect (CLAUDE.md §4.7). Browser is still
+                 retrying the EventSource under the hood, but after several
+                 errors with no progress we surface an explicit Reconnect so
+                 the card doesn't appear stuck. -->
+            <div x-show="j.disconnected" x-cloak
+                 class="mb-3 rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 flex items-center gap-2 text-sm">
+              <i data-lucide="wifi-off" class="size-4 text-amber-700 dark:text-amber-300 shrink-0" aria-hidden="true"></i>
+              <span class="flex-1 text-amber-900 dark:text-amber-100"
+                    x-text="t('capture.disconnected.headline')"></span>
+              <button @click="reconnectJob(j.id)"
+                      class="text-xs text-amber-900 dark:text-amber-100 underline hover:no-underline"
+                      x-text="t('capture.disconnected.action')"></button>
+            </div>
             <div class="flex items-start justify-between gap-3">
               <template x-for="phase in ['page','media','hash','sign']" :key="phase">
                 <div class="flex-1 flex flex-col items-center gap-1.5">
@@ -310,10 +375,39 @@
                 </div>
               </div>
             </div>
-            <!-- Permanent failure: rose banner -->
+            <!-- Permanent failure: rose banner — CLAUDE.md §4.7 shape.
+                 Headline (phase-aware) + likely cause + suggested-action button
+                 + collapsible technical details + (when finalize raised) a
+                 partial-artifacts honesty note. -->
             <div x-show="j.error && isFailed(j)" class="mt-3 flex items-start gap-2 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 p-3 text-sm">
               <i data-lucide="triangle-alert" class="size-4 text-rose-700 dark:text-rose-400 flex-shrink-0 mt-0.5"></i>
-              <div class="text-rose-800 dark:text-rose-300" x-text="t(j.error?.i18n_key || 'errors.unknown')"></div>
+              <div class="flex-1 min-w-0">
+                <div class="text-rose-900 dark:text-rose-200 font-medium"
+                     x-text="jobErrorHeadline(j)"></div>
+                <div class="mt-1 text-rose-800 dark:text-rose-300"
+                     x-text="t(j.error?.cause_i18n_key || 'errors.cause.unknown')"></div>
+                <div x-show="jobErrorPhase(j) === 'finalizing'"
+                     class="mt-1.5 text-xs text-zinc-600 dark:text-zinc-400"
+                     x-text="t('errors.partial_artifacts_note')"></div>
+                <div class="mt-2 flex items-center gap-2 flex-wrap">
+                  <button @click="jobErrorAction(j)"
+                          class="inline-flex items-center gap-1.5 rounded-md bg-rose-600 hover:bg-rose-700 text-white px-3 py-1.5 text-xs font-medium"
+                          x-text="t(j.error?.suggested_action_i18n_key || 'errors.action.try_again')"></button>
+                </div>
+                <details class="mt-2" x-show="jobErrorTechnical(j)">
+                  <summary class="text-xs text-rose-700 dark:text-rose-300 cursor-pointer select-none"
+                           x-text="t('errors.show_technical')"></summary>
+                  <div class="mt-2 flex items-start gap-2">
+                    <pre class="flex-1 text-xs font-mono text-rose-900/90 dark:text-rose-200 whitespace-pre-wrap break-all bg-rose-100/70 dark:bg-rose-950/60 rounded px-2 py-1.5"
+                         x-text="jobErrorTechnical(j)"></pre>
+                    <button @click="copyJobErrorTechnical(j.id)"
+                            class="text-xs text-rose-700 dark:text-rose-300 hover:text-rose-900 dark:hover:text-rose-100 inline-flex items-center gap-1 px-2 py-1.5"
+                            :aria-label="t('errors.copy_technical')">
+                      <i data-lucide="clipboard" class="size-3.5"></i>
+                    </button>
+                  </div>
+                </details>
+              </div>
             </div>
           </div>
         </template>
@@ -344,27 +438,49 @@
         </div>
       </div>
 
-      <!-- Recent captures (thumbnail-dominant, with platform + date for context). -->
+      <!-- Recent captures: dense list, one row per capture (CLAUDE.md §15
+           plan §H). One platform icon at the start, title + URL host on
+           a two-line stack, capture-kind chip + relative time at the end,
+           hover-revealed open-folder button. RTL flips order via logical
+           properties (start-/end-) — no LTR/RTL forks. -->
       <div x-show="recentCaptures.length" class="mt-10">
-        <h2 class="text-sm font-medium text-zinc-500 mb-3" data-t="simple.recent.heading"></h2>
-        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          <template x-for="item in recentCaptures" :key="item.id">
-            <article class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden cursor-default">
-              <div class="aspect-video bg-zinc-100 dark:bg-zinc-800 grid place-items-center text-zinc-400 relative">
-                <i :data-lucide="item.capture_kind==='media' ? 'film' : 'layout-template'" class="size-10"></i>
-                <img :src="'/static/icons/platforms/' + (item.platform||'generic') + '.svg'"
-                     onerror="this.src='/static/icons/platforms/generic.svg'"
-                     class="absolute top-2 start-2 size-5 text-zinc-700 dark:text-zinc-300"
-                     :alt="item.platform||''" aria-hidden="true" />
-              </div>
-              <div class="p-3">
-                <bdi class="block text-sm font-medium truncate" x-text="item.title"></bdi>
-                <div class="mt-1 text-xs text-zinc-500 capitalize truncate"
-                     x-text="(item.platform || '') + ' · ' + (item.capture_date ? relTime(item.capture_date) : '')"></div>
-              </div>
-            </article>
-          </template>
+        <div class="flex items-baseline justify-between mb-3">
+          <h2 class="text-sm font-medium text-zinc-500" data-t="simple.recent.heading"></h2>
+          <button @click="openClearDialog()"
+                  :aria-label="t('recent.clear.button.aria')"
+                  class="text-xs text-zinc-500 hover:text-rose-700 dark:hover:text-rose-400 inline-flex items-center gap-1.5 px-2 py-1 rounded transition">
+            <i data-lucide="trash-2" class="size-3.5" aria-hidden="true"></i>
+            <span x-text="t('recent.clear.button')"></span>
+          </button>
         </div>
+        <ul class="divide-y divide-zinc-200 dark:divide-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden">
+          <template x-for="item in recentCaptures" :key="item.id">
+            <li class="group flex items-center gap-3 px-4 py-3 hover:bg-zinc-50 dark:hover:bg-zinc-900/70 transition">
+              <img :src="'/static/icons/platforms/' + (item.platform||'generic') + '.svg'"
+                   onerror="this.src='/static/icons/platforms/generic.svg'"
+                   class="size-8 flex-shrink-0 text-zinc-700 dark:text-zinc-300"
+                   :alt="item.platform||''" aria-hidden="true" />
+              <div class="flex-1 min-w-0">
+                <bdi class="block text-sm font-medium truncate text-zinc-900 dark:text-zinc-100"
+                     x-text="item.title || ''"></bdi>
+                <bdi class="block text-xs text-zinc-500 truncate font-mono"
+                     :title="item.source_url || item.final_url || ''"
+                     x-text="recentRowHost(item)"></bdi>
+              </div>
+              <span class="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 flex-shrink-0">
+                <i :data-lucide="item.capture_kind==='media' ? 'film' : 'layout-template'" class="size-3" aria-hidden="true"></i>
+                <span x-text="t(item.capture_kind==='media' ? 'recent.row.kind.media' : 'recent.row.kind.page_only')"></span>
+              </span>
+              <span class="text-xs text-zinc-500 tabular-nums flex-shrink-0"
+                    x-text="item.capture_date ? relTime(item.capture_date) : ''"></span>
+              <button @click="revealRecentItem(item)"
+                      :aria-label="t('recent.row.open_folder', {title: item.title || ''})"
+                      class="text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 motion-safe:transition opacity-0 group-hover:opacity-100 focus:opacity-100">
+                <i data-lucide="external-link" class="size-4" aria-hidden="true"></i>
+              </button>
+            </li>
+          </template>
+        </ul>
       </div>
 
       <!-- Empty state: illustration only + one tiny headline. -->
@@ -531,6 +647,108 @@
       </div>
     </section>
   </main>
+
+  <!-- Duplicate-handling modal (CLAUDE.md §15). Shown when preflight
+       reports an existing capture in the case. The user can Open
+       existing / Re-capture as new entry / Cancel; each outcome is
+       audit-logged. Multiple duplicates in one batch queue here with
+       a "1 of N" indicator. -->
+  <div x-show="duplicateModal" x-cloak
+       class="fixed inset-0 z-50 grid place-items-center bg-zinc-900/60 px-4"
+       role="dialog" aria-modal="true"
+       :aria-labelledby="'dup-modal-title'"
+       @keydown.escape.window="dismissDuplicate()">
+    <div class="w-full max-w-md rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-5 shadow-xl">
+      <div class="flex items-start gap-3">
+        <div class="size-10 rounded-full grid place-items-center bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 shrink-0">
+          <i data-lucide="copy-check" class="size-5" aria-hidden="true"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div id="dup-modal-title" class="text-base font-semibold text-zinc-900 dark:text-zinc-100"
+               x-text="t('duplicate.modal.title')"></div>
+          <div x-show="duplicateModal && duplicateModal.queue.length > 1"
+               class="mt-0.5 text-xs text-zinc-500"
+               x-text="duplicateModal && t('duplicate.modal.queue_progress', {position: duplicateModal.index + 1, total: duplicateModal.queue.length})"></div>
+        </div>
+      </div>
+      <template x-if="duplicateModal">
+        <div class="mt-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/60 p-3 flex items-start gap-3">
+          <img :src="'/static/icons/platforms/' + (duplicateModal.current.existing.platform||'generic') + '.svg'"
+               onerror="this.src='/static/icons/platforms/generic.svg'"
+               class="size-8 flex-shrink-0" aria-hidden="true" />
+          <div class="flex-1 min-w-0">
+            <bdi class="block text-sm font-medium truncate"
+                 x-text="duplicateModal.current.existing.title"></bdi>
+            <div class="mt-0.5 text-xs text-zinc-500 capitalize"
+                 x-text="(duplicateModal.current.existing.platform || '') + ' · ' + (duplicateModal.current.existing.capture_kind === 'media' ? t('recent.row.kind.media') : t('recent.row.kind.page_only'))"></div>
+            <div class="mt-1 text-xs text-zinc-500"
+                 x-text="t('duplicate.modal.body', {when: relTime(duplicateModal.current.existing.capture_date)})"></div>
+            <bdi class="mt-1 block text-xs text-zinc-400 font-mono truncate"
+                 :title="duplicateModal.current.url_submitted"
+                 x-text="duplicateModal.current.url_submitted"></bdi>
+          </div>
+        </div>
+      </template>
+      <div class="mt-5 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+        <button @click="duplicateOutcome('cancelled')"
+                class="px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-sm"
+                x-text="t('duplicate.btn.cancel')"></button>
+        <button @click="duplicateOutcome('opened_existing')"
+                class="px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-sm inline-flex items-center gap-1.5">
+          <i data-lucide="folder-open" class="size-4" aria-hidden="true"></i>
+          <span x-text="t('duplicate.btn.open')"></span>
+        </button>
+        <button @click="duplicateOutcome('recapture')"
+                class="px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-teal-700 text-sm inline-flex items-center gap-1.5">
+          <i data-lucide="rotate-ccw" class="size-4" aria-hidden="true"></i>
+          <span x-text="t('duplicate.btn.recapture')"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Clear-list confirmation dialog (CLAUDE.md §15 plan §I). Heaviest
+       friction in the app — a destructive bulk delete that wipes the
+       per-item folders but preserves the audit chain. -->
+  <div x-show="clearDialog && clearDialog.open" x-cloak
+       class="fixed inset-0 z-50 grid place-items-center bg-zinc-900/60 px-4"
+       role="dialog" aria-modal="true"
+       :aria-labelledby="'clear-dialog-title'"
+       @keydown.escape.window="closeClearDialog()">
+    <div class="w-full max-w-md rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-5 shadow-xl">
+      <div class="flex items-start gap-3">
+        <div class="size-10 rounded-full grid place-items-center bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 shrink-0">
+          <i data-lucide="alert-triangle" class="size-5" aria-hidden="true"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div id="clear-dialog-title"
+               class="text-base font-semibold text-zinc-900 dark:text-zinc-100"
+               x-text="clearDialog && t('recent.clear.dialog.title', {count: clearDialog.count})"></div>
+          <div class="mt-2 text-sm text-zinc-700 dark:text-zinc-300"
+               x-text="clearDialog && t('recent.clear.dialog.body', {case_name: clearDialog.case_name, freed_bytes: clearDialog.freed_bytes_human})"></div>
+          <div class="mt-2 text-xs text-zinc-500"
+               x-text="t('recent.clear.dialog.audit_note')"></div>
+        </div>
+      </div>
+      <div class="mt-5 flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2">
+        <button @click="exportThenClear()"
+                class="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-200 underline self-start"
+                x-text="t('recent.clear.dialog.export_first')"></button>
+        <div class="flex flex-col-reverse sm:flex-row gap-2">
+          <button @click="closeClearDialog()"
+                  x-ref="clearCancelBtn"
+                  class="px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-sm"
+                  x-text="t('recent.clear.dialog.cancel')"></button>
+          <button @click="confirmClear()"
+                  :disabled="clearInProgress"
+                  class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm inline-flex items-center gap-1.5">
+            <i data-lucide="trash-2" class="size-4" aria-hidden="true"></i>
+            <span x-text="clearDialog && t('recent.clear.dialog.confirm', {count: clearDialog.count})"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- Toast -->
   <div x-show="toast" x-cloak x-transition.opacity

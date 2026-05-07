@@ -59,7 +59,8 @@ def stub_pipeline(monkeypatch):
 
     async def fake_classify(url, *, case_slug=None, client=None):
         return classify_mod.Classification(
-            url_submitted=url, url_final=url, redirect_chain=[url],
+            url_submitted=url, url_final=url, url_canonical=url,
+            redirect_chain=[url],
             platform="generic", authenticated_domains=[],
             url_hash="ab" * 6,
         )

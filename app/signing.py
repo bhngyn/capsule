@@ -19,6 +19,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -141,15 +142,17 @@ def verify(
     """Return True iff ``signature`` is valid for ``data`` under the active
     (or supplied) public key.
 
-    Never raises — caller can branch on the bool. Use only for *expected*
-    success/fail flows; cryptography's exceptions still propagate when keys
-    or signatures are structurally malformed.
+    A bad signature returns ``False``. Anything else — corrupted key
+    material, structurally malformed signature bytes, OS-level failures —
+    is allowed to propagate so the caller can fail fast (CLAUDE.md §7
+    integrity guarantee: silent verify failures would let tampered
+    evidence pass).
     """
     pk = public or ensure_keypair().public
     try:
         pk.verify(signature, data)
         return True
-    except Exception:  # pragma: no cover — InvalidSignature is the normal path
+    except InvalidSignature:
         return False
 
 

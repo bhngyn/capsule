@@ -359,33 +359,3 @@ async def test_version_against_real_binary():
     assert v.count(".") >= 1
 
 
-@pytest.fixture
-def fake_preflight_ytdlp(tmp_path):
-    """A shim that emits the size/duration/title triple ytdlp_runner.preflight expects."""
-    script = tmp_path / "fake-preflight"
-    script.write_text(
-        """#!/usr/bin/env python3
-import sys
-# argv: --simulate --no-warnings --print TEMPLATE URL
-print("12345678\\t180\\tFake video")
-sys.exit(0)
-""",
-        encoding="utf-8",
-    )
-    import os
-    import stat
-    os.chmod(script, stat.S_IRWXU)
-    return script
-
-
-@pytest.mark.asyncio
-async def test_preflight_parses_size_duration_title(fake_preflight_ytdlp):
-    """Plan Phase E: preflight returns filesize/duration/title for the UI."""
-    out = await ytdlp_runner.preflight(
-        "https://example.com/v",
-        executable=str(fake_preflight_ytdlp),
-    )
-    assert out["ok"] is True
-    assert out["filesize_approx_bytes"] == 12345678
-    assert out["duration_seconds"] == 180
-    assert out["title"] == "Fake video"

@@ -1,7 +1,7 @@
 """Locale-aware PDF case report (CLAUDE.md §10).
 
 WeasyPrint renders an HTML document to PDF — RTL-capable, supports
-Noto Sans Arabic / Noto Sans CJK, embeds raster + vector assets. The
+Noto Sans Arabic / Noto Sans JP, embeds raster + vector assets. The
 template lives in ``app/templates/case_report.html``; rendering is a
 one-liner.
 

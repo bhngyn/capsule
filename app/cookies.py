@@ -36,15 +36,11 @@ from . import config
 __all__ = [
     "DomainSummary",
     "CookiesSummary",
-    "MergeStats",
     "FreshnessReport",
     "path_for",
     "save",
-    "save_merged",
     "summary",
     "parse",
-    "merge",
-    "merge_preview",
     "target_coverage",
     "domains_for",
     "exists",
@@ -163,121 +159,6 @@ def save(case_slug: str, content: bytes) -> CookiesSummary:
     target.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_bytes(target, content)
     return summary_obj
-
-
-@dataclass(frozen=True)
-class MergeStats:
-    """Outcome of merging an incoming cookies file into an existing one.
-
-    Counted at the cookie granularity, where a "cookie" is identified by
-    ``(domain, path, name)`` — the same identity browsers use to decide
-    whether a Set-Cookie supersedes an earlier one.
-    """
-
-    added: int      # cookies in incoming, not present in existing
-    replaced: int   # cookies present in both — incoming wins
-    kept: int       # cookies in existing, not touched by incoming
-
-
-def _iter_cookie_lines(text: str) -> Iterable[tuple[tuple[str, str, str], str]]:
-    """Yield ``((domain, path, name), full_line)`` for every cookie line.
-
-    The full line is preserved verbatim (including any ``#HttpOnly_``
-    prefix) so a merge round-trip writes back exactly what was supplied.
-    Comment lines and blanks are skipped. Malformed lines raise
-    ``ValueError`` — the same signal ``_parse_lines`` raises.
-    """
-    for raw in text.splitlines():
-        line = raw.rstrip("\r")
-        if not line:
-            continue
-        if line.startswith("#") and not line.startswith("#HttpOnly_"):
-            continue
-        keying = line[len("#HttpOnly_") :] if line.startswith("#HttpOnly_") else line
-        parts = keying.split("\t")
-        if len(parts) < 7:
-            raise ValueError(f"malformed cookies line: {len(parts)} fields, expected 7")
-        domain = parts[0].lstrip(".").lower()
-        path = parts[2]
-        name = parts[5]
-        yield (domain, path, name), line
-
-
-def merge(existing_text: str, incoming_text: str) -> tuple[str, MergeStats]:
-    """Merge ``incoming_text`` into ``existing_text``.
-
-    Cookies are keyed by ``(domain, path, name)``. Where both sides have
-    the same key, the incoming cookie wins (newer expiry, refreshed value).
-    Cookies present only in existing are kept. Cookies present only in
-    incoming are appended.
-
-    Returns ``(merged_text, stats)``. ``merged_text`` ends with a single
-    trailing newline so a write-and-reread round-trip is stable.
-    """
-    existing_records: dict[tuple[str, str, str], str] = {}
-    for key, line in _iter_cookie_lines(existing_text):
-        existing_records[key] = line
-
-    incoming_records: dict[tuple[str, str, str], str] = {}
-    for key, line in _iter_cookie_lines(incoming_text):
-        incoming_records[key] = line
-
-    added = replaced = kept = 0
-    out: list[str] = ["# Netscape HTTP Cookie File"]
-    seen: set[tuple[str, str, str]] = set()
-    for key, line in existing_records.items():
-        if key in incoming_records:
-            out.append(incoming_records[key])
-            replaced += 1
-        else:
-            out.append(line)
-            kept += 1
-        seen.add(key)
-    for key, line in incoming_records.items():
-        if key not in seen:
-            out.append(line)
-            added += 1
-    return "\n".join(out) + "\n", MergeStats(added=added, replaced=replaced, kept=kept)
-
-
-def merge_preview(case_slug: str, incoming_text: str) -> tuple[CookiesSummary, MergeStats]:
-    """What ``save_merged`` would produce, without writing.
-
-    Used by the wizard's review step so the investigator sees the
-    post-merge total and counts before committing. If no existing
-    cookies file exists for ``case_slug``, behaves as if merging into
-    an empty set: ``added`` equals the incoming count, ``replaced`` and
-    ``kept`` are zero.
-    """
-    target = path_for(case_slug)
-    existing_text = target.read_text(encoding="utf-8") if target.is_file() else ""
-    merged_text, stats = merge(existing_text, incoming_text)
-    return _summarise(merged_text), stats
-
-
-def save_merged(case_slug: str, content: bytes) -> tuple[CookiesSummary, MergeStats]:
-    """Merge ``content`` into the case's existing cookies file.
-
-    If no cookies file exists yet, this writes ``content`` as-is and
-    returns ``MergeStats(added=N, replaced=0, kept=0)`` where ``N`` is
-    the count of valid cookies in the input. The on-disk file is mode
-    ``0600`` on Unix, the same as :func:`save`.
-    """
-    text = content.decode("utf-8", errors="strict")
-    target = path_for(case_slug)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_file():
-        existing_text = target.read_text(encoding="utf-8")
-        merged_text, stats = merge(existing_text, text)
-        summary_obj = _summarise(merged_text)
-        _atomic_write_bytes(target, merged_text.encode("utf-8"))
-    else:
-        summary_obj = _summarise(text)
-        # Use the input bytes verbatim on first save so a "merge" against
-        # an empty case is byte-identical to a plain ``save``.
-        _atomic_write_bytes(target, content)
-        stats = MergeStats(added=summary_obj.total_cookies, replaced=0, kept=0)
-    return summary_obj, stats
 
 
 def summary(case_slug: str) -> CookiesSummary | None:

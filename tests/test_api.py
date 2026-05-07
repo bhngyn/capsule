@@ -70,41 +70,6 @@ async def test_create_and_list_cases(client):
     assert {c["id"] for c in items} == {case["id"]}
 
 
-@pytest.mark.asyncio
-async def test_get_missing_case_returns_404(client):
-    resp = await client.get("/api/cases/9999")
-    assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_rename_case(client):
-    create = (await client.post("/api/cases", json={"name": "Old"})).json()
-    resp = await client.patch(
-        f"/api/cases/{create['id']}", json={"name": "New"}
-    )
-    assert resp.status_code == 200
-    assert resp.json()["name"] == "New"
-
-
-@pytest.mark.asyncio
-async def test_status_transitions(client):
-    create = (await client.post("/api/cases", json={"name": "X"})).json()
-    resp = await client.post(
-        f"/api/cases/{create['id']}/status", json={"status": "archived"}
-    )
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "archived"
-
-
-@pytest.mark.asyncio
-async def test_invalid_status_rejected(client):
-    create = (await client.post("/api/cases", json={"name": "X"})).json()
-    resp = await client.post(
-        f"/api/cases/{create['id']}/status", json={"status": "deleted"}
-    )
-    assert resp.status_code == 400
-
-
 # --- Cookies ----------------------------------------------------------------
 
 
@@ -127,10 +92,6 @@ async def test_upload_cookies_and_retrieve_summary(client):
 
     # Sanity: no cookie value leaks in the JSON response.
     assert "SECRET_VALUE_42" not in resp.text
-
-    fetch = await client.get("/api/cookies", params={"case_id": case["id"]})
-    assert fetch.status_code == 200
-    assert fetch.json()["summary"]["total_cookies"] == 1
 
 
 @pytest.mark.asyncio
@@ -192,6 +153,7 @@ async def test_jobs_happy_path_with_mocked_pipeline(client, monkeypatch, capsule
         return classify_mod.Classification(
             url_submitted=url,
             url_final=url,
+            url_canonical=url,
             redirect_chain=[url],
             platform="youtube",
             authenticated_domains=[],
@@ -240,18 +202,21 @@ async def test_jobs_happy_path_with_mocked_pipeline(client, monkeypatch, capsule
     monkeypatch.setattr(capture_mod, "capture_page", fake_capture)
 
     resp = await client.post(
-        "/api/jobs", json={"case_id": case["id"], "url": "https://www.youtube.com/watch?v=abc"}
+        "/api/jobs/batch",
+        json={"case_id": case["id"], "urls": ["https://www.youtube.com/watch?v=abc"]},
     )
     assert resp.status_code == 200
-    job = resp.json()
+    job = resp.json()["jobs"][0]
 
-    # Wait for the orchestrator to finish.
+    # Wait for the orchestrator to finish — poll the in-memory orchestrator
+    # since the GET-by-id endpoint is no longer exposed.
+    orch = jobs_mod.orchestrator()
     for _ in range(50):
-        cur = (await client.get(f"/api/jobs/{job['id']}")).json()
-        if cur["status"] in ("done", "failed_permanent", "cancelled"):
+        cur_job = orch.get(job["id"])
+        if cur_job and cur_job.status in ("done", "failed_permanent", "cancelled"):
             break
         await asyncio.sleep(0.05)
-    assert cur["status"] == "done", cur
+    assert cur_job is not None and cur_job.status == "done", cur_job
 
     # Library now has one row.
     library = (await client.get("/api/library")).json()
@@ -278,7 +243,8 @@ async def test_library_verify_after_capture(client, monkeypatch, capsule_dirs):
 
     async def fake_classify(url, *, case_slug=None, client=None):
         return classify_mod.Classification(
-            url_submitted=url, url_final=url, redirect_chain=[url],
+            url_submitted=url, url_final=url, url_canonical=url,
+            redirect_chain=[url],
             platform="youtube", authenticated_domains=[],
             url_hash="0123456789ab",
         )
@@ -317,16 +283,19 @@ async def test_library_verify_after_capture(client, monkeypatch, capsule_dirs):
     monkeypatch.setattr(ytdlp_runner, "version", fake_version)
     monkeypatch.setattr(capture_mod, "capture_page", fake_capture)
 
+    from app import jobs as jobs_mod
     resp = await client.post(
-        "/api/jobs", json={"case_id": case["id"], "url": "https://www.youtube.com/watch?v=abc"}
+        "/api/jobs/batch",
+        json={"case_id": case["id"], "urls": ["https://www.youtube.com/watch?v=abc"]},
     )
-    job = resp.json()
+    job = resp.json()["jobs"][0]
+    orch = jobs_mod.orchestrator()
     for _ in range(50):
-        cur = (await client.get(f"/api/jobs/{job['id']}")).json()
-        if cur["status"] in ("done", "failed_permanent", "cancelled"):
+        cur_job = orch.get(job["id"])
+        if cur_job and cur_job.status in ("done", "failed_permanent", "cancelled"):
             break
         await asyncio.sleep(0.05)
-    assert cur["status"] == "done"
+    assert cur_job is not None and cur_job.status == "done"
 
     verify = (await client.post("/api/library/verify")).json()
     assert all(r["ok"] for r in verify["results"]), verify

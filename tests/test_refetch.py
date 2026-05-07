@@ -117,12 +117,12 @@ async def test_extend_capture_adds_warc_and_resigns(reload_modules, capsule_dirs
 
 
 @pytest.mark.asyncio
-async def test_refetch_endpoint_submits_archive_job(reload_modules, capsule_dirs, monkeypatch):
+async def test_archive_refetch_via_orchestrator(reload_modules, capsule_dirs, monkeypatch):
     db_mod, jobs_mod, postprocess = reload_modules
     from app import cases
     from app import capture as capture_mod
 
-    # Stash an existing item so the endpoint has something to refetch.
+    # Stash an existing item so the orchestrator has something to refetch.
     conn = db_mod.connect()
     try:
         db_mod.migrate(conn)

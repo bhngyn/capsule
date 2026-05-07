@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://capsule.example/schemas/meta.schema.json",
   "title": "Capsule capture metadata (meta.json)",
-  "description": "Per-capture forensic record. Source of truth for the integrity story; signed by the case keypair. Schema v2 (hardening pass) adds tab_context, capture-side mutations (blocking + banner hide), render-wait outcomes, and cookie-set provenance hash. Schema v3 (Track A) adds the per-item manifest PDF artifact role + checksum, plus capture.report_lang for the locale the manifest PDF was rendered in. Schema v4 adds the per-item report PDF (``report_pdf`` artifact role) — a human-readable companion to the manifest PDF carrying provenance, full description, tools, and the capture report; its hash is bound to meta.json by the same signature.",
+  "description": "Per-capture forensic record. Source of truth for the integrity story; signed by the case keypair. Schema v2 (hardening pass) adds tab_context, capture-side mutations (blocking + banner hide), render-wait outcomes, and cookie-set provenance hash. Schema v3 (Track A) adds the per-item manifest PDF artifact role + checksum, plus capture.report_lang for the locale the manifest PDF was rendered in. Schema v4 adds the per-item report PDF (``report_pdf`` artifact role) — a human-readable companion to the manifest PDF carrying provenance, full description, tools, and the capture report; its hash is bound to meta.json by the same signature. Schema v5 adds ``url_canonical`` (canonical form of url_final used for dedup hashing) and ``force_recapture_index`` (set when the row was an intentional re-capture per CLAUDE.md §15; null otherwise).",
   "type": "object",
   "required": [
     "schema_version",
@@ -22,7 +22,7 @@
     "signing_key_fp"
   ],
   "properties": {
-    "schema_version": { "enum": [1, 2, 3, 4] },
+    "schema_version": { "enum": [1, 2, 3, 4, 5] },
     "job_uuid": { "type": "string" },
     "capture_kind": { "enum": ["media", "page_only"] },
     "case": {
@@ -36,6 +36,10 @@
     },
     "url_submitted": { "type": "string" },
     "url_final": { "type": "string" },
+    "url_canonical": {
+      "type": "string",
+      "description": "Canonical form of url_final used to derive url_hash for dedup (CLAUDE.md §15). Tracking params stripped, scheme/host lowercased, fragment dropped, trailing slash normalized, remaining query keys sorted. v5."
+    },
     "url_redirect_chain": { "type": "array", "items": { "type": "string" } },
     "platform": { "type": "string" },
     "video_id": { "type": ["string", "null"] },
@@ -119,6 +123,10 @@
     "ephemeral_cookies_used": {
       "type": "boolean",
       "description": "True iff the job used a one-shot ephemeral cookie file (extension-supplied, never persisted to the case directory). v2."
+    },
+    "force_recapture_index": {
+      "type": ["integer", "null"],
+      "description": "Set when this row was an intentional re-capture per CLAUDE.md §15 (the user clicked 'Re-capture as new entry' on a duplicate-detection modal). Index 1 is implicit for the original; 2, 3, … name successive forced re-captures. ``null`` for normal captures. v5."
     },
     "audit_log_entry_id": { "type": ["integer", "null"] },
     "signing_key_fp": { "type": "string" }

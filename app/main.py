@@ -43,6 +43,7 @@ from . import (
     __version__,
     audit,
     cases,
+    classify as classify_mod,
     config,
     cookies as cookies_mod,
     db as db_mod,
@@ -54,6 +55,7 @@ from . import (
     postprocess,
     profiles as profiles_mod,
     signing,
+    url_canonical,
     ytdlp_runner,
 )
 
@@ -85,8 +87,37 @@ def _ensure_schema() -> None:
         conn.close()
 
 
+def _probe_runtime_deps() -> None:
+    """Fail fast if a hard runtime dependency is missing from the image.
+
+    Historically a stale ``capsule:dev`` image (built before the slim
+    Python-3.12 + weasyprint Dockerfile) accepted captures and silently
+    failed at the per-item PDF render — leaving partial artifacts on disk
+    and only a generic "Something went wrong" banner in the UI. Probe at
+    startup so the container exits loudly with a rebuild hint instead.
+    """
+    missing: list[str] = []
+    for module in ("weasyprint", "cryptography"):
+        try:
+            __import__(module)
+        except ImportError:
+            missing.append(module)
+    if missing:
+        sys.stderr.write(
+            "FATAL: hard runtime dependencies missing from this image: "
+            f"{', '.join(missing)}. The Capsule pipeline cannot finalize "
+            "captures without these. This usually means the running image "
+            "was built from a stale Dockerfile. Rebuild the image:\n"
+            "    docker rm -f capsule\n"
+            "    docker build -t capsule:dev .\n"
+            "and re-run the launcher (or `docker run … capsule:dev`).\n"
+        )
+        sys.exit(1)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    _probe_runtime_deps()
     _ensure_schema()
     # Generating the keypair on startup means a freshly-installed instance
     # is ready to sign on first capture without a separate setup step.
@@ -207,14 +238,6 @@ class CaseCreate(BaseModel):
     description: str = ""
 
 
-class CaseRename(BaseModel):
-    name: str = Field(min_length=1)
-
-
-class CaseStatusUpdate(BaseModel):
-    status: str
-
-
 def _case_to_dict(c: cases.Case) -> dict[str, Any]:
     return {
         "id": c.id,
@@ -248,42 +271,6 @@ async def create_case(body: CaseCreate) -> dict[str, Any]:
         conn.close()
 
 
-@app.get("/api/cases/{case_id}")
-async def get_case(case_id: int) -> dict[str, Any]:
-    conn = _conn()
-    try:
-        c = cases.get(conn, case_id)
-        if c is None:
-            raise HTTPException(status_code=404, detail="case not found")
-        return _case_to_dict(c)
-    finally:
-        conn.close()
-
-
-@app.patch("/api/cases/{case_id}")
-async def update_case(case_id: int, body: CaseRename) -> dict[str, Any]:
-    conn = _conn()
-    try:
-        c = cases.rename(conn, case_id, body.name)
-        return _case_to_dict(c)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    finally:
-        conn.close()
-
-
-@app.post("/api/cases/{case_id}/status")
-async def set_case_status(case_id: int, body: CaseStatusUpdate) -> dict[str, Any]:
-    conn = _conn()
-    try:
-        c = cases.update_status(conn, case_id, body.status)
-        return _case_to_dict(c)
-    except (LookupError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        conn.close()
-
-
 # --- Cookies -----------------------------------------------------------------
 
 
@@ -300,21 +287,6 @@ def _summary_to_dict(s: cookies_mod.CookiesSummary) -> dict[str, Any]:
             for d in s.domains
         ],
     }
-
-
-@app.get("/api/cookies")
-async def get_cookies(case_id: int) -> dict[str, Any]:
-    conn = _conn()
-    try:
-        case = cases.get(conn, case_id)
-        if case is None:
-            raise HTTPException(status_code=404, detail="case not found")
-        s = cookies_mod.summary(case.slug)
-        if s is None:
-            return {"case_id": case_id, "summary": None}
-        return {"case_id": case_id, "summary": _summary_to_dict(s)}
-    finally:
-        conn.close()
 
 
 @app.post("/api/cookies")
@@ -360,170 +332,74 @@ async def upload_cookies(
         conn.close()
 
 
-class CookiesPreviewBody(BaseModel):
-    content: str
-    target_url: str | None = None
-    case_id: int | None = None
-    mode: str | None = None  # "replace" | "merge"
-
-
-@app.post("/api/cookies/preview")
-async def preview_cookies(body: CookiesPreviewBody) -> dict[str, Any]:
-    """Validate raw Netscape text without persisting anything.
-
-    The wizard calls this on every drop/paste so the investigator sees a
-    parse result and a target-coverage check before committing. When
-    ``case_id`` and ``mode='merge'`` are supplied, the response also
-    includes a ``merge_preview`` block showing what the post-merge file
-    would look like (added/replaced/kept counts plus the resulting
-    summary). Parse failures return ``200`` with a populated ``errors``
-    list so the UI can surface them inline; only request-shape problems
-    become 4xx.
-    """
-    try:
-        summary = cookies_mod.parse(body.content)
-    except (ValueError, UnicodeDecodeError) as exc:
-        return {
-            "summary": None, "target": None, "errors": [str(exc)],
-            "merge_preview": None,
-        }
-    coverage = cookies_mod.target_coverage(summary, body.target_url)
-
-    merge_block: dict[str, Any] | None = None
-    if body.mode == "merge" and body.case_id is not None:
-        conn = _conn()
-        try:
-            case = cases.get(conn, body.case_id)
-            if case is None:
-                raise HTTPException(status_code=404, detail="case not found")
-            resulting, stats = cookies_mod.merge_preview(case.slug, body.content)
-            merge_block = {
-                "added": stats.added,
-                "replaced": stats.replaced,
-                "kept": stats.kept,
-                "resulting_summary": _summary_to_dict(resulting),
-            }
-        finally:
-            conn.close()
-
-    return {
-        "summary": _summary_to_dict(summary),
-        "target": coverage,
-        "errors": [],
-        "merge_preview": merge_block,
-    }
-
-
-class CookiesTextBody(BaseModel):
-    case_id: int
-    content: str
-    target_url: str | None = None
-    mode: str = "replace"  # "replace" | "merge"
-
-
-@app.post("/api/cookies/text")
-async def upload_cookies_text(body: CookiesTextBody) -> dict[str, Any]:
-    """Save cookies submitted as raw Netscape text (paste-from-clipboard).
-
-    With ``mode='replace'`` (default) the case's cookies file is written
-    afresh. With ``mode='merge'``, incoming cookies are merged into the
-    existing file: cookies present only in incoming are appended,
-    cookies present in both are updated to the incoming version, cookies
-    present only in existing are kept. The audit log records the mode
-    and (for merges) the added/replaced/kept counts. Same disk +
-    no-values guarantees as :func:`upload_cookies` / :func:`save`.
-    """
-    if body.mode not in ("replace", "merge"):
-        raise HTTPException(status_code=400, detail=f"invalid mode: {body.mode!r}")
-    conn = _conn()
-    try:
-        case = cases.get(conn, body.case_id)
-        if case is None:
-            raise HTTPException(status_code=404, detail="case not found")
-        content_bytes = body.content.encode("utf-8")
-        # Validate / preview before auditing so a malformed file doesn't
-        # leave a phantom audit row behind.
-        try:
-            if body.mode == "merge":
-                summary, merge_stats = cookies_mod.merge_preview(case.slug, body.content)
-            else:
-                summary = cookies_mod.parse(content_bytes)
-                merge_stats = None
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"malformed cookies file: {exc}") from exc
-        coverage = cookies_mod.target_coverage(summary, body.target_url)
-        details: dict[str, Any] = {
-            "domains": [d.domain for d in summary.domains],
-            "mode": body.mode,
-        }
-        if body.target_url:
-            details["target_url"] = body.target_url
-        if merge_stats is not None:
-            details["added"] = merge_stats.added
-            details["replaced"] = merge_stats.replaced
-            details["kept"] = merge_stats.kept
-        # Audit before disk write so a successful artifact never lacks an
-        # audit row (CLAUDE.md §8 invariant).
-        audit.append(
-            conn,
-            "cookies.uploaded",
-            case_id=case.id,
-            actor="user",
-            details=details,
-        )
-        if body.mode == "merge":
-            cookies_mod.save_merged(case.slug, content_bytes)
-        else:
-            cookies_mod.save(case.slug, content_bytes)
-        return {
-            "case_id": body.case_id,
-            "summary": _summary_to_dict(summary),
-            "target": coverage,
-            "merge_stats": (
-                {
-                    "added": merge_stats.added,
-                    "replaced": merge_stats.replaced,
-                    "kept": merge_stats.kept,
-                }
-                if merge_stats is not None
-                else None
-            ),
-        }
-    finally:
-        conn.close()
-
-
 # --- Jobs --------------------------------------------------------------------
 
 
-class JobSubmit(BaseModel):
-    case_id: int
+class JobBatchItem(BaseModel):
     url: str = Field(min_length=1)
+    # CLAUDE.md §15: True iff the user picked "Re-capture as new entry"
+    # in the duplicate-handling modal. ``finalize`` then suffixes the
+    # url_hash with ``__c{N+1}`` so the row sits as a sibling.
+    force_recapture: bool = False
+    original_download_id: int | None = None
+
+
+class JobBatch(BaseModel):
+    case_id: int | None = None
+    # Legacy plain-list shape (extension and v0 frontend). Either ``urls``
+    # or ``items`` must be present, not both.
+    urls: list[str] | None = Field(default=None, max_length=25)
+    items: list[JobBatchItem] | None = Field(default=None, max_length=25)
     # UI locale at submission time (Track A). Drives the per-item
     # manifest PDF's labels + RTL/LTR + font stack. ``None`` ⇒ the
     # orchestrator falls back to ``config.DEFAULT_LANG``.
     lang: str | None = None
 
 
-class JobBatch(BaseModel):
-    case_id: int | None = None
-    urls: list[str] = Field(min_length=1, max_length=25)
-    lang: str | None = None
+def _normalize_batch_items(body: JobBatch) -> list[JobBatchItem]:
+    """Resolve ``body.urls`` xor ``body.items`` into a canonical item list.
 
+    Within-batch dedup keys on the *canonical URL* — different paste
+    variants of the same URL collapse so the user never accidentally
+    fires two jobs for the same video. Forced re-captures (``force_recapture
+    is True``) are exempt from the dedup so multiple sibling re-captures
+    can coexist in one submission.
+    """
+    if body.urls is not None and body.items is not None:
+        raise HTTPException(
+            status_code=400, detail="provide either urls or items, not both"
+        )
+    raw_items: list[JobBatchItem] = []
+    if body.items is not None:
+        raw_items = list(body.items)
+    elif body.urls is not None:
+        # Strip whitespace + filter empty strings up-front so the
+        # JobBatchItem ``min_length=1`` constraint isn't tripped by
+        # blanks the user accidentally pasted.
+        raw_items = [JobBatchItem(url=u.strip()) for u in body.urls if u and u.strip()]
+    if not raw_items:
+        raise HTTPException(status_code=400, detail="no URLs")
+    if len(raw_items) > 25:
+        raise HTTPException(status_code=400, detail="too many URLs (max 25)")
 
-@app.post("/api/jobs")
-async def submit_job(body: JobSubmit) -> dict[str, Any]:
-    conn = _conn()
-    try:
-        case = cases.get(conn, body.case_id)
-        if case is None:
-            raise HTTPException(status_code=404, detail="case not found")
-    finally:
-        conn.close()
-    job = await jobs_mod.orchestrator().submit(
-        case_id=body.case_id, url=body.url, lang=body.lang,
-    )
-    return job.to_dict()
+    seen_canon: set[str] = set()
+    out: list[JobBatchItem] = []
+    for it in raw_items:
+        url = it.url.strip()
+        if not url:
+            continue
+        canon = url_canonical.canonicalize(url)
+        if not it.force_recapture and canon in seen_canon:
+            continue
+        seen_canon.add(canon)
+        out.append(JobBatchItem(
+            url=url,
+            force_recapture=it.force_recapture,
+            original_download_id=it.original_download_id,
+        ))
+    if not out:
+        raise HTTPException(status_code=400, detail="no URLs")
+    return out
 
 
 @app.post("/api/jobs/batch")
@@ -536,6 +412,10 @@ async def submit_jobs_batch(body: JobBatch) -> dict[str, Any]:
     bound of 25 URLs per submission is enforced by the schema and keeps the
     active-jobs UI manageable; the orchestrator's own semaphore (default 2)
     bounds actual concurrency.
+
+    The endpoint accepts either ``urls: list[str]`` (legacy / extension)
+    or ``items: list[JobBatchItem]`` (frontend, after preflight). The
+    item shape carries ``force_recapture`` for the §15 modal flow.
     """
     conn = _conn()
     try:
@@ -548,90 +428,200 @@ async def submit_jobs_batch(body: JobBatch) -> dict[str, Any]:
     finally:
         conn.close()
 
-    seen: set[str] = set()
-    urls: list[str] = []
-    for raw in body.urls:
-        u = raw.strip()
-        if u and u not in seen:
-            seen.add(u)
-            urls.append(u)
-    if not urls:
-        raise HTTPException(status_code=400, detail="no URLs")
+    items = _normalize_batch_items(body)
 
     submitted = []
-    for u in urls:
+    for it in items:
         job = await jobs_mod.orchestrator().submit(
-            case_id=case.id, url=u, lang=body.lang,
+            case_id=case.id,
+            url=it.url,
+            lang=body.lang,
+            force_recapture=it.force_recapture,
+            original_download_id=it.original_download_id,
         )
         submitted.append(job.to_dict())
     return {"case_id": case.id, "jobs": submitted}
 
 
-@app.get("/api/jobs/{job_id}")
-async def get_job(job_id: str) -> dict[str, Any]:
-    job = jobs_mod.orchestrator().get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
-    return job.to_dict()
+# --- Preflight (CLAUDE.md §15) -----------------------------------------------
 
 
-@app.get("/api/jobs")
-async def list_jobs(
-    case_id: int | None = None,
-    status: str | None = None,
-    limit: int = Query(default=200, ge=1, le=2000),
-) -> dict[str, Any]:
-    """List persisted jobs with counts-by-status — plan §U9 Queue view.
-
-    Filters are optional; without them, returns every persisted job up to
-    ``limit`` in reverse-creation order plus a summary of state counts so
-    the frontend's queue view can show "47 of 50 done, 1 retrying" without
-    a second round-trip.
-    """
-    conn = _conn()
-    try:
-        sql = "SELECT * FROM jobs WHERE 1=1"
-        params: list[Any] = []
-        if case_id is not None:
-            sql += " AND case_id = ?"
-            params.append(case_id)
-        if status is not None:
-            sql += " AND status = ?"
-            params.append(status)
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
-        rows = list(conn.execute(sql, params))
-
-        summary_rows = list(conn.execute(
-            "SELECT status, COUNT(*) AS n FROM jobs"
-            + (" WHERE case_id = ?" if case_id is not None else "")
-            + " GROUP BY status",
-            ([case_id] if case_id is not None else []),
-        ))
-        counts = {r["status"]: int(r["n"]) for r in summary_rows}
-    finally:
-        conn.close()
-    return {
-        "jobs": [jobs_mod.Job.from_row(r).to_dict() for r in rows],
-        "counts": counts,
-        "limit": limit,
-    }
-
-
-class PreflightRequest(BaseModel):
-    url: str = Field(min_length=1)
+class PreflightBody(BaseModel):
+    urls: list[str] = Field(min_length=1, max_length=25)
+    case_id: int | None = None
 
 
 @app.post("/api/jobs/preflight")
-async def preflight_size(body: PreflightRequest) -> dict[str, Any]:
-    """Ask yt-dlp how large this download would be — plan Phase E.
+async def preflight_jobs(body: PreflightBody) -> dict[str, Any]:
+    """Classify URLs and surface duplicates *before* the capture pipeline runs.
 
-    Spawns yt-dlp with ``--print filesize_approx``. No download happens.
-    Used by the Slow profile UI to surface "this will take ~3 h at your
-    current speed" before the user commits.
+    For each URL we resolve the redirect chain (cap-budgeted at ~15s by
+    ``classify``), compute the canonical url_hash, and probe the
+    downloads table. The frontend uses this to drive the §15 duplicate-
+    handling modal and the batch-summary chips, avoiding the wasted
+    ~30s of yt-dlp + Playwright work that the late-detection fallback
+    in ``postprocess`` would otherwise discard.
     """
-    info = await ytdlp_runner.preflight(body.url)
-    return info
+    conn = _conn()
+    try:
+        if body.case_id is None:
+            case = cases.ensure_default_case(conn)
+        else:
+            case = cases.get(conn, body.case_id)
+            if case is None:
+                raise HTTPException(status_code=404, detail="case not found")
+    finally:
+        conn.close()
+
+    # De-duplicate within the submitted list by raw string first so we
+    # don't classify the same URL twice. Within-batch canonical
+    # collapsing happens after classification (so ``utm_*`` variants
+    # of the same URL get flagged as ``within_batch_duplicate``).
+    raw_seen: set[str] = set()
+    submitted: list[str] = []
+    for raw in body.urls:
+        u = raw.strip()
+        if u and u not in raw_seen:
+            raw_seen.add(u)
+            submitted.append(u)
+    if not submitted:
+        raise HTTPException(status_code=400, detail="no URLs")
+
+    sem = asyncio.Semaphore(4)
+
+    async def _one(url: str) -> dict[str, Any]:
+        async with sem:
+            try:
+                cls = await classify_mod.classify(url, case_slug=case.slug)
+            except Exception as exc:  # noqa: BLE001 — best-effort preview
+                return {
+                    "url_submitted": url,
+                    "status": "classification_failed",
+                    "error": f"{type(exc).__name__}",
+                }
+            return {
+                "url_submitted": url,
+                "url_final": cls.url_final,
+                "url_canonical": cls.url_canonical,
+                "url_hash": cls.url_hash,
+                "platform": cls.platform,
+                "redirect_chain_length": len(cls.redirect_chain),
+                "authenticated_domains": list(cls.authenticated_domains),
+                "classification_error": cls.error,
+            }
+
+    classified = await asyncio.gather(*[_one(u) for u in submitted])
+
+    # Probe the DB for each URL to find existing duplicates. A single
+    # connection for the whole batch is fine — preflight is read-only.
+    conn = _conn()
+    try:
+        canon_first_seen: dict[str, int] = {}
+        results: list[dict[str, Any]] = []
+        for idx, info in enumerate(classified):
+            if info.get("status") == "classification_failed":
+                results.append(info)
+                continue
+            canon = info["url_canonical"]
+            if canon in canon_first_seen:
+                first_idx = canon_first_seen[canon]
+                results.append({
+                    **info,
+                    "status": "within_batch_duplicate",
+                    "first_seen_at_index": first_idx,
+                })
+                continue
+            canon_first_seen[canon] = idx
+            existing_rows = conn.execute(
+                "SELECT id, capture_kind, title, platform, capture_date, "
+                "item_dir, source_url FROM downloads "
+                "WHERE case_id = ? AND (url_hash = ? OR url_hash LIKE ?) "
+                "ORDER BY capture_date DESC LIMIT 1",
+                (case.id, info["url_hash"], info["url_hash"] + "__c%"),
+            ).fetchall()
+            if existing_rows:
+                row = existing_rows[0]
+                # Audit the detection — chain-of-custody anchor (§8/§15).
+                audit.append(
+                    conn,
+                    "duplicate.detected",
+                    case_id=case.id,
+                    download_id=int(row["id"]),
+                    actor="system",
+                    details={
+                        "url_hash": info["url_hash"],
+                        "redirect_chain_length": info["redirect_chain_length"],
+                        "submitted": info["url_submitted"],
+                    },
+                )
+                results.append({
+                    **info,
+                    "status": "duplicate",
+                    "existing": {
+                        "id": int(row["id"]),
+                        "title": row["title"],
+                        "platform": row["platform"],
+                        "capture_kind": row["capture_kind"],
+                        "capture_date": row["capture_date"],
+                        "item_dir": row["item_dir"],
+                        "source_url": row["source_url"],
+                    },
+                })
+            else:
+                results.append({**info, "status": "new"})
+    finally:
+        conn.close()
+
+    summary = {
+        "new": sum(1 for r in results if r.get("status") == "new"),
+        "duplicates_blocked": sum(
+            1 for r in results if r.get("status") == "duplicate"
+        ),
+        "within_batch_duplicates": sum(
+            1 for r in results if r.get("status") == "within_batch_duplicate"
+        ),
+        "classification_failed": sum(
+            1 for r in results if r.get("status") == "classification_failed"
+        ),
+    }
+    return {"case_id": case.id, "results": results, "summary": summary}
+
+
+# --- Duplicate-modal outcome audit (CLAUDE.md §15) ---------------------------
+
+
+class DuplicateOutcomeBody(BaseModel):
+    case_id: int
+    existing_id: int
+    outcome: str = Field(pattern="^(opened_existing|cancelled)$")
+
+
+@app.post("/api/jobs/duplicate-outcome")
+async def duplicate_outcome(body: DuplicateOutcomeBody) -> dict[str, Any]:
+    """Record the user's choice from the duplicate-handling modal.
+
+    ``recaptured`` is logged from the orchestrator on a successful
+    re-capture finalize (so the audit row points at the new download
+    row). ``opened_existing`` and ``cancelled`` go through this route —
+    they have no follow-up backend work, only the audit entry.
+    """
+    conn = _conn()
+    try:
+        case = cases.get(conn, body.case_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="case not found")
+        action = f"duplicate.{body.outcome}"
+        entry_id = audit.append(
+            conn,
+            action,
+            case_id=case.id,
+            download_id=body.existing_id,
+            actor="user",
+            details={"existing_id": body.existing_id},
+        )
+    finally:
+        conn.close()
+    return {"ok": True, "audit_id": entry_id}
 
 
 @app.get("/api/jobs/{job_id}/events")
@@ -648,84 +638,6 @@ async def stream_job_events(job_id: str, request: Request) -> StreamingResponse:
             yield f"event: {evt['event']}\ndata: {json.dumps(payload['data'])}\n\n"
 
     return StreamingResponse(event_source(), media_type="text/event-stream")
-
-
-# --- Pause / resume / cancel (plan §U4) -------------------------------------
-
-
-@app.post("/api/jobs/{job_id}/pause")
-async def pause_job(job_id: str) -> dict[str, Any]:
-    ok = await jobs_mod.orchestrator().pause(job_id)
-    if not ok:
-        raise HTTPException(status_code=409, detail="job is terminal or unknown")
-    return {"ok": True, "job_id": job_id}
-
-
-@app.post("/api/jobs/{job_id}/resume")
-async def resume_job(job_id: str) -> dict[str, Any]:
-    ok = await jobs_mod.orchestrator().resume(job_id)
-    if not ok:
-        raise HTTPException(status_code=409, detail="job is not paused")
-    return {"ok": True, "job_id": job_id}
-
-
-@app.post("/api/jobs/{job_id}/cancel")
-async def cancel_job(job_id: str) -> dict[str, Any]:
-    ok = await jobs_mod.orchestrator().cancel(job_id)
-    if not ok:
-        raise HTTPException(status_code=409, detail="job is terminal or unknown")
-    return {"ok": True, "job_id": job_id}
-
-
-@app.post("/api/jobs/pause-all")
-async def pause_all_jobs() -> dict[str, Any]:
-    n = await jobs_mod.orchestrator().pause_all()
-    return {"ok": True, "paused": n}
-
-
-@app.post("/api/jobs/resume-all")
-async def resume_all_jobs() -> dict[str, Any]:
-    n = await jobs_mod.orchestrator().resume_all()
-    return {"ok": True, "resumed": n}
-
-
-# --- Network monitor (plan §U7) ---------------------------------------------
-
-
-def _network_state_to_dict(s: Any) -> dict[str, Any]:
-    return {
-        "offline": s.offline,
-        "offline_since": s.offline_since,
-        "probe_url": s.probe_url,
-        "probe_interval_s": s.probe_interval_s,
-        "last_probe_at": s.last_probe_at,
-        "last_probe_ok": s.last_probe_ok,
-        "last_probe_error": s.last_probe_error,
-        "failure_count_in_window": s.failure_count_in_window,
-    }
-
-
-class NetworkConfig(BaseModel):
-    probe_url: str = Field(min_length=1)
-
-
-@app.get("/api/system/network")
-async def get_network_state() -> dict[str, Any]:
-    return _network_state_to_dict(jobs_mod.orchestrator().network.state())
-
-
-@app.patch("/api/system/network")
-async def update_network_config(body: NetworkConfig) -> dict[str, Any]:
-    monitor = jobs_mod.orchestrator().network
-    monitor.set_probe_url(body.probe_url)
-    return _network_state_to_dict(monitor.state())
-
-
-@app.post("/api/system/network/probe")
-async def probe_now() -> dict[str, Any]:
-    monitor = jobs_mod.orchestrator().network
-    ok = await monitor.force_probe_now()
-    return {"ok": ok, **_network_state_to_dict(monitor.state())}
 
 
 # --- Profiles (plan §C) ------------------------------------------------------
@@ -775,57 +687,6 @@ async def set_app_profile(body: ProfileChoice) -> dict[str, Any]:
     }
 
 
-@app.get("/api/cases/{case_id}/profile")
-async def get_case_profile(case_id: int) -> dict[str, Any]:
-    conn = _conn()
-    try:
-        case = cases.get(conn, case_id)
-        if case is None:
-            raise HTTPException(status_code=404, detail="case not found")
-        resolution = profiles_mod.effective_for_case(case.settings)
-        return {
-            "case_settings": case.settings,
-            "effective": resolution.settings.to_dict(),
-            "base_name": resolution.base_name,
-        }
-    finally:
-        conn.close()
-
-
-@app.put("/api/cases/{case_id}/profile")
-async def set_case_profile(
-    case_id: int, body: ProfileChoice,
-) -> dict[str, Any]:
-    if body.profile not in profiles_mod.PROFILE_NAMES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"unknown profile {body.profile!r}",
-        )
-    conn = _conn()
-    try:
-        case = cases.get(conn, case_id)
-        if case is None:
-            raise HTTPException(status_code=404, detail="case not found")
-        new_settings = dict(case.settings or {})
-        new_settings["profile"] = body.profile
-        if body.profile_overrides is not None:
-            new_settings["profile_overrides"] = body.profile_overrides
-        cases.update_settings(conn, case_id, new_settings)
-        audit.append(
-            conn, "case.profile_changed",
-            case_id=case_id, actor="user",
-            details={"profile": body.profile, "overrides": body.profile_overrides or {}},
-        )
-        resolution = profiles_mod.effective_for_case(new_settings)
-        return {
-            "case_settings": new_settings,
-            "effective": resolution.settings.to_dict(),
-            "base_name": resolution.base_name,
-        }
-    finally:
-        conn.close()
-
-
 # --- Library -----------------------------------------------------------------
 
 
@@ -865,59 +726,6 @@ async def list_library(
         return {"items": rows, "limit": limit, "offset": offset}
     finally:
         conn.close()
-
-
-class RefetchRequest(BaseModel):
-    kind: str = Field(default="archive")  # 'archive' | 'media'
-
-
-@app.post("/api/library/{download_id}/refetch")
-async def refetch_artifact(
-    download_id: int, body: RefetchRequest,
-) -> dict[str, Any]:
-    """Spawn a follow-up task to extend an existing library item with a
-    re-fetched archive or media artifact (plan §U6 Phase D).
-
-    Looks up (or creates) the parent ``capture_group`` and submits a job
-    with the matching ``task_kind``. Returns the new job descriptor.
-    """
-    if body.kind not in ("archive", "media"):
-        raise HTTPException(
-            status_code=400, detail="kind must be 'archive' or 'media'",
-        )
-    conn = _conn()
-    try:
-        row = conn.execute(
-            "SELECT id, case_id, source_url, final_url FROM downloads WHERE id = ?",
-            (download_id,),
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="download not found")
-        grp_row = conn.execute(
-            "SELECT id FROM capture_groups WHERE download_id = ?", (download_id,),
-        ).fetchone()
-        if grp_row is None:
-            group_id = jobs_mod.ensure_capture_group(
-                conn,
-                case_id=int(row["case_id"]),
-                url=row["final_url"] or row["source_url"],
-                download_id=download_id,
-            )
-        else:
-            group_id = grp_row["id"]
-        case_id_local = int(row["case_id"])
-        target_url = row["final_url"] or row["source_url"]
-    finally:
-        conn.close()
-
-    task_kind = jobs_mod.TASK_ARCHIVE if body.kind == "archive" else jobs_mod.TASK_MEDIA
-    job = await jobs_mod.orchestrator().submit(
-        case_id=case_id_local,
-        url=target_url,
-        task_kind=task_kind,
-        capture_group_id=group_id,
-    )
-    return job.to_dict()
 
 
 @app.post("/api/library/verify")
@@ -994,6 +802,102 @@ async def list_audit(
         rows = list(audit.iter_entries(conn, case_id=case_id, since=since, limit=limit))
         ok, broken = audit.verify_chain(conn)
         return {"chain_ok": ok, "broken_at": broken, "entries": rows}
+    finally:
+        conn.close()
+
+
+# --- Clear case (CLAUDE.md §15, plan §I) -------------------------------------
+
+
+@app.post("/api/cases/{case_id}/clear")
+async def clear_case(case_id: int) -> dict[str, Any]:
+    """Permanently delete every capture in the case.
+
+    The case row itself, its cookies file, and the signing key all stay.
+    Only the on-disk per-item folders and the ``downloads`` rows for the
+    case go. The audit log keeps every prior entry untouched and gains a
+    single ``library.cleared`` row carrying a snapshot (id, url_hash,
+    media sha256, capture_date, sha256 of meta.json) of what was
+    deleted — the chain-of-custody anchor for the deletion event.
+
+    This is the single most destructive route in the app. The frontend
+    gates the call behind a confirmation dialog with an explicit "Delete
+    N captures" button.
+    """
+    conn = _conn()
+    try:
+        case = cases.get(conn, case_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="case not found")
+
+        rows = conn.execute(
+            "SELECT id, url_hash, capture_date, sha256, item_dir, meta_json "
+            "FROM downloads WHERE case_id = ?",
+            (case.id,),
+        ).fetchall()
+        if not rows:
+            return {"deleted_count": 0, "freed_bytes": 0, "audit_id": None}
+
+        import hashlib as _hashlib  # local: keeps the route self-contained
+        snapshot: list[dict[str, Any]] = []
+        freed_bytes = 0
+        for r in rows:
+            item_dir_rel = r["item_dir"]
+            item_dir = config.DOWNLOADS_DIR / item_dir_rel if item_dir_rel else None
+            if item_dir and item_dir.exists():
+                for p in item_dir.rglob("*"):
+                    try:
+                        if p.is_file():
+                            freed_bytes += p.stat().st_size
+                    except OSError:
+                        pass
+                try:
+                    shutil.rmtree(item_dir)
+                except OSError:
+                    pass
+            meta_json = r["meta_json"] or ""
+            meta_sha = (
+                _hashlib.sha256(meta_json.encode("utf-8")).hexdigest()
+                if meta_json
+                else None
+            )
+            snapshot.append({
+                "id": int(r["id"]),
+                "url_hash": r["url_hash"],
+                "capture_date": r["capture_date"],
+                "media_sha256": r["sha256"],
+                "meta_json_sha256": meta_sha,
+            })
+
+        # Drop refetch capture-group bookkeeping so the orchestrator
+        # doesn't try to extend rows that no longer exist.
+        try:
+            conn.execute(
+                "DELETE FROM capture_groups WHERE case_id = ?", (case.id,),
+            )
+        except Exception:
+            # capture_groups table may not exist on older fixture DBs.
+            pass
+
+        with conn:
+            conn.execute("DELETE FROM downloads WHERE case_id = ?", (case.id,))
+
+        audit_id = audit.append(
+            conn,
+            "library.cleared",
+            case_id=case.id,
+            actor="user",
+            details={
+                "count": len(snapshot),
+                "freed_bytes": freed_bytes,
+                "items": snapshot,
+            },
+        )
+        return {
+            "deleted_count": len(snapshot),
+            "freed_bytes": freed_bytes,
+            "audit_id": audit_id,
+        }
     finally:
         conn.close()
 

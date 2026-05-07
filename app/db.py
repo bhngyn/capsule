@@ -70,12 +70,40 @@ def applied_versions(conn: sqlite3.Connection) -> set[int]:
 
 
 def _migration_files(directory: Path = MIGRATIONS_DIR) -> Iterable[tuple[int, Path]]:
-    """Yield ``(version, path)`` for every ``NNN_*.sql`` in directory order."""
-    for path in sorted(directory.glob("*.sql")):
-        m = _VERSION_RE.match(path.name)
-        if not m:
-            continue
-        yield int(m.group(1)), path
+    """Yield ``(version, path)`` for every ``NNN_*.{sql,py}`` in version order."""
+    candidates: list[tuple[int, Path]] = []
+    for pattern in ("*.sql", "*.py"):
+        for path in directory.glob(pattern):
+            m = _VERSION_RE.match(path.name)
+            if not m:
+                continue
+            # Skip dunder files (``__init__.py``, etc.).
+            if path.name.startswith("_"):
+                continue
+            candidates.append((int(m.group(1)), path))
+    candidates.sort(key=lambda kv: (kv[0], kv[1].name))
+    yield from candidates
+
+
+def _run_python_migration(conn: sqlite3.Connection, path: Path) -> None:
+    """Execute a ``NNN_*.py`` migration file.
+
+    The file must define ``def upgrade(conn: sqlite3.Connection) -> None``.
+    Module is loaded by file path so migrations can import from ``app``
+    without being part of a package.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        f"app.migrations.{path.stem}", path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load migration {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if not hasattr(module, "upgrade"):
+        raise RuntimeError(f"{path.name}: missing upgrade(conn) function")
+    module.upgrade(conn)
 
 
 def migrate(conn: sqlite3.Connection, *, directory: Path = MIGRATIONS_DIR) -> list[int]:
@@ -84,6 +112,11 @@ def migrate(conn: sqlite3.Connection, *, directory: Path = MIGRATIONS_DIR) -> li
     Returns the list of versions applied during this call (empty if the
     schema is already up to date). Each migration runs in its own
     transaction; partial failure leaves the DB in the previous version.
+
+    Both ``.sql`` (executescript) and ``.py`` (``upgrade(conn)``)
+    migrations are supported. Python migrations are reserved for cases
+    where canonicalization, hashing, or other business logic is needed
+    (e.g. recomputing url_hash during the schema-v5 upgrade).
     """
     _ensure_migrations_table(conn)
     done = applied_versions(conn)
@@ -91,11 +124,15 @@ def migrate(conn: sqlite3.Connection, *, directory: Path = MIGRATIONS_DIR) -> li
     for version, path in _migration_files(directory):
         if version in done:
             continue
-        sql = path.read_text(encoding="utf-8")
-        # ``executescript`` ends any pending transaction and runs the script
-        # in autocommit mode. We then bracket the bookkeeping insert in a
-        # plain transaction so the version row only appears if we got here.
-        conn.executescript(sql)
+        if path.suffix == ".sql":
+            sql = path.read_text(encoding="utf-8")
+            # ``executescript`` ends any pending transaction and runs the
+            # script in autocommit mode. We then bracket the bookkeeping
+            # insert in a plain transaction so the version row only
+            # appears if we got here.
+            conn.executescript(sql)
+        else:
+            _run_python_migration(conn, path)
         with conn:
             conn.execute(
                 "INSERT INTO schema_migrations(version, applied_at, filename)"

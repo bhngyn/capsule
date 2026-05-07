@@ -127,7 +127,10 @@ if [ "$needs_load" = 1 ]; then
   # Remove any existing image with this tag (possibly the wrong arch).
   docker rmi -f "$IMAGE_TAG" 2>/dev/null || true
   echo "Loading Capsule image (this takes about a minute on first launch)..."
-  if ! docker load -i "images/$TAR_NAME"; then
+  # The image tar is gzip-compressed in the bundle (build-dist.sh) so the
+  # download stays small. Decompress on the fly into docker load — no temp
+  # file, and macOS ships gunzip natively so no extra dependency.
+  if ! gunzip -c "images/$TAR_NAME" | docker load; then
     echo "Could not load the Capsule image from images/$TAR_NAME."
     echo "The file may be corrupted; download the distribution package again."
     read -n 1 -s -r -p "Press any key to close..."; echo; exit 1

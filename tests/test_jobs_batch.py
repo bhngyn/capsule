@@ -111,7 +111,11 @@ async def test_batch_rejects_unknown_case(client):
 @pytest.mark.asyncio
 async def test_batch_rejects_empty_list(client):
     resp = await client.post("/api/jobs/batch", json={"urls": []})
-    assert resp.status_code == 422
+    # Old behavior was 422 (Pydantic min_length=1). With the §15 dedup
+    # extension the validator now allows ``urls=None`` (so the new
+    # ``items=`` shape can be used instead), and the empty-list check
+    # surfaces as 400 from the handler-level normalize step.
+    assert resp.status_code == 400
 
 
 @pytest.mark.asyncio

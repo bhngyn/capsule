@@ -97,9 +97,13 @@ for arch in $arch_list; do
     --load \
     .
 
-  echo "==> Saving linux/$arch image ..."
+  echo "==> Saving + gzipping linux/$arch image ..."
   mkdir -p "$TMP/images-$arch"
-  docker save "capsule:$arch" -o "$TMP/images-$arch/capsule-image-$arch.tar"
+  # gzip -9 cuts the bundled tar by ~50% with negligible decompression cost
+  # at first launch. Gzip is universally available on macOS (gunzip) and on
+  # Windows 10+ (tar.exe via libarchive auto-detects gzip), so the launcher
+  # decompression path needs no extra binaries shipped.
+  docker save "capsule:$arch" | gzip -9 > "$TMP/images-$arch/capsule-image-$arch.tar.gz"
 
   echo "==> Capturing digest for linux/$arch ..."
   docker image inspect "capsule:$arch" --format '{{.Id}}' \
@@ -270,14 +274,14 @@ if [ "$has_arm64" = 1 ]; then
   rm -rf "$FOLDER"
   mkdir -p "$FOLDER/images"
 
-  cp "$TMP/images-arm64/capsule-image-arm64.tar"    "$FOLDER/images/"
+  cp "$TMP/images-arm64/capsule-image-arm64.tar.gz"    "$FOLDER/images/"
   cp "$TMP/images-arm64/capsule-image-arm64.digest" "$FOLDER/images/"
 
   render_launcher \
     "dist-templates/Capsule.command.in" \
     "arm64" \
     "capsule:arm64" \
-    "capsule-image-arm64.tar" \
+    "capsule-image-arm64.tar.gz" \
     "$ARM64_DIGEST" \
     "$FOLDER/Capsule.command"
   chmod +x "$FOLDER/Capsule.command"
@@ -293,14 +297,14 @@ if [ "$has_amd64" = 1 ]; then
   rm -rf "$FOLDER"
   mkdir -p "$FOLDER/images"
 
-  cp "$TMP/images-amd64/capsule-image-amd64.tar"    "$FOLDER/images/"
+  cp "$TMP/images-amd64/capsule-image-amd64.tar.gz"    "$FOLDER/images/"
   cp "$TMP/images-amd64/capsule-image-amd64.digest" "$FOLDER/images/"
 
   render_launcher \
     "dist-templates/Capsule.command.in" \
     "amd64" \
     "capsule:amd64" \
-    "capsule-image-amd64.tar" \
+    "capsule-image-amd64.tar.gz" \
     "$AMD64_DIGEST" \
     "$FOLDER/Capsule.command"
   chmod +x "$FOLDER/Capsule.command"
@@ -316,14 +320,14 @@ if [ "$has_amd64" = 1 ]; then
   rm -rf "$FOLDER"
   mkdir -p "$FOLDER/images"
 
-  cp "$TMP/images-amd64/capsule-image-amd64.tar"    "$FOLDER/images/"
+  cp "$TMP/images-amd64/capsule-image-amd64.tar.gz"    "$FOLDER/images/"
   cp "$TMP/images-amd64/capsule-image-amd64.digest" "$FOLDER/images/"
 
   render_launcher \
     "dist-templates/Capsule.bat.in" \
     "amd64" \
     "capsule:amd64" \
-    "capsule-image-amd64.tar" \
+    "capsule-image-amd64.tar.gz" \
     "$AMD64_DIGEST" \
     "$FOLDER/Capsule.bat"
 
@@ -340,11 +344,11 @@ rm -rf "$FOLDER"
 mkdir -p "$FOLDER/images"
 
 if [ "$has_arm64" = 1 ]; then
-  cp "$TMP/images-arm64/capsule-image-arm64.tar"    "$FOLDER/images/"
+  cp "$TMP/images-arm64/capsule-image-arm64.tar.gz"    "$FOLDER/images/"
   cp "$TMP/images-arm64/capsule-image-arm64.digest" "$FOLDER/images/"
 fi
 if [ "$has_amd64" = 1 ]; then
-  cp "$TMP/images-amd64/capsule-image-amd64.tar"    "$FOLDER/images/"
+  cp "$TMP/images-amd64/capsule-image-amd64.tar.gz"    "$FOLDER/images/"
   cp "$TMP/images-amd64/capsule-image-amd64.digest" "$FOLDER/images/"
 fi
 
@@ -364,7 +368,7 @@ if [ "$has_amd64" = 1 ]; then
     "dist-templates/Capsule.bat.in" \
     "amd64" \
     "capsule:amd64" \
-    "capsule-image-amd64.tar" \
+    "capsule-image-amd64.tar.gz" \
     "$AMD64_DIGEST" \
     "$FOLDER/Capsule.bat"
 fi
