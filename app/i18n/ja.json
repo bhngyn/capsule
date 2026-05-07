@@ -216,6 +216,7 @@
   "recent.row.host_label": "ソース",
   "recent.row.kind.media": "メディア",
   "recent.row.kind.page_only": "ページスナップショット",
+  "recent.row.kind.gallery": "画像ギャラリー",
   "recent.clear.button": "リストを消去",
   "recent.clear.button.aria": "このケースのすべてのキャプチャを完全に削除",
   "recent.clear.dialog.title": "{count, plural, other {# 件のキャプチャを完全に削除しますか？}}",

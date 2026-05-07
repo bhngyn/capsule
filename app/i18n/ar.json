@@ -216,6 +216,7 @@
   "recent.row.host_label": "المصدر",
   "recent.row.kind.media": "وسائط",
   "recent.row.kind.page_only": "لقطة صفحة",
+  "recent.row.kind.gallery": "معرض صور",
   "recent.clear.button": "مسح القائمة",
   "recent.clear.button.aria": "حذف جميع الالتقاطات في هذه القضية بشكل دائم",
   "recent.clear.dialog.title": "{count, plural, zero {لا يوجد التقاطات لحذفها} one {حذف # التقاط بشكل دائم؟} two {حذف # التقاطين بشكل دائم؟} few {حذف # التقاطات بشكل دائم؟} many {حذف # التقاطًا بشكل دائم؟} other {حذف # التقاط بشكل دائم؟}}",

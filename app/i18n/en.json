@@ -216,6 +216,7 @@
   "recent.row.host_label": "Source",
   "recent.row.kind.media": "Media",
   "recent.row.kind.page_only": "Page snapshot",
+  "recent.row.kind.gallery": "Image gallery",
   "recent.clear.button": "Clear list",
   "recent.clear.button.aria": "Permanently delete every capture in this case",
   "recent.clear.dialog.title": "{count, plural, one {Permanently delete # capture?} other {Permanently delete # captures?}}",

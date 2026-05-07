@@ -216,6 +216,7 @@
   "recent.row.host_label": "Origen",
   "recent.row.kind.media": "Multimedia",
   "recent.row.kind.page_only": "Captura de página",
+  "recent.row.kind.gallery": "Galería de imágenes",
   "recent.clear.button": "Borrar lista",
   "recent.clear.button.aria": "Eliminar permanentemente todas las capturas de este caso",
   "recent.clear.dialog.title": "{count, plural, one {¿Eliminar # captura permanentemente?} other {¿Eliminar # capturas permanentemente?}}",

@@ -468,8 +468,8 @@
                      x-text="recentRowHost(item)"></bdi>
               </div>
               <span class="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 flex-shrink-0">
-                <i :data-lucide="item.capture_kind==='media' ? 'film' : 'layout-template'" class="size-3" aria-hidden="true"></i>
-                <span x-text="t(item.capture_kind==='media' ? 'recent.row.kind.media' : 'recent.row.kind.page_only')"></span>
+                <i :data-lucide="captureKindIcon(item.capture_kind)" class="size-3" aria-hidden="true"></i>
+                <span x-text="t(captureKindLabel(item.capture_kind))"></span>
               </span>
               <span class="text-xs text-zinc-500 tabular-nums flex-shrink-0"
                     x-text="item.capture_date ? relTime(item.capture_date) : ''"></span>
@@ -680,7 +680,7 @@
             <bdi class="block text-sm font-medium truncate"
                  x-text="duplicateModal.current.existing.title"></bdi>
             <div class="mt-0.5 text-xs text-zinc-500 capitalize"
-                 x-text="(duplicateModal.current.existing.platform || '') + ' · ' + (duplicateModal.current.existing.capture_kind === 'media' ? t('recent.row.kind.media') : t('recent.row.kind.page_only'))"></div>
+                 x-text="(duplicateModal.current.existing.platform || '') + ' · ' + t(captureKindLabel(duplicateModal.current.existing.capture_kind))"></div>
             <div class="mt-1 text-xs text-zinc-500"
                  x-text="t('duplicate.modal.body', {when: relTime(duplicateModal.current.existing.capture_date)})"></div>
             <bdi class="mt-1 block text-xs text-zinc-400 font-mono truncate"
