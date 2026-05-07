@@ -453,7 +453,15 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         report_pdf_bytes = pdf_report.render_item_report(
             case=case, item_view=report_view, lang=capture_input.lang,
         )
-        report_pdf_path = item_dir / f"{stem}.report.pdf"
+        # Both PDFs live in a per-item ``reports/`` subfolder so the case
+        # directory stays scannable: media + forensic sidecars at the item
+        # root, human-readable PDFs grouped beneath. The ``reports/``
+        # subpath becomes part of the artifact relpath, so checksums.txt,
+        # the manifest's file table, and the evidence-export ZIP all pick
+        # it up automatically without further wiring.
+        reports_dir = item_dir / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        report_pdf_path = reports_dir / f"{stem}.report.pdf"
         report_pdf_path.write_bytes(report_pdf_bytes)
         moved.append(report_pdf_path)
         report_pdf_relpath = paths.relative_to_downloads(report_pdf_path)
@@ -484,7 +492,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             files=manifest_files,
             lang=capture_input.lang,
         )
-        manifest_pdf_path = item_dir / f"{stem}.manifest.pdf"
+        manifest_pdf_path = reports_dir / f"{stem}.manifest.pdf"
         manifest_pdf_path.write_bytes(manifest_pdf_bytes)
         moved.append(manifest_pdf_path)
 

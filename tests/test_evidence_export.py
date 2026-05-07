@@ -217,6 +217,12 @@ def test_export_includes_per_item_manifest_pdf(env):
     assert len(manifest_pdfs) >= 1
     # Layout: per-item folder under downloads/{stem}/, no sidecars/ tier.
     assert all("/sidecars/" not in n for n in names if n.startswith("downloads/"))
+    # The two human-readable PDFs live in the per-item ``reports/``
+    # subfolder; the ZIP mirrors that on-disk shape so the export and the
+    # case directory never drift.
+    item_pdfs = [n for n in names
+                 if n.startswith("downloads/") and n.endswith(".pdf")]
+    assert all("/reports/" in n for n in item_pdfs), item_pdfs
 
 
 def test_export_default_lang_is_english(env):

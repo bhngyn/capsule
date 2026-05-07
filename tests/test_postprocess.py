@@ -589,7 +589,7 @@ def test_manifest_pdf_is_emitted_for_every_capture(env):
     )
     result = pp.finalize(env["conn"], capture_input)
     item_dir = env["downloads"] / result.relative_item_dir
-    manifest_pdf = item_dir / f"{result.stem}.manifest.pdf"
+    manifest_pdf = item_dir / "reports" / f"{result.stem}.manifest.pdf"
     assert manifest_pdf.is_file()
     assert manifest_pdf.read_bytes()[:5] == b"%PDF-"
 
@@ -691,7 +691,7 @@ def test_manifest_pdf_renders_for_page_only(env):
     )
     result = pp.finalize(env["conn"], capture_input)
     item_dir = env["downloads"] / result.relative_item_dir
-    assert (item_dir / f"{result.stem}.manifest.pdf").is_file()
+    assert (item_dir / "reports" / f"{result.stem}.manifest.pdf").is_file()
 
 
 def test_manifest_pdf_for_arabic_locale(env):
@@ -715,7 +715,7 @@ def test_manifest_pdf_for_arabic_locale(env):
     )
     result = pp.finalize(env["conn"], capture_input)
     item_dir = env["downloads"] / result.relative_item_dir
-    pdf_bytes = (item_dir / f"{result.stem}.manifest.pdf").read_bytes()
+    pdf_bytes = (item_dir / "reports" / f"{result.stem}.manifest.pdf").read_bytes()
     assert pdf_bytes.startswith(b"%PDF-")
 
 
@@ -753,7 +753,7 @@ def test_per_item_report_pdf_emitted(env):
     item_dir = env["downloads"] / result.relative_item_dir
 
     # File present and a valid PDF.
-    report_pdf = item_dir / f"{result.stem}.report.pdf"
+    report_pdf = item_dir / "reports" / f"{result.stem}.report.pdf"
     assert report_pdf.is_file()
     bytes_ = report_pdf.read_bytes()
     assert bytes_[:5] == b"%PDF-"
@@ -803,7 +803,7 @@ def test_per_item_report_pdf_emitted(env):
 def test_per_item_folder_layout_includes_report_pdf(env):
     """Companion to test_per_item_folder_layout_collapses_sidecars —
     the new ``{stem}.report.pdf`` sits alongside ``{stem}.manifest.pdf``
-    in the per-item folder."""
+    in the per-item ``reports/`` subfolder."""
     media, info, desc = _stage_media(env)
     pp = env["pp"]
     capture_input = pp.CaptureInput(
@@ -820,8 +820,8 @@ def test_per_item_folder_layout_includes_report_pdf(env):
     )
     result = pp.finalize(env["conn"], capture_input)
     item_dir = env["downloads"] / result.relative_item_dir
-    assert (item_dir / f"{result.stem}.manifest.pdf").is_file()
-    assert (item_dir / f"{result.stem}.report.pdf").is_file()
+    assert (item_dir / "reports" / f"{result.stem}.manifest.pdf").is_file()
+    assert (item_dir / "reports" / f"{result.stem}.report.pdf").is_file()
 
 
 def test_per_item_report_pdf_for_page_only_capture(env):
@@ -841,7 +841,7 @@ def test_per_item_report_pdf_for_page_only_capture(env):
     )
     result = pp.finalize(env["conn"], capture_input)
     item_dir = env["downloads"] / result.relative_item_dir
-    report = item_dir / f"{result.stem}.report.pdf"
+    report = item_dir / "reports" / f"{result.stem}.report.pdf"
     assert report.is_file()
     assert report.read_bytes()[:5] == b"%PDF-"
     meta = json.loads(result.meta_json_path.read_text(encoding="utf-8"))
