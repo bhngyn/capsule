@@ -128,14 +128,37 @@ app.add_middleware(
 # --- Extension auth ---------------------------------------------------------
 
 
-def _bearer_token(authorization: str | None = Header(default=None)) -> extension_tokens.Token:
+def _bearer_token(
+    authorization: str | None = Header(default=None),
+    x_extension_id: str | None = Header(default=None, alias="X-Extension-Id"),
+) -> extension_tokens.Token:
     """Validate ``Authorization: Bearer <token>``. Used as a FastAPI dep on
     every extension-only route. The validated :class:`Token` is returned so
-    handlers can attach the extension label to audit entries."""
+    handlers can attach the extension label to audit entries.
+
+    Hardening pass: tokens paired with an ``extension_id`` reject requests
+    whose ``X-Extension-Id`` header doesn't match. Mismatches are recorded
+    as 403 ``extension.id_mismatch`` audit entries.
+    """
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
     raw = authorization.split(" ", 1)[1].strip()
-    record = extension_tokens.verify(raw)
+    try:
+        record = extension_tokens.verify(raw, extension_id=x_extension_id)
+    except extension_tokens.ExtensionIdMismatch:
+        conn = _conn()
+        try:
+            audit.append(
+                conn,
+                "extension.id_mismatch",
+                actor="system",
+                details={
+                    "presented_extension_id": x_extension_id or "",
+                },
+            )
+        finally:
+            conn.close()
+        raise HTTPException(status_code=403, detail="extension id mismatch")
     if record is None:
         raise HTTPException(status_code=401, detail="invalid bearer token")
     extension_tokens.touch(record.id)
@@ -1211,6 +1234,43 @@ async def extension_revoke(token_id: str) -> dict[str, Any]:
     return {"ok": True, "token_id": record.id}
 
 
+@app.post("/api/extension/pair/{token_id}/rotate")
+async def extension_rotate(token_id: str) -> dict[str, Any]:
+    """Issue a replacement token for an existing pairing.
+
+    Same-origin only — same trust posture as ``GET /api/extension/tokens``.
+    The label and extension_id binding carry over; the new raw token is
+    shown to the investigator once and never persisted on the host.
+    """
+    result = extension_tokens.rotate(token_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="token not found")
+    record, raw = result
+    conn = _conn()
+    try:
+        kp = signing.ensure_keypair()
+        audit.append(
+            conn,
+            "extension.token_rotated",
+            actor="user",
+            details={
+                "old_token_id": token_id,
+                "new_token_id": record.id,
+                "label": record.label,
+                "extension_id": record.extension_id,
+            },
+        )
+        return {
+            "token": raw,
+            "token_id": record.id,
+            "label": record.label,
+            "created_at": record.created_at,
+            "server_fingerprint": signing.fingerprint(kp.public),
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/extension/cases")
 async def extension_list_cases(
     token: extension_tokens.Token = Depends(_bearer_token),
@@ -1299,12 +1359,22 @@ async def upload_cookies_json(
 
 # Live-capture artifacts the extension may attach per URL. All optional —
 # the investigator can disable live capture and just send URLs + cookies.
+#
+# Hardening pass: tab_context (UA / viewport / scroll / tz), session_state
+# (per-origin local/sessionStorage), and the click-time DOM snapshot are
+# additive; missing fields fall back to engine defaults / no record.
 class LiveCapturePayload(BaseModel):
     url: str = Field(min_length=1)
     mhtml_b64: str | None = None
     screenshot_b64: str | None = None
     har: dict[str, Any] | None = None
     environment: dict[str, Any] | None = None
+    # Hardening additions:
+    tab_context: dict[str, Any] | None = None
+    session_state: list[dict[str, Any]] | None = None  # [{origin, localStorage, sessionStorage, captured_at}, ...]
+    dom_snapshot_html_b64: str | None = None
+    dom_snapshot_meta: dict[str, Any] | None = None
+    capture_warnings: list[str] | None = None  # client-side partial-capture warnings
 
 
 class ExtensionCaptureBody(BaseModel):
@@ -1312,6 +1382,10 @@ class ExtensionCaptureBody(BaseModel):
     urls: list[str] = Field(min_length=1, max_length=25)
     cookies: list[ExtensionCookie] = Field(default_factory=list)
     live_captures: list[LiveCapturePayload] = Field(default_factory=list)
+    # 'case' (default, current behavior) persists cookies as the case file.
+    # 'ephemeral' writes them to a per-job tmpdir, used for one capture,
+    # discarded after — never written to the case directory.
+    cookie_persistence: str = Field(default="case", pattern=r"^(case|ephemeral)$")
 
 
 def _decode_b64(blob: str | None, *, label: str) -> bytes | None:
@@ -1325,46 +1399,90 @@ def _decode_b64(blob: str | None, *, label: str) -> bytes | None:
         ) from exc
 
 
-def _stash_live_capture(job_id: str, payload: LiveCapturePayload, label: str) -> None:
+def _stash_live_capture(
+    job_id: str,
+    payload: LiveCapturePayload | None,
+    label: str,
+    *,
+    ephemeral_cookies: Path | None = None,
+) -> None:
     """Materialise an extension live-capture payload onto a per-job tmpdir
     and stash a :class:`UserBrowserBundle` for the orchestrator to pick up.
 
     Cleanup of the tmpdir is the orchestrator's job (success → postprocess
-    consumes; failure → ``jobs._cleanup_bundle``).
+    consumes; failure → ``jobs._cleanup_bundle``). When ``ephemeral_cookies``
+    is set, the bundle carries the path so the orchestrator wires it into
+    the capture pipeline and discards it after the job ends.
     """
     tmp_root = config.CONFIG_DIR / "extension_inbox"
     tmp_root.mkdir(parents=True, exist_ok=True)
     tmpdir = Path(tempfile.mkdtemp(prefix=f"job-{job_id[:8]}-", dir=str(tmp_root)))
 
     mhtml_path: Path | None = None
-    if payload.mhtml_b64:
-        data = _decode_b64(payload.mhtml_b64, label="mhtml_b64")
-        mhtml_path = tmpdir / "user-browser.mhtml"
-        mhtml_path.write_bytes(data or b"")
-
     shot_path: Path | None = None
-    if payload.screenshot_b64:
-        data = _decode_b64(payload.screenshot_b64, label="screenshot_b64")
-        shot_path = tmpdir / "user-browser.png"
-        shot_path.write_bytes(data or b"")
-
     har_path: Path | None = None
-    if payload.har is not None:
-        har_path = tmpdir / "user-browser.har"
-        har_path.write_text(
-            json.dumps(payload.har, ensure_ascii=False, sort_keys=True),
-            encoding="utf-8",
-        )
-
     env_path: Path | None = None
-    if payload.environment is not None:
-        env_path = tmpdir / "user-browser.environment.json"
-        env_path.write_text(
-            json.dumps(payload.environment, ensure_ascii=False, sort_keys=True),
-            encoding="utf-8",
-        )
+    tab_path: Path | None = None
+    session_path: Path | None = None
+    dom_html_path: Path | None = None
+    dom_meta_path: Path | None = None
 
-    if any((mhtml_path, shot_path, har_path, env_path)):
+    if payload is not None:
+        if payload.mhtml_b64:
+            data = _decode_b64(payload.mhtml_b64, label="mhtml_b64")
+            mhtml_path = tmpdir / "user-browser.mhtml"
+            mhtml_path.write_bytes(data or b"")
+
+        if payload.screenshot_b64:
+            data = _decode_b64(payload.screenshot_b64, label="screenshot_b64")
+            shot_path = tmpdir / "user-browser.png"
+            shot_path.write_bytes(data or b"")
+
+        if payload.har is not None:
+            har_path = tmpdir / "user-browser.har"
+            har_path.write_text(
+                json.dumps(payload.har, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+
+        if payload.environment is not None:
+            env_path = tmpdir / "user-browser.environment.json"
+            env_path.write_text(
+                json.dumps(payload.environment, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+
+        if payload.tab_context is not None:
+            tab_path = tmpdir / "user-browser.tab-context.json"
+            tab_path.write_text(
+                json.dumps(payload.tab_context, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+
+        if payload.session_state is not None:
+            session_path = tmpdir / "user-browser.session-state.json"
+            session_path.write_text(
+                json.dumps(payload.session_state, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+
+        if payload.dom_snapshot_html_b64:
+            data = _decode_b64(payload.dom_snapshot_html_b64, label="dom_snapshot_html_b64")
+            dom_html_path = tmpdir / "user-browser.dom-snapshot.html"
+            dom_html_path.write_bytes(data or b"")
+
+        if payload.dom_snapshot_meta is not None:
+            dom_meta_path = tmpdir / "user-browser.dom-snapshot.json"
+            dom_meta_path.write_text(
+                json.dumps(payload.dom_snapshot_meta, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+
+    artifacts_present = any((
+        mhtml_path, shot_path, har_path, env_path,
+        tab_path, session_path, dom_html_path, dom_meta_path,
+    ))
+    if artifacts_present or ephemeral_cookies is not None:
         bundle = jobs_mod.UserBrowserBundle(
             tmpdir=tmpdir,
             mhtml=mhtml_path,
@@ -1372,6 +1490,11 @@ def _stash_live_capture(job_id: str, payload: LiveCapturePayload, label: str) ->
             har=har_path,
             environment=env_path,
             label=label,
+            tab_context=tab_path,
+            session_state=session_path,
+            dom_snapshot_html=dom_html_path,
+            dom_snapshot_meta=dom_meta_path,
+            ephemeral_cookies=ephemeral_cookies,
         )
         jobs_mod.attach_user_browser_bundle(job_id, bundle)
     else:
@@ -1411,17 +1534,28 @@ async def extension_capture(
     finally:
         conn.close()
 
-    # Step 2: cookies (optional). We persist before submitting jobs so the
-    # capture pipeline picks them up immediately.
+    # Step 2: cookies (optional). For 'case' persistence (default), the
+    # cookies file is written to the case directory before jobs run. For
+    # 'ephemeral', cookies are NOT persisted — each job gets a one-shot
+    # tmpdir cookie file that's discarded after the job ends.
     domains: list[str] = []
+    cookies_dicts: list[dict[str, Any]] = []
     if body.cookies:
-        try:
-            summary = cookies_mod.write_json(
-                case.slug, [c.model_dump() for c in body.cookies]
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"malformed cookie: {exc}") from exc
-        domains = [d.domain for d in summary.domains]
+        cookies_dicts = [c.model_dump() for c in body.cookies]
+        if body.cookie_persistence == "case":
+            try:
+                summary = cookies_mod.write_json(case.slug, cookies_dicts)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"malformed cookie: {exc}") from exc
+            domains = [d.domain for d in summary.domains]
+        else:
+            # Ephemeral: parse only, to validate; persist per-job at submit time.
+            try:
+                text = cookies_mod.to_netscape(cookies_dicts)
+                summary = cookies_mod.parse(text)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"malformed cookie: {exc}") from exc
+            domains = [d.domain for d in summary.domains]
 
     # Step 3: deduplicate + submit jobs. Mirrors /api/jobs/batch's logic so
     # the popup's "send list" form behaves identically to the in-app batch.
@@ -1441,14 +1575,33 @@ async def extension_capture(
 
     # Step 4: pair live captures with their submitted job by URL match.
     # The extension may send live captures for a subset of URLs; we route
-    # each payload to the first matching job (insertion order).
+    # each payload to the first matching job (insertion order). For
+    # ephemeral cookies, each job gets its own freshly-written tmpdir
+    # cookie file.
     live_by_url: dict[str, list[LiveCapturePayload]] = {}
     for payload in body.live_captures:
         live_by_url.setdefault(payload.url.strip(), []).append(payload)
     for job_dict, raw_url in zip(submitted, urls):
+        ephemeral_path: Path | None = None
+        if body.cookie_persistence == "ephemeral" and cookies_dicts:
+            try:
+                ephemeral_path, _ = cookies_mod.write_ephemeral(
+                    job_dict["id"], cookies_dicts,
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"malformed cookie: {exc}",
+                ) from exc
         payloads = live_by_url.get(raw_url) or []
-        if payloads:
-            _stash_live_capture(job_dict["id"], payloads[0], label=token.label)
+        # Always stash if either (a) live capture artifacts present or
+        # (b) ephemeral cookies need to ride to the orchestrator.
+        if payloads or ephemeral_path is not None:
+            _stash_live_capture(
+                job_dict["id"],
+                payloads[0] if payloads else None,
+                label=token.label,
+                ephemeral_cookies=ephemeral_path,
+            )
 
     # Step 5: audit. Cookie values never enter ``details`` (audit module
     # rejects forbidden keys at any depth, but we also never include them).
@@ -1464,6 +1617,7 @@ async def extension_capture(
                 "extension_token_id": token.id,
                 "url_count": len(urls),
                 "cookie_domains": domains,
+                "cookie_persistence": body.cookie_persistence,
                 "live_capture_urls": sorted(live_by_url.keys()),
             },
         )

@@ -23,7 +23,9 @@ comments. Blank lines are allowed.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import os
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +37,7 @@ __all__ = [
     "DomainSummary",
     "CookiesSummary",
     "MergeStats",
+    "FreshnessReport",
     "path_for",
     "save",
     "save_merged",
@@ -47,6 +50,11 @@ __all__ = [
     "exists",
     "write_json",
     "to_netscape",
+    "validate_freshness",
+    "snapshot_hash",
+    "ephemeral_path",
+    "write_ephemeral",
+    "discard_ephemeral",
 ]
 
 
@@ -450,3 +458,163 @@ def domains_for(case_slug: str) -> set[str]:
     if s is None:
         return set()
     return {d.domain for d in s.domains}
+
+
+# --- Freshness, snapshotting, and ephemeral storage -------------------------
+#
+# The hardening pass introduces three forensic affordances:
+#
+#   1. ``validate_freshness`` — record (don't second-guess) when cookies have
+#      already expired at capture time. Investigators want to know the
+#      capture used credentials the site would have rejected.
+#   2. ``snapshot_hash`` — sha256 of the on-disk cookies.txt at the moment
+#      a job starts. Two jobs run minutes apart can be proven to have used
+#      the same cookie set (or not) without ever logging values.
+#   3. ``ephemeral_path`` / ``write_ephemeral`` / ``discard_ephemeral`` —
+#      a per-job tmpdir cookie file that's wiped after the job ends, for
+#      one-shot captures the investigator does not want persisted to the
+#      case directory.
+
+
+@dataclass(frozen=True)
+class FreshnessReport:
+    """Outcome of a freshness check at job-start.
+
+    ``expired`` and ``expiring_soon`` list domains, never values. Session
+    cookies (no expiry) never appear in either list — a session cookie is
+    valid as long as the browser session it was exported from is alive.
+    """
+
+    expired: list[DomainSummary]
+    expiring_soon: list[DomainSummary]
+    # Cookies-file SHA-256 at the moment of the check. Used to bind the
+    # report to the exact cookie set the job will use.
+    snapshot_sha256: str | None
+    checked_at: str  # ISO 8601 UTC
+
+
+def validate_freshness(
+    case_slug: str,
+    *,
+    soon_window_s: int = 24 * 60 * 60,
+    now: int | None = None,
+) -> FreshnessReport | None:
+    """Check the case cookies file for expired / soon-to-expire cookies.
+
+    Returns ``None`` if no cookies file exists for ``case_slug`` (no work
+    to do). Otherwise returns a :class:`FreshnessReport` whose lists never
+    contain cookie values.
+
+    ``soon_window_s`` defaults to one day — a cookie that will expire while
+    a long capture is running is worth flagging.
+    """
+    target = path_for(case_slug)
+    if not target.is_file():
+        return None
+    text = target.read_text(encoding="utf-8")
+    summary_obj = _summarise(text)
+    now_ts = now if now is not None else int(_dt.datetime.now(_dt.timezone.utc).timestamp())
+    expired: list[DomainSummary] = []
+    soon: list[DomainSummary] = []
+    for d in summary_obj.domains:
+        if d.has_expired:
+            expired.append(d)
+            continue
+        if d.earliest_expiry is not None and d.earliest_expiry - now_ts < soon_window_s:
+            soon.append(d)
+    return FreshnessReport(
+        expired=expired,
+        expiring_soon=soon,
+        snapshot_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        checked_at=_dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+    )
+
+
+def snapshot_hash(case_slug: str) -> str | None:
+    """SHA-256 of the on-disk cookies file for ``case_slug``, or ``None``
+    if no file exists. Used by the orchestrator to bind a job to the exact
+    cookie set it consumed.
+
+    Hashing is over the raw file bytes — values are never decoded out of
+    this function. The hash is opaque (a 64-hex string) so writing it into
+    audit details cannot leak credentials.
+    """
+    target = path_for(case_slug)
+    if not target.is_file():
+        return None
+    return hashlib.sha256(target.read_bytes()).hexdigest()
+
+
+def snapshot_hash_path(path: Path) -> str | None:
+    """SHA-256 of ``path`` if it exists. Used by the ephemeral path that
+    doesn't live under the case slug.
+    """
+    if not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _ephemeral_root() -> Path:
+    """Per-instance tmpdir for one-shot cookie files. Never world-readable.
+
+    Lives under ``CONFIG_DIR/cookies_ephemeral/`` so it shares the same
+    storage privileges as the persistent case cookie files. Each call
+    creates a fresh sub-directory; cleanup is the caller's responsibility.
+    """
+    root = config.CONFIG_DIR / "cookies_ephemeral"
+    root.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        try:
+            os.chmod(root, 0o700)
+        except OSError:
+            pass
+    return root
+
+
+def ephemeral_path(job_id: str) -> Path:
+    """Return a fresh tmpdir cookie path for ``job_id``.
+
+    The directory is created with mode 0700 and the file path is returned
+    without writing. Use :func:`write_ephemeral` to materialise the cookies.
+    """
+    root = _ephemeral_root()
+    tmpdir = Path(tempfile.mkdtemp(prefix=f"job-{job_id[:8]}-", dir=str(root)))
+    if os.name != "nt":
+        try:
+            os.chmod(tmpdir, 0o700)
+        except OSError:
+            pass
+    return tmpdir / "cookies.txt"
+
+
+def write_ephemeral(job_id: str, cookies: list[dict]) -> tuple[Path, CookiesSummary]:
+    """Render JSON cookies to a per-job ephemeral Netscape file.
+
+    Returns ``(path, summary)``. The file lives in a fresh tmpdir and is
+    not written to the case directory. Caller MUST call
+    :func:`discard_ephemeral` when the job ends, regardless of outcome.
+    """
+    text = to_netscape(cookies)
+    summary_obj = _summarise(text)
+    target = ephemeral_path(job_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_bytes(target, text.encode("utf-8"))
+    return target, summary_obj
+
+
+def discard_ephemeral(path: Path) -> None:
+    """Remove an ephemeral cookies file and its parent tmpdir, best-effort.
+
+    Safe to call on a path that has already been removed (no-op).
+    """
+    try:
+        if path.is_file():
+            path.unlink()
+    except OSError:
+        pass
+    parent = path.parent
+    try:
+        if parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+    except OSError:
+        pass

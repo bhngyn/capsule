@@ -36,7 +36,7 @@
         </label>
 
         <div class="actions">
-          <button class="primary" id="send-tab">
+          <button class="primary" id="send-tab" aria-label="Send active tab">
             <span class="icon" aria-hidden="true">⤓</span>
             Send this tab
           </button>
@@ -56,17 +56,41 @@
           <button class="primary" id="send-list">Send list</button>
         </div>
 
-        <label class="toggle">
-          <input type="checkbox" id="live-capture" />
-          <span>Include live capture (browser-rendered MHTML + screenshot)</span>
-        </label>
-        <p class="hint" id="live-capture-hint" hidden>
-          Live capture rides alongside the canonical capture as supplementary
-          evidence. The investigator's browser environment is recorded.
-        </p>
+        <details class="settings-card">
+          <summary>Capture options</summary>
+          <label class="toggle">
+            <input type="checkbox" id="live-capture" />
+            <span>
+              Include live capture
+              <small class="muted">— ships MHTML, screenshot, DOM snapshot, storage state alongside the canonical capture.</small>
+            </span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="block-ads" />
+            <span>
+              Block ads + trackers in this browser
+              <small class="muted">— matches the backend's block list so the live capture doesn't carry tracker noise.</small>
+            </span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="real-har" />
+            <span>
+              Capture full network log (chrome.debugger)
+              <small class="muted">— Chrome shows a yellow banner while attached. Off by default.</small>
+            </span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="ephemeral-cookies" />
+            <span>
+              Ephemeral cookies (one-shot)
+              <small class="muted">— send cookies for this capture only. Never written to the case directory.</small>
+            </span>
+          </label>
+        </details>
 
         <div class="footer">
           <span class="label-chip" id="label-chip"></span>
+          <button class="link" id="rotate-token">Rotate token</button>
           <button class="link" id="manage">Manage</button>
         </div>
 
@@ -75,6 +99,7 @@
       <!-- Result -------------------------------------------------------- -->
       <section id="screen-result" hidden>
         <h2 id="result-title">Sent</h2>
+        <ul id="result-warnings" class="warnings" hidden></ul>
         <ul id="result-jobs" class="jobs"></ul>
         <button class="primary" id="back-to-paired">Done</button>
       </section>

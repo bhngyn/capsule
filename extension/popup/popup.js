@@ -56,8 +56,8 @@ async function init() {
 
   setStatus("ok", "Connected");
   $("label-chip").textContent = pairing.label ? `paired as “${pairing.label}”` : "";
+  $("rotate-token").hidden = !pairing.tokenId;
 
-  // Populate cases.
   const casesResp = await send("list-cases");
   if (!casesResp?.ok) {
     showError("Failed to load cases: " + (casesResp?.error || "unknown"));
@@ -80,6 +80,16 @@ async function init() {
   select.addEventListener("change", () => {
     send("set-active-case", { caseId: parseInt(select.value, 10) });
   });
+
+  // Hydrate the settings checkboxes from chrome.storage.
+  const settingsResp = await send("get-settings");
+  if (settingsResp?.ok) {
+    const s = settingsResp.settings || {};
+    $("live-capture").checked = !!s.live_capture;
+    $("block-ads").checked = s.block_ads !== false;  // default ON
+    $("real-har").checked = !!s.real_har;
+    $("ephemeral-cookies").checked = s.cookie_persistence === "ephemeral";
+  }
 
   show("paired");
 }
@@ -139,16 +149,50 @@ async function syncCookies() {
   const resp = await send("sync-cookies", { caseId, url });
   if (!resp?.ok) return showError("Sync failed: " + (resp?.error || "unknown"));
   $("result-title").textContent = "Cookies synced";
+  $("result-warnings").hidden = true;
   $("result-jobs").innerHTML = `<li><div>${(resp.summary?.domains || []).map((d) => d.domain).join(", ") || "no domains"}</div></li>`;
+  show("result");
+}
+
+async function rotateToken() {
+  const resp = await send("rotate-token");
+  if (!resp?.ok) {
+    showError("Could not rotate token: " + (resp?.error || "unknown"));
+    return;
+  }
+  $("result-title").textContent = "Token rotated";
+  $("result-warnings").hidden = true;
+  $("result-jobs").innerHTML = `<li><div class="muted">New token id: ${resp.token_id}</div></li>`;
   show("result");
 }
 
 function renderResult(resp) {
   if (!resp?.ok) return showError(resp?.error || "Submission failed");
-  $("result-title").textContent = `Sent ${resp.jobs.length} ${resp.jobs.length === 1 ? "capture" : "captures"}`;
+  const jobCount = resp.jobs?.length || 0;
+  $("result-title").textContent =
+    `Sent ${jobCount} ${jobCount === 1 ? "capture" : "captures"}`;
+
+  // Render any partial-capture warnings prominently — never silent success.
+  const wul = $("result-warnings");
+  wul.innerHTML = "";
+  const warnings = [
+    ...(resp.capture_warnings || []),
+    ...((resp.skipped_urls || []).map((u) => `cookies skipped for: ${u}`)),
+  ];
+  if (warnings.length) {
+    for (const w of warnings) {
+      const li = document.createElement("li");
+      li.textContent = w;
+      wul.appendChild(li);
+    }
+    wul.hidden = false;
+  } else {
+    wul.hidden = true;
+  }
+
   const ul = $("result-jobs");
   ul.innerHTML = "";
-  for (const job of resp.jobs) {
+  for (const job of resp.jobs || []) {
     const li = document.createElement("li");
     const url = document.createElement("div");
     url.className = "job-url";
@@ -175,9 +219,30 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("send-list").addEventListener("click", sendList);
   $("sync-cookies").addEventListener("click", syncCookies);
+  $("rotate-token").addEventListener("click", rotateToken);
 
+  // Settings toggles persist to chrome.storage via the background.
   $("live-capture").addEventListener("change", () => {
-    $("live-capture-hint").hidden = !$("live-capture").checked;
+    send("set-settings", { live_capture: $("live-capture").checked });
+  });
+  $("block-ads").addEventListener("change", () => {
+    send("set-settings", { block_ads: $("block-ads").checked });
+  });
+  $("real-har").addEventListener("change", async () => {
+    if ($("real-har").checked && chrome.permissions) {
+      // chrome.debugger needs the optional permission granted at runtime.
+      const granted = await chrome.permissions.request({ permissions: ["debugger"] });
+      if (!granted) {
+        $("real-har").checked = false;
+        return;
+      }
+    }
+    send("set-settings", { real_har: $("real-har").checked });
+  });
+  $("ephemeral-cookies").addEventListener("change", () => {
+    send("set-settings", {
+      cookie_persistence: $("ephemeral-cookies").checked ? "ephemeral" : "case",
+    });
   });
 
   $("manage").addEventListener("click", () => {

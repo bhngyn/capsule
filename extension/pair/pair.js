@@ -22,6 +22,17 @@ async function refresh() {
   }
 }
 
+async function deriveTokenId(raw) {
+  // Mirrors backend: token_id = first 12 hex of sha256(raw_token).
+  // Computing client-side avoids round-tripping the id alongside the
+  // raw token through the user's clipboard.
+  const enc = new TextEncoder();
+  const buf = await crypto.subtle.digest("SHA-256", enc.encode(raw));
+  const bytes = Array.from(new Uint8Array(buf));
+  const hex = bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
+  return hex.slice(0, 12);
+}
+
 async function pair() {
   const serverUrl = $("server-url").value.trim();
   const token = $("token").value.trim();
@@ -30,7 +41,13 @@ async function pair() {
     setResult("error", "Server URL and token are both required.");
     return;
   }
-  const resp = await send("pair", { serverUrl, token, label });
+  let tokenId = "";
+  try {
+    tokenId = await deriveTokenId(token);
+  } catch (_) {
+    // crypto.subtle missing — proceed with empty id, rotation just won't work.
+  }
+  const resp = await send("pair", { serverUrl, token, tokenId, label });
   if (!resp?.ok) {
     setResult("error", resp?.error || "Pairing failed.");
     return;

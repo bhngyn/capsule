@@ -1,0 +1,121 @@
+/*
+ * Capsule cookie/consent banner CSS hide layer.
+ *
+ * Version: 2026-05-06
+ *
+ * Source: hand-curated subset of the well-known "I still don't care about
+ * cookies" rule list, restricted to the most common consent libraries.
+ * License of the upstream project: GPL-3.0-or-later. This file ships only
+ * the CSS selectors derived from that list.
+ *
+ * Behaviour: every selector applies `display: none !important`. This:
+ *   - Hides the banner visually so the screenshot, MHTML render, and
+ *     full-page PNG are not obstructed.
+ *   - Does NOT modify the DOM. The underlying elements remain in the
+ *     captured MHTML and WARC source, so a forensic reviewer can still
+ *     answer "did the page show a consent banner?" by inspecting the
+ *     archive — they were just CSS-hidden at render time.
+ *   - Does NOT click any "accept" or "reject" button. The site's consent
+ *     state is whatever it was when the page loaded (typically: no choice
+ *     made, banner still pending). Auto-clicking is forbidden by Capsule
+ *     policy (CLAUDE.md §13).
+ *
+ * Audit: every capture records `meta.json.capture.banner_hide_applied:
+ * true|false` and the version of this file (`banner_hide_version`) so the
+ * exact ruleset is reproducible at review time.
+ */
+
+/* OneTrust */
+[id^="onetrust-"],
+[class*="onetrust-"],
+#onetrust-banner-sdk,
+#onetrust-consent-sdk,
+.onetrust-pc-dark-filter,
+.ot-sdk-container,
+.ot-sdk-row,
+
+/* Cookiebot */
+#CybotCookiebotDialog,
+#CybotCookiebotDialogBodyUnderlay,
+[id^="CybotCookiebotDialog"],
+
+/* Quantcast Choice */
+[class*="qc-cmp"],
+.qc-cmp-ui-container,
+#qcCmpUi,
+
+/* TrustArc */
+#truste-consent-track,
+#truste-consent-content,
+.truste_box_overlay,
+.truste_overlay,
+.trustarc-banner-container,
+
+/* Didomi */
+#didomi-host,
+#didomi-popup,
+[class^="didomi-"],
+.didomi-popup-container,
+.didomi-notice-banner,
+
+/* Sourcepoint */
+.message-container,
+[class^="sp_choice_type_"],
+.sp_message_container,
+[id^="sp_message_container_"],
+
+/* Usercentrics */
+#usercentrics-root,
+#uc-banner-container,
+[class^="uc-"],
+.uc-overlay,
+.uc-banner,
+
+/* Cookiehub */
+#cookiehub,
+.ch-cookie-consent,
+
+/* Iubenda */
+#iubenda-cs-banner,
+.iubenda-cs-content,
+[id^="iubenda-"],
+
+/* Generic patterns — high-precision selectors only */
+[id*="cookie-banner"],
+[id*="cookie-notice"],
+[id*="cookie-consent"],
+[class*="cookie-banner"],
+[class*="cookie-notice"],
+[class*="cookie-consent"],
+[class*="CookieBanner"],
+[class*="CookieNotice"],
+[class*="CookieConsent"],
+[id="gdpr-banner"],
+[id="gdpr-consent"],
+[class="gdpr-banner"],
+[class="gdpr-consent"],
+[aria-label="cookie consent"],
+[aria-label="Cookie banner"],
+[role="dialog"][aria-label*="cookie" i],
+[role="alertdialog"][aria-label*="cookie" i],
+
+/* Common newsletter / paywall overlays that obscure the page like a
+   consent banner. These often co-occur with consent banners and break
+   screenshots in the same way. Restricted to high-confidence selectors. */
+.tp-modal,
+.tp-backdrop,
+[id^="newsletter-modal"],
+[class^="newsletter-modal"]
+{
+    display: none !important;
+    visibility: hidden !important;
+}
+
+/* Restore body scroll if a banner library locked it. Common pattern:
+   the consent overlay sets `body { overflow: hidden }` or similar to
+   trap scroll; with the banner CSS-hidden the user can't see anything,
+   and `overflow: hidden` would also block our autoscroll behavior. */
+html, body {
+    overflow: auto !important;
+    position: static !important;
+}

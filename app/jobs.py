@@ -126,6 +126,11 @@ class UserBrowserBundle:
     Each path lives in a per-bundle tmpdir; ``tmpdir`` is recorded so the
     bundle can be cleaned up wholesale on terminal failure. Postprocess
     moves the files out, naturally emptying the tmpdir.
+
+    Hardening additions: ``tab_context`` + ``session_state`` + ``dom_snapshot``
+    + ``ephemeral_cookies`` extend the bundle without breaking the prior
+    additive-evidence contract — every new artifact rides through the same
+    sign-and-hash path.
     """
 
     tmpdir: Path
@@ -134,6 +139,15 @@ class UserBrowserBundle:
     har: Path | None = None
     environment: Path | None = None
     label: str | None = None  # extension label (audit only)
+    # Hardening pass:
+    tab_context: Path | None = None       # JSON: UA / viewport / scroll / tz / etc.
+    session_state: Path | None = None     # JSON: per-origin localStorage / sessionStorage
+    dom_snapshot_html: Path | None = None # raw outerHTML at click-time
+    dom_snapshot_meta: Path | None = None # JSON: counts (nodes, iframes, videos, …)
+    # Ephemeral cookies path. When set, the orchestrator uses this file
+    # instead of (or in addition to) the case's persistent cookies file,
+    # and discards it after the job ends.
+    ephemeral_cookies: Path | None = None
 
 
 _user_browser_bundles: dict[str, UserBrowserBundle] = {}
@@ -164,13 +178,24 @@ def discard_user_browser_bundle(job_id: str) -> None:
 
 
 def _cleanup_bundle(bundle: UserBrowserBundle) -> None:
-    for p in (bundle.mhtml, bundle.screenshot, bundle.har, bundle.environment):
+    for p in (
+        bundle.mhtml,
+        bundle.screenshot,
+        bundle.har,
+        bundle.environment,
+        bundle.tab_context,
+        bundle.session_state,
+        bundle.dom_snapshot_html,
+        bundle.dom_snapshot_meta,
+    ):
         if p is None:
             continue
         try:
             p.unlink()
         except OSError:
             pass
+    if bundle.ephemeral_cookies is not None:
+        cookies_mod.discard_ephemeral(bundle.ephemeral_cookies)
     try:
         bundle.tmpdir.rmdir()
     except OSError:
@@ -913,6 +938,80 @@ class JobOrchestrator:
             profile = resolution.settings
             proxy_url = (case.settings or {}).get("proxy_url") or None
 
+            # Read the extension-supplied bundle EARLY (before snapshot) so
+            # the canonical Chromium capture can mirror the user's UA /
+            # viewport / timezone, and so an ephemeral-cookies path is in
+            # effect for both Playwright and yt-dlp.
+            preview_bundle = _user_browser_bundles.get(job.id)
+            tab_ctx_obj: capture_mod.TabContext | None = None
+            tab_ctx_dict: dict[str, Any] | None = None
+            if preview_bundle is not None and preview_bundle.tab_context is not None:
+                try:
+                    tab_ctx_dict = json.loads(preview_bundle.tab_context.read_text(encoding="utf-8"))
+                    tab_ctx_obj = capture_mod.TabContext.from_dict(tab_ctx_dict)
+                except (OSError, ValueError):
+                    tab_ctx_obj = None
+                    tab_ctx_dict = None
+            ephemeral_cookies_path: Path | None = (
+                preview_bundle.ephemeral_cookies if preview_bundle is not None else None
+            )
+
+            # Per-case capture toggles. Defaults are ON per CLAUDE.md §15.
+            case_settings = case.settings or {}
+            block_ads = bool(case_settings.get("block_ads", True))
+            hide_cookie_banners = bool(case_settings.get("hide_cookie_banners", True))
+
+            # Cookie-set provenance: hash whichever file the job will use.
+            cookies_snapshot_sha256: str | None = None
+            if ephemeral_cookies_path is not None:
+                cookies_snapshot_sha256 = cookies_mod.snapshot_hash_path(
+                    ephemeral_cookies_path,
+                )
+            else:
+                cookies_snapshot_sha256 = cookies_mod.snapshot_hash(case.slug)
+
+            # Freshness check (case path only — ephemeral cookies were just
+            # written and are by definition fresh).
+            if ephemeral_cookies_path is None:
+                freshness = cookies_mod.validate_freshness(case.slug)
+                if freshness is not None and (freshness.expired or freshness.expiring_soon):
+                    audit.append(
+                        conn,
+                        "cookies.stale_at_capture",
+                        case_id=case.id,
+                        actor="system",
+                        details={
+                            "job_id": job.id,
+                            "expired_domains": [d.domain for d in freshness.expired],
+                            "expiring_soon_domains": [
+                                d.domain for d in freshness.expiring_soon
+                            ],
+                            "snapshot_sha256": freshness.snapshot_sha256,
+                        },
+                    )
+                    self._emit(job, "warning", {
+                        "i18n_key": "warnings.cookies_stale",
+                        "expired": [d.domain for d in freshness.expired],
+                        "expiring_soon": [d.domain for d in freshness.expiring_soon],
+                    })
+
+            if tab_ctx_dict is not None:
+                audit.append(
+                    conn,
+                    "extension.tab_context_received",
+                    case_id=case.id,
+                    actor="user",
+                    details={
+                        "job_id": job.id,
+                        "user_agent": tab_ctx_dict.get("user_agent"),
+                        "viewport": tab_ctx_dict.get("viewport"),
+                        "timezone": tab_ctx_dict.get("timezone"),
+                        "language": tab_ctx_dict.get("language"),
+                        "color_scheme": tab_ctx_dict.get("color_scheme"),
+                        "extension_label": preview_bundle.label if preview_bundle else None,
+                    },
+                )
+
             # Step 2a: page snapshot (Playwright + browsertrix)
             self._set_phase(conn, job, "snapshotting")
             try:
@@ -920,6 +1019,10 @@ class JobOrchestrator:
                     url=classification.url_final,
                     case_slug=case.slug,
                     proxy_url=proxy_url,
+                    tab_context=tab_ctx_obj,
+                    cookies_path=ephemeral_cookies_path,
+                    block_ads=block_ads,
+                    hide_cookie_banners=hide_cookie_banners,
                 )
             except Exception as exc:
                 bundle = capture_mod.CaptureBundle(
@@ -938,6 +1041,58 @@ class JobOrchestrator:
                         "error_message": str(exc)[:500],
                     },
                 )
+
+            # Audit the auditable side-effects of the capture step.
+            report = bundle.report
+            if report.blocked_requests:
+                audit.append(
+                    conn,
+                    "capture.ads_blocked",
+                    case_id=case.id,
+                    actor="system",
+                    details={
+                        "job_id": job.id,
+                        "blocked_request_count": len(report.blocked_requests),
+                        "blocklist_version": report.blocklist_version,
+                    },
+                )
+            if report.banner_hide_applied:
+                audit.append(
+                    conn,
+                    "capture.banners_hidden",
+                    case_id=case.id,
+                    actor="system",
+                    details={
+                        "job_id": job.id,
+                        "banner_hide_version": report.banner_hide_version,
+                    },
+                )
+            timed_out = [w.name for w in report.render_waits if w.timed_out]
+            if timed_out:
+                audit.append(
+                    conn,
+                    "capture.readiness_timed_out",
+                    case_id=case.id,
+                    actor="system",
+                    details={
+                        "job_id": job.id,
+                        "timed_out_waits": timed_out,
+                    },
+                )
+
+            # Surface forensic counters to the SSE stream so the UI's per-job
+            # row can render compact icons (visual-first per CLAUDE.md §4.1).
+            self._emit(job, "capture_report", {
+                "render_waits": [
+                    {"name": w.name, "ok": w.ok, "elapsed_ms": w.elapsed_ms,
+                     "timed_out": w.timed_out, "detail": w.detail}
+                    for w in report.render_waits
+                ],
+                "blocked_request_count": len(report.blocked_requests),
+                "banner_hide_applied": report.banner_hide_applied,
+                "tab_context_used": report.tab_context_used,
+                "cookies_snapshot_sha256": cookies_snapshot_sha256,
+            })
 
             # Step 2b: yt-dlp
             self._set_phase(conn, job, "downloading")
@@ -958,11 +1113,19 @@ class JobOrchestrator:
                     "sub_status": "metadata",
                 },
             )
-            cookies_path = (
-                cookies_mod.path_for(case.slug)
-                if cookies_mod.exists(case.slug) and classification.authenticated_domains
-                else None
-            )
+            # Cookie selection for yt-dlp:
+            #   - ephemeral path (one-shot extension submission) wins if
+            #     present;
+            #   - else the case file when classification flagged
+            #     authenticated domains.
+            if ephemeral_cookies_path is not None:
+                cookies_path = ephemeral_cookies_path
+            else:
+                cookies_path = (
+                    cookies_mod.path_for(case.slug)
+                    if cookies_mod.exists(case.slug) and classification.authenticated_domains
+                    else None
+                )
             progress_q: asyncio.Queue = asyncio.Queue()
 
             proc_holder: list = []
@@ -1106,7 +1269,29 @@ class JobOrchestrator:
                 user_browser_har=user_bundle.har if user_bundle else None,
                 user_browser_environment=user_bundle.environment if user_bundle else None,
                 user_browser_label=user_bundle.label if user_bundle else None,
+                user_browser_tab_context=user_bundle.tab_context if user_bundle else None,
+                user_browser_session_state=user_bundle.session_state if user_bundle else None,
+                user_browser_dom_snapshot_html=user_bundle.dom_snapshot_html if user_bundle else None,
+                user_browser_dom_snapshot_meta=user_bundle.dom_snapshot_meta if user_bundle else None,
+                capture_report=report.to_dict(),
+                cookies_snapshot_sha256=cookies_snapshot_sha256,
+                ephemeral_cookies_used=ephemeral_cookies_path is not None,
             )
+
+            # Whether or not postprocess succeeds, the ephemeral cookie
+            # path is finished after this job: discard it now.
+            if user_bundle and user_bundle.ephemeral_cookies is not None:
+                cookies_mod.discard_ephemeral(user_bundle.ephemeral_cookies)
+                audit.append(
+                    conn,
+                    "cookies.ephemeral_used",
+                    case_id=case.id,
+                    actor="user",
+                    details={
+                        "job_id": job.id,
+                        "snapshot_sha256": cookies_snapshot_sha256,
+                    },
+                )
 
             try:
                 result = postprocess.finalize(conn, capture_input)
