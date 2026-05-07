@@ -102,18 +102,19 @@ def plan_for_case(conn: sqlite3.Connection, case_id: int) -> ExportPlan:
 def _iter_artifact_paths(plan: ExportPlan) -> Iterable[tuple[Path, str, str]]:
     """Yield ``(absolute, relative_in_zip, role)`` for every artifact.
 
-    Track A layout: each library item has a single per-item folder
-    ``/downloads/{case_slug}/{stem}/`` that holds the media file (if any),
-    every sidecar, and the meta + signature + checksums files. The bundle
-    mirrors this flat layout under ``downloads/{stem}/...``.
+    Each library item has a per-item folder ``/downloads/{case_slug}/{stem}/``
+    holding the media file (if any), every sidecar, the meta + signature +
+    checksums, and a ``reports/`` subfolder for the two human-readable PDFs.
+    The bundle mirrors this layout under ``downloads/{stem}/...`` so the
+    on-disk shape and the export shape never drift.
     """
     for row in plan.items:
         meta = json.loads(row["meta_json"])
         item_rel = row["item_dir"]  # relative to /downloads
-        item_abs = config.DOWNLOADS_DIR / item_rel
+        item_abs = (config.DOWNLOADS_DIR / item_rel).resolve()
         stem = item_abs.name
 
-        # Media file (if any) lives in the same per-item folder.
+        # Media file (if any) lives directly in the per-item folder.
         if row["relative_path"]:
             yield (
                 config.DOWNLOADS_DIR / row["relative_path"],
@@ -122,9 +123,9 @@ def _iter_artifact_paths(plan: ExportPlan) -> Iterable[tuple[Path, str, str]]:
             )
 
         # Every artifact recorded in meta.json. Covers MHTML, PNG, WARC,
-        # info.json, description, thumbnail, subs, manifest_pdf, etc. Skip
-        # ``media`` / ``media_2`` roles since the primary media file is
-        # emitted at the top of the loop above.
+        # info.json, description, thumbnail, subs, manifest_pdf,
+        # report_pdf, etc. Skip ``media`` / ``media_2`` roles since the
+        # primary media file is emitted at the top of the loop above.
         downloads_root = config.DOWNLOADS_DIR.resolve()
         for role, rel in meta.get("artifacts", {}).items():
             if role.startswith("media"):
@@ -143,9 +144,21 @@ def _iter_artifact_paths(plan: ExportPlan) -> Iterable[tuple[Path, str, str]]:
                 continue
             if not abs_path.is_file():
                 continue
+            # Mirror the within-item subpath in the ZIP. For artifacts
+            # at the item root this collapses to the basename (the prior
+            # behavior); for artifacts under reports/, the subdir
+            # survives the round-trip into the bundle.
+            try:
+                rel_in_item = abs_path.relative_to(item_abs)
+            except ValueError:
+                # Artifact resolved outside the per-item folder (symlink
+                # weirdness, tampered relpath that escaped the earlier
+                # checks). Fall back to the basename rather than skip —
+                # the file still hashes the same, just lands flat.
+                rel_in_item = Path(abs_path.name)
             yield (
                 abs_path,
-                f"downloads/{stem}/{abs_path.name}",
+                f"downloads/{stem}/{rel_in_item.as_posix()}",
                 role,
             )
 
