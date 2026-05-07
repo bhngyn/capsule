@@ -167,14 +167,21 @@ def build_bundle(
     *,
     case_id: int,
     out_dir: Path | None = None,
+    lang: str | None = None,
 ) -> ExportResult:
     """Build a signed zip + PDF + verifier for ``case_id``.
 
     ``out_dir`` defaults to ``$CAPSULE_CONFIG_DIR/exports/`` so exports
     persist across restarts and never share a folder with downloads.
+
+    ``lang`` selects the locale for the rendered ``case_report.pdf``.
+    Defaults to ``config.DEFAULT_LANG`` so existing call sites keep
+    working without churn; the export endpoint plumbs the active UI
+    locale through.
     """
     out_dir = out_dir or (config.CONFIG_DIR / "exports")
     out_dir.mkdir(parents=True, exist_ok=True)
+    lang = lang or config.DEFAULT_LANG
 
     plan = plan_for_case(conn, case_id)
     case = plan.case
@@ -209,8 +216,11 @@ def build_bundle(
         audit_entries, indent=2, ensure_ascii=True, default=str
     ).encode("utf-8")
 
-    # PDF report.
-    pdf_bytes = pdf_report.render_case_report(case=case, items=plan.items)
+    # PDF report. Locale flips labels, page direction, and the font
+    # stack so RTL Arabic / CJK glyphs render without tofu.
+    pdf_bytes = pdf_report.render_case_report(
+        case=case, items=plan.items, lang=lang,
+    )
 
     # Verifier script.
     verifier_bytes = verifier_template_path().read_bytes()

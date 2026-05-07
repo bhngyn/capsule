@@ -992,17 +992,25 @@ async def list_audit(
 
 
 @app.post("/api/cases/{case_id}/export")
-async def export_case(case_id: int) -> FileResponse:
+async def export_case(
+    case_id: int,
+    lang: str | None = Query(default=None),
+) -> FileResponse:
     """Build a signed evidence-export bundle for ``case_id``.
 
     Returns the zip directly so the frontend can stream it to the user as
     a single download. The bundle is also persisted to
     ``$CAPSULE_CONFIG_DIR/exports/`` for re-download if needed.
+
+    ``lang`` selects the locale for the rendered case_report.pdf inside
+    the bundle. Defaults to ``config.DEFAULT_LANG``.
     """
     conn = _conn()
     try:
         try:
-            result = evidence_export.build_bundle(conn, case_id=case_id)
+            result = evidence_export.build_bundle(
+                conn, case_id=case_id, lang=lang or config.DEFAULT_LANG,
+            )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return FileResponse(
