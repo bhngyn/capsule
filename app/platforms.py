@@ -17,8 +17,10 @@ from urllib.parse import urlsplit
 
 __all__ = [
     "EXTRACTOR_TO_PLATFORM",
+    "GALLERY_EXTRACTOR_TO_PLATFORM",
     "SOCIAL_DOMAINS",
     "friendly_name",
+    "gallery_friendly_name",
     "is_social",
     "platform_for_url",
 ]
@@ -44,11 +46,55 @@ EXTRACTOR_TO_PLATFORM: dict[str, str] = {
     "Threads": "threads",
 }
 
+# gallery-dl ``category`` (lower-case) → friendly slug. gallery-dl reports its
+# extractor in ``info.json["category"]`` (e.g. ``"pixiv"``, ``"deviantart"``).
+# Where the same site is reachable via both yt-dlp and gallery-dl (twitter,
+# reddit, instagram, …) the slug matches the yt-dlp ``EXTRACTOR_TO_PLATFORM``
+# entry so the on-disk filename ``platform`` token stays stable across kinds.
+# Adding a new image-platform is one line here plus a matching SVG in
+# ``static/icons/platforms/`` (a generic "images" mark suffices for now).
+GALLERY_EXTRACTOR_TO_PLATFORM: dict[str, str] = {
+    "twitter": "twitter",
+    "reddit": "reddit",
+    "instagram": "instagram",
+    "tiktok": "tiktok",
+    "facebook": "facebook",
+    "tumblr": "tumblr",
+    "pixiv": "pixiv",
+    "deviantart": "deviantart",
+    "imgur": "imgur",
+    "flickr": "flickr",
+    "artstation": "artstation",
+    "patreon": "patreon",
+    "mangadex": "mangadex",
+    "danbooru": "danbooru",
+    "gelbooru": "gelbooru",
+    "e621": "e621",
+    "rule34": "rule34",
+    "newgrounds": "newgrounds",
+    "fanbox": "fanbox",
+    "weibo": "weibo",
+    "vk": "vk",
+    "twibooru": "twibooru",
+    "subscribestar": "subscribestar",
+    "kemonoparty": "kemono",
+    "directlink": "generic",
+}
+
 # Domains where authenticated capture is the norm. Subdomain matching is the
 # caller's job — see ``is_social``. Each entry is the registrable domain
 # (effective TLD+1) we expect to encounter.
+#
+# The set covers two overlapping uses:
+#   1. yt-dlp social-media auto-cookie attachment (CLAUDE.md §11).
+#   2. gallery-dl image-site auto-cookie attachment — Pixiv, DeviantArt, etc.
+#      gate adult / member-only galleries behind login. Investigators expect
+#      the same cookies file to feed both runners (CLAUDE.md §11 — same
+#      Netscape cookies.txt path is consumed by yt-dlp, Playwright,
+#      browsertrix, and gallery-dl).
 SOCIAL_DOMAINS: frozenset[str] = frozenset(
     {
+        # yt-dlp / video-first sites
         "twitter.com",
         "x.com",
         "facebook.com",
@@ -59,6 +105,15 @@ SOCIAL_DOMAINS: frozenset[str] = frozenset(
         "youtube.com",
         "youtu.be",
         "threads.net",
+        # gallery-dl / image-first sites where authenticated content is common
+        "pixiv.net",
+        "deviantart.com",
+        "tumblr.com",
+        "flickr.com",
+        "imgur.com",
+        "patreon.com",
+        "artstation.com",
+        "fanbox.cc",
     }
 )
 
@@ -80,6 +135,23 @@ _DOMAIN_HINTS: tuple[tuple[str, str], ...] = (
     ("bandcamp.com", "bandcamp"),
     ("bilibili.com", "bilibili"),
     ("threads.net", "threads"),
+    # gallery-dl image-first sites — used by ``platform_for_url`` so a paste
+    # preview shows the right platform mark before any runner has resolved
+    # the URL.
+    ("pixiv.net", "pixiv"),
+    ("deviantart.com", "deviantart"),
+    ("tumblr.com", "tumblr"),
+    ("flickr.com", "flickr"),
+    ("imgur.com", "imgur"),
+    ("patreon.com", "patreon"),
+    ("artstation.com", "artstation"),
+    ("fanbox.cc", "fanbox"),
+    ("mangadex.org", "mangadex"),
+    ("danbooru.donmai.us", "danbooru"),
+    ("gelbooru.com", "gelbooru"),
+    ("e621.net", "e621"),
+    ("rule34.xxx", "rule34"),
+    ("newgrounds.com", "newgrounds"),
 )
 
 
@@ -88,6 +160,20 @@ def friendly_name(extractor_key: str) -> str:
     if not extractor_key:
         return "generic"
     return EXTRACTOR_TO_PLATFORM.get(extractor_key, "generic")
+
+
+def gallery_friendly_name(category: str) -> str:
+    """Return a friendly slug for a gallery-dl ``category``. Unknown → ``generic``.
+
+    gallery-dl publishes its extractor identifier as ``category`` in the
+    per-image info.json (lower-case, e.g. ``"pixiv"``, ``"deviantart"``).
+    Where the slug matches one already used by yt-dlp (twitter / reddit /
+    instagram), the on-disk ``{platform}`` token stays stable across
+    capture kinds — useful for an investigator scanning a case dir.
+    """
+    if not category:
+        return "generic"
+    return GALLERY_EXTRACTOR_TO_PLATFORM.get(category.lower(), "generic")
 
 
 def _hostname(url_or_domain: str) -> str:
