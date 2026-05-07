@@ -131,23 +131,23 @@ def test_list_open_filters_archived(conn, capsule_dirs):
     assert {c.id for c in all_cases} == {a.id, b.id}
 
 
-def test_ensure_quick_creates_pinned_slug(conn, capsule_dirs):
+def test_ensure_default_case_creates_pinned_slug(conn, capsule_dirs):
     from app import cases as cases_mod
 
-    case = cases_mod.ensure_quick(conn)
-    assert case.slug == cases_mod.QUICK_CASE_SLUG == "quick-captures"
-    assert case.name == cases_mod.QUICK_CASE_NAME == "Quick captures"
+    case = cases_mod.ensure_default_case(conn)
+    assert case.slug == cases_mod.DEFAULT_CASE_SLUG == "downloads"
+    assert case.name == cases_mod.DEFAULT_CASE_NAME == "Downloads"
     assert case.status == "open"
     assert case.settings.get("auto_managed") is True
-    assert (capsule_dirs["downloads"] / "quick-captures").is_dir()
+    assert (capsule_dirs["downloads"] / "downloads").is_dir()
     # Track A: per-item folders live directly under the case dir.
 
 
-def test_ensure_quick_is_idempotent(conn, capsule_dirs):
+def test_ensure_default_case_is_idempotent(conn, capsule_dirs):
     from app import cases as cases_mod
 
-    a = cases_mod.ensure_quick(conn)
-    b = cases_mod.ensure_quick(conn)
+    a = cases_mod.ensure_default_case(conn)
+    b = cases_mod.ensure_default_case(conn)
     assert a.id == b.id
     rows = [r for r in audit.iter_entries(conn) if r["action"] == "case.created"]
     assert len(rows) == 1
@@ -155,15 +155,77 @@ def test_ensure_quick_is_idempotent(conn, capsule_dirs):
     assert rows[0]["actor"] == "system"
 
 
-def test_ensure_quick_coexists_with_user_named_collision(conn, capsule_dirs):
-    """A user case named 'Quick captures' must not steal the pinned slug."""
+def test_ensure_default_case_coexists_with_user_named_collision(conn, capsule_dirs):
+    """A user case named 'Downloads' must not steal the pinned slug."""
     from app import cases as cases_mod
 
-    quick = cases_mod.ensure_quick(conn)
-    user_case = cases_mod.create(conn, name="Quick captures")
-    assert quick.slug == "quick-captures"
-    assert user_case.slug != "quick-captures"  # got '-2' suffix
-    assert user_case.slug.startswith("quick-captures-")
+    default = cases_mod.ensure_default_case(conn)
+    user_case = cases_mod.create(conn, name="Downloads")
+    assert default.slug == "downloads"
+    assert user_case.slug != "downloads"  # got '-2' suffix
+    assert user_case.slug.startswith("downloads-")
+
+
+def test_ensure_default_case_uses_legacy_quick_captures_when_present(
+    conn, capsule_dirs,
+):
+    """Forward-only fallback: legacy ``quick-captures`` rows stay put.
+
+    Existing installs created the auto-managed case under the old slug. We
+    must NOT migrate, rename, or shadow them — they continue to land on
+    ``quick-captures`` and no ``downloads`` row is created.
+    """
+    from app import cases as cases_mod
+
+    # Seed the DB the way an older install would have left it: a row with
+    # slug ``quick-captures`` and no ``downloads`` row.
+    import datetime as _dt
+    import json
+
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    settings_json = json.dumps({"auto_managed": True}, sort_keys=True)
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO cases(slug, name, description, status,
+                              created_at, updated_at, settings_json)
+            VALUES (?, ?, ?, 'open', ?, ?, ?)
+            """,
+            (
+                "quick-captures",
+                "Quick captures",
+                "Auto-managed case for the simple downloader.",
+                now,
+                now,
+                settings_json,
+            ),
+        )
+
+    case = cases_mod.ensure_default_case(conn)
+    assert case.slug == "quick-captures"
+    assert cases_mod.get_by_slug(conn, "downloads") is None
+
+
+def test_ensure_default_case_creates_downloads_when_neither_exists(
+    conn, capsule_dirs,
+):
+    """Fresh installs (no legacy row) get the new ``downloads`` slug."""
+    from app import cases as cases_mod
+
+    assert cases_mod.get_by_slug(conn, "quick-captures") is None
+    assert cases_mod.get_by_slug(conn, "downloads") is None
+
+    case = cases_mod.ensure_default_case(conn)
+    assert case.slug == "downloads"
+    assert cases_mod.get_by_slug(conn, "downloads") is not None
+
+
+def test_ensure_quick_alias_still_works(conn, capsule_dirs):
+    """Deprecated ``ensure_quick`` alias defers to ``ensure_default_case``."""
+    from app import cases as cases_mod
+
+    case = cases_mod.ensure_quick(conn)
+    assert case.slug == cases_mod.DEFAULT_CASE_SLUG == "downloads"
 
 
 def test_audit_chain_holds_after_case_lifecycle(conn, capsule_dirs):
