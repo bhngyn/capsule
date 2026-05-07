@@ -1,0 +1,33 @@
+# Capsule — docker-compose convenience config.
+#
+# Most users will copy-paste the `docker run` one-liner from the README;
+# this file exists for users who prefer compose, and for development.
+
+services:
+  capsule:
+    build: .
+    image: capsule:dev
+    container_name: capsule
+    restart: unless-stopped
+    # Apple Silicon / Linux arm64: native run, no Rosetta. The Microsoft
+    # Playwright base image publishes both arch tags, so amd64 hosts also
+    # work after dropping this line.
+    platform: linux/arm64
+    ports:
+      - "8080:8080"
+    environment:
+      # Tells the UI the host-side bind-mount path so the "open folder"
+      # button copies a path the user can paste into Finder/Explorer
+      # (the container path /downloads is meaningless on the host).
+      CAPSULE_HOST_DOWNLOADS_DIR: ${HOME}/Documents/Capsule/downloads
+    volumes:
+      # Where captured files live. Change the host side to wherever you
+      # want your evidence stored.
+      - ${HOME}/Documents/Capsule/downloads:/downloads
+      # Where the database, signing keys, and per-case cookies live.
+      # Treat this folder like you'd treat a password manager.
+      - ${HOME}/Documents/Capsule/config:/config
+      # Dev convenience: mount the source tree so edits to app/ are visible
+      # after `docker compose restart capsule` (no rebuild needed). Comment
+      # out for a sealed image.
+      - ./app:/app/app:ro

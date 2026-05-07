@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Pair with Capsule</title>
+    <link rel="stylesheet" href="../popup/popup.css" />
+    <style>
+      body { width: 480px; padding: 0 14px 24px; }
+      h1 { font-size: 18px; margin: 18px 0 6px; }
+      ol { padding-left: 18px; line-height: 1.6; }
+      ol li { margin-bottom: 4px; }
+      .ok { background: var(--ok-bg); color: var(--ok-fg); padding: 8px; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">●</span>
+        <span class="brand-name">Capsule</span>
+      </div>
+    </header>
+
+    <main>
+      <h1>Pair with Capsule</h1>
+      <ol>
+        <li>Open Capsule in your browser (default <code>http://localhost:8080</code>).</li>
+        <li>Go to <strong>Settings → Browser extension</strong> and click <strong>Pair a new extension</strong>.</li>
+        <li>Copy the <strong>token</strong> Capsule shows you (it's revealed once).</li>
+        <li>Paste it below.</li>
+      </ol>
+
+      <label class="field">
+        <span class="field-label">Capsule server URL</span>
+        <input type="text" id="server-url" value="http://localhost:8080" />
+      </label>
+
+      <label class="field">
+        <span class="field-label">Token</span>
+        <input type="text" id="token" placeholder="capsule-…" />
+      </label>
+
+      <label class="field">
+        <span class="field-label">A label for this device (optional)</span>
+        <input type="text" id="label" placeholder="My laptop" />
+      </label>
+
+      <button class="primary" id="pair">Pair</button>
+      <div id="result" hidden></div>
+
+      <p class="hint" style="margin-top: 24px">
+        Once paired, the extension talks <em>only</em> to the Capsule server URL above.
+        It never sends data to the public internet. The token is stored in your browser's
+        extension storage and is never shared with web pages.
+      </p>
+
+      <p style="margin-top: 16px">
+        <button class="link" id="unpair">Unpair this extension</button>
+      </p>
+    </main>
+
+    <script src="pair.js"></script>
+  </body>
+</html>

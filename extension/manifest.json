@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_extName__",
+  "short_name": "Capsule",
+  "version": "0.1.0",
+  "default_locale": "en",
+  "description": "__MSG_extDescription__",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "cookies",
+    "tabs",
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://localhost:8080/*",
+    "http://127.0.0.1:8080/*"
+  ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "__MSG_extName__",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "capsule@anthropic.example",
+      "strict_min_version": "115.0"
+    }
+  }
+}

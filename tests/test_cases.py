@@ -1,0 +1,176 @@
+"""Case CRUD + filesystem layout — CLAUDE.md §9, §11."""
+
+from __future__ import annotations
+
+import pytest
+
+from app import audit, cases, db
+
+
+@pytest.fixture
+def conn(capsule_dirs):
+    # Reload cases module so it picks up the freshly-reloaded config.
+    import importlib
+
+    from app import cases as cases_mod
+
+    importlib.reload(cases_mod)
+    c = db.connect(":memory:")
+    db.migrate(c)
+    yield c
+    c.close()
+
+
+def test_create_persists_row(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    case = cases_mod.create(conn, name="Operation Sunrise")
+    assert case.id > 0
+    assert case.slug == "operation-sunrise"
+    assert case.name == "Operation Sunrise"
+    assert case.status == "open"
+
+    fetched = cases_mod.get(conn, case.id)
+    assert fetched == case
+
+
+def test_create_provisions_directories(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    cases_mod.create(conn, name="Ops")
+    assert (capsule_dirs["downloads"] / "ops").is_dir()
+    assert (capsule_dirs["downloads"] / "ops" / "sidecars").is_dir()
+    assert (capsule_dirs["config"] / "cases" / "ops").is_dir()
+
+
+def test_create_audits(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    cases_mod.create(conn, name="Ops")
+    rows = list(audit.iter_entries(conn))
+    assert len(rows) == 1
+    assert rows[0]["action"] == "case.created"
+    assert rows[0]["details"]["slug"] == "ops"
+
+
+def test_slug_collision_appends_suffix(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    a = cases_mod.create(conn, name="Op")
+    b = cases_mod.create(conn, name="Op")
+    c = cases_mod.create(conn, name="Op")
+    assert a.slug == "op"
+    assert b.slug == "op-2"
+    assert c.slug == "op-3"
+
+
+def test_create_rejects_blank_name(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    with pytest.raises(ValueError):
+        cases_mod.create(conn, name="   ")
+
+
+def test_arabic_name_falls_back_to_case_n(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    case = cases_mod.create(conn, name="مرحبا")
+    assert case.slug.startswith("case-")
+    assert case.name == "مرحبا"  # original preserved
+
+
+def test_rename_updates_row_and_audits(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    case = cases_mod.create(conn, name="Old")
+    cases_mod.rename(conn, case.id, "New")
+    refreshed = cases_mod.get(conn, case.id)
+    assert refreshed.name == "New"
+    actions = [r["action"] for r in audit.iter_entries(conn)]
+    assert actions == ["case.created", "case.renamed"]
+
+
+def test_update_status_transitions(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    case = cases_mod.create(conn, name="X")
+    cases_mod.update_status(conn, case.id, "closed")
+    cases_mod.update_status(conn, case.id, "archived")
+    assert cases_mod.get(conn, case.id).status == "archived"
+    actions = [r["action"] for r in audit.iter_entries(conn)]
+    assert actions.count("case.status_changed") == 2
+
+
+def test_update_status_no_op_when_unchanged(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    case = cases_mod.create(conn, name="X")
+    cases_mod.update_status(conn, case.id, "open")
+    actions = [r["action"] for r in audit.iter_entries(conn)]
+    assert actions == ["case.created"]
+
+
+def test_update_status_rejects_invalid(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    case = cases_mod.create(conn, name="X")
+    with pytest.raises(ValueError):
+        cases_mod.update_status(conn, case.id, "deleted")
+
+
+def test_list_open_filters_archived(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    a = cases_mod.create(conn, name="A")
+    b = cases_mod.create(conn, name="B")
+    cases_mod.update_status(conn, b.id, "archived")
+    open_cases = cases_mod.list_open(conn)
+    assert [c.id for c in open_cases] == [a.id]
+    all_cases = cases_mod.list_all(conn)
+    assert {c.id for c in all_cases} == {a.id, b.id}
+
+
+def test_ensure_quick_creates_pinned_slug(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    case = cases_mod.ensure_quick(conn)
+    assert case.slug == cases_mod.QUICK_CASE_SLUG == "quick-captures"
+    assert case.name == cases_mod.QUICK_CASE_NAME == "Quick captures"
+    assert case.status == "open"
+    assert case.settings.get("auto_managed") is True
+    assert (capsule_dirs["downloads"] / "quick-captures").is_dir()
+    assert (capsule_dirs["downloads"] / "quick-captures" / "sidecars").is_dir()
+
+
+def test_ensure_quick_is_idempotent(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    a = cases_mod.ensure_quick(conn)
+    b = cases_mod.ensure_quick(conn)
+    assert a.id == b.id
+    rows = [r for r in audit.iter_entries(conn) if r["action"] == "case.created"]
+    assert len(rows) == 1
+    assert rows[0]["details"]["kind"] == "quick"
+    assert rows[0]["actor"] == "system"
+
+
+def test_ensure_quick_coexists_with_user_named_collision(conn, capsule_dirs):
+    """A user case named 'Quick captures' must not steal the pinned slug."""
+    from app import cases as cases_mod
+
+    quick = cases_mod.ensure_quick(conn)
+    user_case = cases_mod.create(conn, name="Quick captures")
+    assert quick.slug == "quick-captures"
+    assert user_case.slug != "quick-captures"  # got '-2' suffix
+    assert user_case.slug.startswith("quick-captures-")
+
+
+def test_audit_chain_holds_after_case_lifecycle(conn, capsule_dirs):
+    from app import cases as cases_mod
+
+    case = cases_mod.create(conn, name="Op")
+    cases_mod.rename(conn, case.id, "Op2")
+    cases_mod.update_status(conn, case.id, "closed")
+    ok, broken = audit.verify_chain(conn)
+    assert ok is True
+    assert broken is None

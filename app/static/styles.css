@@ -1,0 +1,58 @@
+/* Capsule — base stylesheet
+ *
+ * Tailwind handles most of the work via CDN at Phase 0. This file holds:
+ *   - CSS custom properties for the accent (teal-600)
+ *   - small utilities that don't fit Tailwind cleanly (icon-directional, seal frame)
+ *   - typography fallbacks for Arabic
+ *
+ * Phase 2 will replace the CDN'd Tailwind with a compiled stylesheet built at
+ * Docker build time. The accent + utility rules below remain.
+ */
+
+:root {
+  --accent: 13 148 136;        /* teal-600 */
+  --accent-ink: 17 94 89;      /* teal-800, used for text on accent-soft backgrounds */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root { --accent-ink: 153 246 228; } /* teal-200 for dark mode contrast */
+}
+
+/* Smooth color transitions. Limited to color/background-color
+ * so layout doesn't reflow. Respect reduced-motion. */
+* {
+  transition: color 200ms ease, background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* Direction-implying icons mirror under RTL.
+ * Apply to chevrons, arrows, send icons. NEVER to brand or platform marks. */
+[dir="rtl"] .icon-directional {
+  transform: scaleX(-1);
+}
+
+/* Arabic-script body line-height bump.
+ * Arabic glyphs sit taller; tighter leading hurts legibility. */
+:lang(ar),
+:lang(he),
+:lang(fa),
+:lang(ur) {
+  line-height: 1.7;
+}
+
+/* Hide raw i18n placeholder text before the bundle resolves.
+ * data-t-pending is removed by app.js once translation runs. */
+[data-t-pending] {
+  visibility: hidden;
+}
+
+/* Tabular numerals on hash, size, duration columns. */
+.font-mono,
+[class*="font-mono"] {
+  font-variant-numeric: tabular-nums;
+}

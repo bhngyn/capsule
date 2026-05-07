@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Capsule logomark — brand mark + "Capsule" wordmark, side-by-side.
+
+  Used in the README (where it renders against GitHub's light or dark
+  theme) and any external surface that wants the full identity. The
+  wordmark uses Inter SemiBold with a graceful sans-serif fallback chain
+  for environments where Inter is not loaded.
+
+  Adapts to the OS / GitHub theme via prefers-color-scheme.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 110 24" fill="none"
+     stroke-linecap="round" stroke-linejoin="round"
+     role="img" aria-label="Capsule">
+  <style>
+    .mark        { stroke: #1e293b; }
+    .ink         { fill:   #1e293b; }
+    .ink-soft    { fill:   #1e293b; fill-opacity: 0.55; }
+    .plinth      { fill:   #1e293b; fill-opacity: 0.15; }
+    .accent-dot  { fill:   #0d9488; }    /* teal-600 (Simple-mode default) */
+    .glass       { stroke: #1e293b; stroke-opacity: 0.55; }
+    .soft-stroke { stroke: #1e293b; stroke-opacity: 0.55; }
+    .wordmark    { fill:   #1e293b; font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
+
+    @media (prefers-color-scheme: dark) {
+      .mark        { stroke: #e2e8f0; }
+      .ink         { fill:   #e2e8f0; }
+      .ink-soft    { fill:   #e2e8f0; fill-opacity: 0.55; }
+      .plinth      { fill:   #e2e8f0; fill-opacity: 0.18; }
+      .glass       { stroke: #e2e8f0; stroke-opacity: 0.55; }
+      .soft-stroke { stroke: #e2e8f0; stroke-opacity: 0.55; }
+      .wordmark    { fill:   #e2e8f0; }
+    }
+  </style>
+
+  <!-- ===== Mark (24×24 at the start of the viewBox) ===== -->
+  <g stroke-width="1.5">
+    <rect class="mark plinth" x="2.75" y="20.5" width="18.5" height="2" rx="0.5"/>
+    <path class="mark"
+          d="M 5.25 20.5 L 5.25 11.5 Q 5.25 4.25 12 4.25 Q 18.75 4.25 18.75 11.5 L 18.75 20.5"/>
+    <line class="mark" x1="12" y1="4.25" x2="12" y2="2.85"/>
+    <circle class="ink" cx="12" cy="2.1" r="0.85"/>
+
+    <path class="glass" d="M 7.4 8 Q 6.5 9.5 6.5 11.5" stroke-width="0.85"/>
+
+    <!-- Floating browser-page specimen -->
+    <rect class="mark" x="7.5" y="8" width="9" height="8" rx="0.7" stroke-width="1.4"/>
+    <line class="mark" x1="7.5" y1="10.5" x2="16.5" y2="10.5" stroke-width="1.2"/>
+
+    <circle class="accent-dot" cx="8.4"  cy="9.25" r="0.42"/>
+    <circle class="ink-soft"   cx="9.3"  cy="9.25" r="0.42"/>
+    <circle class="ink-soft"   cx="10.2" cy="9.25" r="0.42"/>
+
+    <line class="soft-stroke" x1="8.7" y1="12.6" x2="15.3" y2="12.6" stroke-width="0.9"/>
+    <line class="soft-stroke" x1="8.7" y1="14"   x2="13.5" y2="14"   stroke-width="0.9"/>
+  </g>
+
+  <!-- ===== Wordmark ===== -->
+  <text class="wordmark" x="30" y="17">Capsule</text>
+</svg>

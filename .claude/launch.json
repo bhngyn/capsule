@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "capsule",
+      "runtimeExecutable": "/Users/brian/capsule-preview-venv/bin/uvicorn",
+      "runtimeArgs": [
+        "app.main:app",
+        "--host", "127.0.0.1",
+        "--port", "8800",
+        "--loop", "asyncio",
+        "--http", "h11",
+        "--log-level", "warning"
+      ],
+      "port": 8800,
+      "env": {
+        "CAPSULE_DOWNLOADS_DIR": "/tmp/capsule-shots-dl",
+        "CAPSULE_CONFIG_DIR": "/tmp/capsule-shots-cfg",
+        "CAPSULE_HOST_DOWNLOADS_DIR": "/tmp/capsule-shots-dl"
+      }
+    }
+  ]
+}

@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Verify a Capsule evidence-export bundle.
+
+Usage: python verify.py [export_dir]   (defaults to current directory)
+
+Checks performed:
+  1. manifest.sig is a valid Ed25519 signature on manifest.json under public_key.pem
+  2. Every file listed in manifest.json exists at the expected size + hashes
+  3. Every {stem}.meta.json has a valid {stem}.meta.json.sig
+  4. The audit-log hash chain (audit_log.json) is intact
+
+Dependency: ``cryptography`` (PyPI). Tested with Python 3.10+.
+
+Exits 0 on PASS, 1 on FAIL.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+
+def _hashes(path: Path) -> tuple[str, str, int]:
+    md5 = hashlib.md5()
+    sha = hashlib.sha256()
+    size = 0
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            md5.update(chunk)
+            sha.update(chunk)
+            size += len(chunk)
+    return md5.hexdigest(), sha.hexdigest(), size
+
+
+def _verify_signature(public_key, data: bytes, sig: bytes) -> bool:
+    try:
+        public_key.verify(sig, data)
+        return True
+    except Exception:
+        return False
+
+
+def _load_public_key(pem_path: Path):
+    from cryptography.hazmat.primitives import serialization
+    return serialization.load_pem_public_key(pem_path.read_bytes())
+
+
+def _verify_manifest(export_dir: Path, public_key) -> tuple[bool, list[str]]:
+    issues: list[str] = []
+    manifest_path = export_dir / "manifest.json"
+    sig_path = export_dir / "manifest.sig"
+    if not manifest_path.is_file() or not sig_path.is_file():
+        return False, ["manifest.json or manifest.sig missing"]
+    if not _verify_signature(
+        public_key, manifest_path.read_bytes(), sig_path.read_bytes()
+    ):
+        issues.append("manifest signature invalid")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for entry in manifest.get("files", []):
+        rel = entry["path"]
+        target = export_dir / rel
+        if not target.is_file():
+            issues.append(f"missing: {rel}")
+            continue
+        md5, sha, size = _hashes(target)
+        if size != entry["size_bytes"]:
+            issues.append(f"size mismatch: {rel}")
+        if md5 != entry["md5"]:
+            issues.append(f"md5 mismatch: {rel}")
+        if sha != entry["sha256"]:
+            issues.append(f"sha256 mismatch: {rel}")
+    return not issues, issues
+
+
+def _verify_per_item_signatures(export_dir: Path, public_key) -> tuple[bool, list[str]]:
+    issues: list[str] = []
+    downloads = export_dir / "downloads"
+    if not downloads.is_dir():
+        return True, []
+    for stem_dir in sorted(downloads.iterdir()):
+        if not stem_dir.is_dir():
+            continue
+        sidecars = stem_dir / "sidecars"
+        if not sidecars.is_dir():
+            continue
+        for inner in sorted(sidecars.iterdir()):
+            if not inner.is_dir():
+                continue
+            stem = inner.name
+            meta = inner / f"{stem}.meta.json"
+            sig = inner / f"{stem}.meta.json.sig"
+            if not meta.is_file() or not sig.is_file():
+                issues.append(f"meta or sig missing for {stem}")
+                continue
+            if not _verify_signature(
+                public_key, meta.read_bytes(), sig.read_bytes()
+            ):
+                issues.append(f"meta.json signature invalid for {stem}")
+    return not issues, issues
+
+
+def _verify_audit_chain(export_dir: Path) -> tuple[bool, list[str]]:
+    audit_path = export_dir / "audit_log.json"
+    if not audit_path.is_file():
+        return True, []  # absent is fine; only present in court-mode bundles
+    entries = json.loads(audit_path.read_text(encoding="utf-8"))
+    expected_prev = "0" * 64
+    for entry in entries:
+        if entry.get("prev_hash") != expected_prev:
+            return False, [f"chain broken at id={entry.get('id')}"]
+        rebuilt = {
+            k: entry[k]
+            for k in (
+                "timestamp", "action", "case_id", "download_id",
+                "actor", "details_json", "prev_hash",
+            )
+        }
+        canon = json.dumps(
+            rebuilt, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+        if hashlib.sha256(canon).hexdigest() != entry["row_hash"]:
+            return False, [f"row_hash mismatch at id={entry.get('id')}"]
+        expected_prev = entry["row_hash"]
+    return True, []
+
+
+def main(argv: list[str]) -> int:
+    export_dir = Path(argv[1]) if len(argv) > 1 else Path.cwd()
+    print(f"Verifying export at {export_dir}")
+    pubkey_path = export_dir / "public_key.pem"
+    if not pubkey_path.is_file():
+        print("FAIL: public_key.pem missing")
+        return 1
+    public_key = _load_public_key(pubkey_path)
+
+    all_ok = True
+    for label, fn in (
+        ("manifest", lambda: _verify_manifest(export_dir, public_key)),
+        ("per-item signatures", lambda: _verify_per_item_signatures(export_dir, public_key)),
+        ("audit chain", lambda: _verify_audit_chain(export_dir)),
+    ):
+        ok, issues = fn()
+        if ok:
+            print(f"  PASS  {label}")
+        else:
+            all_ok = False
+            print(f"  FAIL  {label}")
+            for issue in issues:
+                print(f"        - {issue}")
+    print()
+    if all_ok:
+        print("PASS — bundle integrity verified.")
+        return 0
+    print("FAIL — bundle integrity could NOT be verified. See above.")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

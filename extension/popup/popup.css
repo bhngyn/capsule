@@ -1,0 +1,149 @@
+/* Capsule extension popup — Tailwind-free, ~3 KB.
+   Matches the main UI's neutral slate palette + teal accent so the
+   extension feels like an extension of the app rather than a sidecar. */
+
+:root {
+  --bg: #ffffff;
+  --fg: #0f172a;
+  --muted: #475569;
+  --accent: #0d9488;
+  --accent-fg: #ffffff;
+  --border: #e2e8f0;
+  --error-bg: #fef2f2;
+  --error-fg: #991b1b;
+  --warn-bg: #fff7ed;
+  --warn-fg: #9a3412;
+  --ok-bg: #ecfdf5;
+  --ok-fg: #065f46;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a;
+    --fg: #f8fafc;
+    --muted: #94a3b8;
+    --border: #1e293b;
+    --error-bg: #450a0a;
+    --error-fg: #fca5a5;
+    --warn-bg: #431407;
+    --warn-fg: #fdba74;
+    --ok-bg: #064e3b;
+    --ok-fg: #a7f3d0;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  width: 360px;
+  min-height: 200px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 8px; }
+.brand-mark { color: var(--accent); font-size: 18px; line-height: 1; }
+.brand-name { font-weight: 600; letter-spacing: 0.02em; }
+
+.status {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 500;
+  background: var(--ok-bg); color: var(--ok-fg);
+}
+.status[data-state="loading"] { background: transparent; color: var(--muted); }
+.status[data-state="error"] { background: var(--error-bg); color: var(--error-fg); }
+.status[data-state="warn"] { background: var(--warn-bg); color: var(--warn-fg); }
+.status-dot {
+  display: inline-block;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor;
+}
+
+.main { padding: 14px; }
+
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.field-label { font-size: 11px; font-weight: 500; color: var(--muted); }
+
+select, textarea, input[type="text"] {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+textarea { resize: vertical; min-height: 90px; font-family: ui-monospace, monospace; font-size: 12px; }
+
+.actions { display: flex; flex-direction: column; gap: 8px; }
+button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit; font-weight: 500;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button.primary:hover { filter: brightness(1.05); }
+button.secondary { background: transparent; }
+button.link {
+  border: none; padding: 4px 0; background: transparent;
+  color: var(--accent); text-decoration: underline; font-size: 12px;
+}
+.icon { font-size: 14px; }
+
+.toggle {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+.toggle input { margin-top: 2px; }
+
+.hint {
+  margin: 8px 0 0; padding: 8px;
+  background: var(--warn-bg); color: var(--warn-fg);
+  border-radius: 6px; font-size: 11px;
+}
+
+.footer {
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.label-chip { font-size: 11px; color: var(--muted); }
+
+#list-form { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+
+.muted { color: var(--muted); }
+
+.jobs { list-style: none; padding: 0; margin: 0 0 12px; }
+.jobs li {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.jobs .job-url { word-break: break-all; }
+.jobs .job-status { color: var(--muted); font-size: 11px; }
+
+.error { color: var(--error-fg); background: var(--error-bg); padding: 8px; border-radius: 6px; }

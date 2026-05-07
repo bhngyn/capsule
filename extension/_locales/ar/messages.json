@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "Capsule",
+    "description": "Extension display name (Arabic)."
+  },
+  "extDescription": {
+    "message": "أرسل الصفحات وملفات تعريف الارتباط من هذا المتصفح إلى تطبيق Capsule المحلي للتوثيق الجنائي.",
+    "description": "Extension store description (Arabic)."
+  }
+}

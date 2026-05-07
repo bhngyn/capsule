@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "Capsule",
+    "description": "Extension display name."
+  },
+  "extDescription": {
+    "message": "Send pages and cookies from this browser to the local Capsule app for forensic capture.",
+    "description": "Extension store description."
+  }
+}

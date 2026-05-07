@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Capsule</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">●</span>
+        <span class="brand-name">Capsule</span>
+      </div>
+      <div class="status" id="status-pill" data-state="loading" aria-live="polite">
+        <span class="status-dot"></span>
+        <span class="status-text">Checking…</span>
+      </div>
+    </header>
+
+    <main id="main" class="main">
+
+      <!-- Unpaired ----------------------------------------------------- -->
+      <section id="screen-unpaired" hidden>
+        <p class="muted">
+          This extension hasn't been paired with a Capsule install yet.
+        </p>
+        <button class="primary" id="open-pair-page">Pair with Capsule</button>
+      </section>
+
+      <!-- Paired -------------------------------------------------------- -->
+      <section id="screen-paired" hidden>
+
+        <label class="field">
+          <span class="field-label">Active case</span>
+          <select id="case-select" aria-label="Active case"></select>
+        </label>
+
+        <div class="actions">
+          <button class="primary" id="send-tab">
+            <span class="icon" aria-hidden="true">⤓</span>
+            Send this tab
+          </button>
+          <button class="secondary" id="send-list-toggle">
+            <span class="icon" aria-hidden="true">≡</span>
+            Send a list of URLs
+          </button>
+          <button class="secondary" id="sync-cookies">
+            <span class="icon" aria-hidden="true">🍪</span>
+            Sync cookies for this site
+          </button>
+        </div>
+
+        <div id="list-form" hidden>
+          <textarea id="list-urls" rows="6"
+                    placeholder="One URL per line · max 25"></textarea>
+          <button class="primary" id="send-list">Send list</button>
+        </div>
+
+        <label class="toggle">
+          <input type="checkbox" id="live-capture" />
+          <span>Include live capture (browser-rendered MHTML + screenshot)</span>
+        </label>
+        <p class="hint" id="live-capture-hint" hidden>
+          Live capture rides alongside the canonical capture as supplementary
+          evidence. The investigator's browser environment is recorded.
+        </p>
+
+        <div class="footer">
+          <span class="label-chip" id="label-chip"></span>
+          <button class="link" id="manage">Manage</button>
+        </div>
+
+      </section>
+
+      <!-- Result -------------------------------------------------------- -->
+      <section id="screen-result" hidden>
+        <h2 id="result-title">Sent</h2>
+        <ul id="result-jobs" class="jobs"></ul>
+        <button class="primary" id="back-to-paired">Done</button>
+      </section>
+
+      <!-- Error --------------------------------------------------------- -->
+      <section id="screen-error" hidden>
+        <h2>Something went wrong</h2>
+        <p id="error-message" class="error"></p>
+        <button class="secondary" id="retry">Retry</button>
+        <button class="link" id="error-back">Back</button>
+      </section>
+
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

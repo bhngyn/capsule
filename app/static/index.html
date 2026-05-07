@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="h-full dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Capsule</title>
+
+  <!-- Vendor libraries.
+       CLAUDE.md §15 calls for self-hosting these inside the container; that
+       step is gated on a Tailwind compile in the Dockerfile and is tracked
+       as a Phase 3 follow-up. The runtime contract is the same either way. -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://unpkg.com/intl-messageformat@10/intl-messageformat.iife.js"></script>
+  <script defer src="/static/app.js"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Arabic:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
+
+  <script>
+    tailwind.config = {
+      // Forced dark — Capsule is dark-mode only. The "dark" class on <html>
+      // activates every dark: variant unconditionally, regardless of OS theme.
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'Noto Sans Arabic', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+          },
+          colors: {
+            accent: {
+              DEFAULT: 'rgb(var(--accent) / <alpha-value>)',
+              soft:   'rgb(var(--accent) / 0.12)',
+              ink:    'rgb(var(--accent-ink) / <alpha-value>)',
+            },
+          },
+        },
+      },
+    };
+  </script>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="icon" href="/static/icons/brand/logo-favicon.svg" type="image/svg+xml" />
+</head>
+
+<body x-data="capsule()" x-init="boot()"
+      class="flex flex-col min-h-screen font-sans bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 antialiased">
+
+  <!-- Header -->
+  <header class="sticky top-0 z-30 h-14 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/85 dark:bg-zinc-950/85 backdrop-blur-md flex items-center px-6">
+    <a href="#/" @click.prevent="goto('home')" class="flex items-center gap-2.5">
+      <!--
+        Brand mark — bell jar over a browser-window specimen
+        (see docs/DESIGN.md §1). Mark uses currentColor (graphite via the
+        anchor's text color); the title-bar accent dot picks up the teal
+        accent live; the glass highlight mirrors under RTL.
+      -->
+      <svg viewBox="0 0 24 24" fill="none"
+           class="h-7 w-7 text-zinc-700 dark:text-zinc-300"
+           stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="2.75" y="20.5" width="18.5" height="2" rx="0.5"
+              fill="currentColor" fill-opacity="0.18" stroke-width="1.5"/>
+        <path d="M 5.25 20.5 L 5.25 11.5 Q 5.25 4.25 12 4.25 Q 18.75 4.25 18.75 11.5 L 18.75 20.5"/>
+        <line x1="12" y1="4.25" x2="12" y2="2.85"/>
+        <circle cx="12" cy="2.1" r="0.85" fill="currentColor" stroke="none"/>
+        <path class="rtl:[transform-origin:center] rtl:scale-x-[-1]"
+              d="M 7.4 8 Q 6.5 9.5 6.5 11.5"
+              stroke-width="0.85" stroke-opacity="0.55"/>
+        <!-- Floating browser-page specimen: window + chrome bar with
+             traffic-light dots + page-content lines. -->
+        <rect x="7.5" y="8" width="9" height="8" rx="0.7" stroke-width="1.4"/>
+        <line x1="7.5" y1="10.5" x2="16.5" y2="10.5" stroke-width="1.2"/>
+        <circle cx="8.4" cy="9.25" r="0.42"
+                fill="rgb(var(--accent))" stroke="none"/>
+        <circle cx="9.3" cy="9.25" r="0.42"
+                fill="currentColor" fill-opacity="0.55" stroke="none"/>
+        <circle cx="10.2" cy="9.25" r="0.42"
+                fill="currentColor" fill-opacity="0.55" stroke="none"/>
+        <line x1="8.7" y1="12.6" x2="15.3" y2="12.6"
+              stroke-width="0.9" stroke-opacity="0.55"/>
+        <line x1="8.7" y1="14"   x2="13.5" y2="14"
+              stroke-width="0.9" stroke-opacity="0.55"/>
+      </svg>
+      <span class="font-semibold tracking-tight text-base" data-t="app.name"></span>
+    </a>
+
+    <div class="ms-auto flex items-center gap-1.5">
+      <!-- Language picker -->
+      <button @click="cycleLang()"
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
+              :aria-label="t('header.lang.aria')">
+        <i data-lucide="languages" class="size-4"></i>
+        <span x-text="t('lang.' + locale)"></span>
+      </button>
+
+      <button @click="goto('settings')"
+              class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
+              :aria-label="t('header.settings.aria')">
+        <i data-lucide="settings" class="size-4"></i>
+        <span class="hidden md:inline" data-t="header.settings.label"></span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <main class="flex-1 mx-auto w-full max-w-7xl px-6 py-10">
+
+    <!-- ============ Downloader (the home view) ============ -->
+    <!--
+      Visual-first surface: icons, illustrations, color, and shape carry the
+      meaning. Translatable strings live in aria-label / sr-only / <title>
+      so the visual layout is identical across languages and scripts.
+    -->
+    <section x-show="route!=='settings'" x-cloak class="max-w-2xl mx-auto">
+
+      <!-- Hero illustration carries the headline visually: a live webpage on
+           the left flows into the bell jar on the right where it's preserved
+           with the captured page floating inside. The descriptive text below
+           is supportive, not primary. -->
+      <div class="flex justify-center mt-4 mb-5 text-accent" aria-hidden="true">
+        <svg viewBox="0 0 240 120" class="h-24 sm:h-28 md:h-36 w-auto" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <title data-t="simple.hero.aria"></title>
+          <!-- Source: a browser window with content -->
+          <rect x="20" y="22" width="80" height="76" rx="5" stroke-opacity="0.6"/>
+          <line x1="20" y1="40" x2="100" y2="40" stroke-opacity="0.6"/>
+          <circle cx="28" cy="31" r="2.2" fill="currentColor" fill-opacity="0.55" stroke="none"/>
+          <circle cx="36" cy="31" r="2.2" fill="currentColor" fill-opacity="0.35" stroke="none"/>
+          <circle cx="44" cy="31" r="2.2" fill="currentColor" fill-opacity="0.35" stroke="none"/>
+          <path d="M30 56 h60 M30 68 h44 M30 80 h52" stroke-opacity="0.4"/>
+          <!-- Flow: dashed line + arrow into the jar -->
+          <path d="M108 60 h26" stroke-dasharray="3 3"/>
+          <path d="M126 54 l8 6 l-8 6"/>
+          <!-- Destination: bell jar with the captured page floating inside -->
+          <rect x="140" y="98" width="86" height="6" rx="1.5"
+                fill="currentColor" fill-opacity="0.18" stroke-width="2"/>
+          <path d="M 144 98 L 144 60 Q 144 25 183 25 Q 222 25 222 60 L 222 98"/>
+          <line x1="183" y1="25" x2="183" y2="17"/>
+          <circle cx="183" cy="13" r="3" fill="currentColor" stroke="none"/>
+          <path d="M 154 40 Q 149 50 149 62" stroke-width="1.3" stroke-opacity="0.5"/>
+          <rect x="156" y="44" width="54" height="36" rx="2.5" stroke-width="1.6"/>
+          <line x1="156" y1="54" x2="210" y2="54" stroke-width="1.4"/>
+          <circle cx="163" cy="49" r="1.9" fill="currentColor" stroke="none"/>
+          <circle cx="170" cy="49" r="1.9" fill="currentColor" fill-opacity="0.55" stroke="none"/>
+          <circle cx="177" cy="49" r="1.9" fill="currentColor" fill-opacity="0.55" stroke="none"/>
+          <line x1="162" y1="62" x2="204" y2="62" stroke-width="1.4" stroke-opacity="0.5"/>
+          <line x1="162" y1="69" x2="195" y2="69" stroke-width="1.4" stroke-opacity="0.5"/>
+          <line x1="162" y1="76" x2="200" y2="76" stroke-width="1.4" stroke-opacity="0.5"/>
+        </svg>
+      </div>
+
+      <!-- Smaller, supportive copy beneath the illustration. -->
+      <p class="text-center text-sm md:text-base text-zinc-500 dark:text-zinc-400 mb-1 px-4" data-t="simple.hero.headline"></p>
+      <p class="text-center text-xs text-zinc-500 dark:text-zinc-500 mb-6" data-t="app.tagline"></p>
+
+      <!-- Single ↔ List toggle. Icon + label segmented pill. -->
+      <div class="flex justify-center mb-3">
+        <div class="inline-flex items-center gap-1 p-1 rounded-full border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900" role="tablist">
+          <button @click="simpleTab='single'"
+                  :aria-pressed="simpleTab==='single'"
+                  :class="simpleTab==='single' ? 'bg-accent text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100'"
+                  :aria-label="t('simple.tab.single.aria')"
+                  class="h-9 px-4 rounded-full inline-flex items-center gap-1.5 transition">
+            <i data-lucide="link" class="size-4"></i>
+            <span class="text-sm" data-t="simple.tab.single.label"></span>
+          </button>
+          <button @click="simpleTab='list'"
+                  :aria-pressed="simpleTab==='list'"
+                  :class="simpleTab==='list' ? 'bg-accent text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100'"
+                  :aria-label="t('simple.tab.list.aria')"
+                  class="h-9 px-4 rounded-full inline-flex items-center gap-1.5 transition">
+            <i data-lucide="list" class="size-4"></i>
+            <span class="text-sm" data-t="simple.tab.list.label"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Speed toggle (slow ↔ fast). Visual-first: turtle / rabbit icons.
+           Slow caps quality at ~480p and rate-limits the wire; fast picks
+           the highest available format and runs at line speed. The choice
+           is app-wide and persisted server-side via PUT /api/system/profile,
+           so the audit log reflects what was active at capture time. -->
+      <div class="flex justify-center mb-6">
+        <div class="inline-flex items-center gap-1 p-0.5 rounded-full border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900"
+             role="group" :aria-label="t('simple.speed.aria')">
+          <button @click="setProfile('slow')"
+                  :aria-pressed="profile==='slow'"
+                  :aria-label="t('simple.speed.slow.aria')"
+                  :class="['h-7 px-3 rounded-full inline-flex items-center gap-1.5 transition', profile==='slow' ? 'bg-accent text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100']">
+            <i data-lucide="turtle" class="size-3.5"></i>
+            <span class="text-xs" data-t="simple.speed.slow.label"></span>
+          </button>
+          <button @click="setProfile('fast')"
+                  :aria-pressed="profile==='fast'"
+                  :aria-label="t('simple.speed.fast.aria')"
+                  :class="['h-7 px-3 rounded-full inline-flex items-center gap-1.5 transition', profile==='fast' ? 'bg-accent text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100']">
+            <i data-lucide="rabbit" class="size-3.5"></i>
+            <span class="text-xs" data-t="simple.speed.fast.label"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Single-URL form. Chain-link icon inside, labelled "Capture" button. -->
+      <form x-show="simpleTab==='single'" @submit.prevent="submitSimple()" class="relative" x-cloak>
+        <i data-lucide="link" class="absolute start-5 top-1/2 -translate-y-1/2 text-zinc-400 size-6 pointer-events-none"></i>
+        <input type="url" x-model="simpleUrl" required
+               class="w-full text-lg ps-14 pe-36 py-5 rounded-2xl bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 focus:border-accent focus:ring-2 focus:ring-accent/20 transition outline-none"
+               :placeholder="t('simple.input.placeholder')" />
+        <button type="submit" :disabled="!simpleUrl"
+                :aria-label="t('simple.button.aria')"
+                :class="['absolute end-2.5 top-1/2 -translate-y-1/2 h-12 px-5 rounded-full bg-accent text-white inline-flex items-center gap-2 shadow-sm transition disabled:opacity-40 disabled:shadow-none hover:brightness-95', simpleUrl ? 'motion-safe:animate-pulse' : '']">
+          <i data-lucide="download-cloud" class="size-5"></i>
+          <span class="text-sm font-medium" data-t="simple.button.label"></span>
+        </button>
+      </form>
+
+      <!-- List form. Textarea + numeric badge + icon-only download button. -->
+      <form x-show="simpleTab==='list'" @submit.prevent="submitSimpleBatch()" class="relative" x-cloak>
+        <textarea x-model="simpleUrls" rows="9"
+                  class="w-full font-mono text-sm p-5 pe-4 pb-16 rounded-2xl bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 focus:border-accent focus:ring-2 focus:ring-accent/20 transition outline-none resize-none leading-7"
+                  style="background-image: linear-gradient(to bottom, transparent calc(1.75rem - 1px), rgba(161,161,170,0.12) calc(1.75rem - 1px), rgba(161,161,170,0.12) 1.75rem, transparent 1.75rem); background-size: 100% 1.75rem; background-position: 0 1.25rem;"
+                  :placeholder="t('simple.list.placeholder')"></textarea>
+        <div class="absolute bottom-3 end-3 flex items-center gap-3">
+          <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 text-xs font-mono">
+            <i data-lucide="link" class="size-3.5"></i>
+            <span x-text="formatNumber(parsedSimpleUrls().length)"></span>
+          </span>
+          <button type="submit" :disabled="!parsedSimpleUrls().length"
+                  :aria-label="t('simple.button.batch.aria', {count: parsedSimpleUrls().length})"
+                  :class="['h-12 px-5 rounded-full bg-accent text-white inline-flex items-center gap-2 shadow-sm transition disabled:opacity-40 disabled:shadow-none hover:brightness-95', parsedSimpleUrls().length ? 'motion-safe:animate-pulse' : '']">
+            <i data-lucide="download-cloud" class="size-5"></i>
+            <span class="text-sm font-medium" data-t="simple.list.button.label"></span>
+          </button>
+        </div>
+      </form>
+
+      <!-- Active jobs (each phase gets a small visible label). -->
+      <div class="mt-8 space-y-4">
+        <!-- Aggregate "Downloads now" visualizer. Visible only while at least
+             one job is in the downloading phase, so the calm layout
+             stays calm when nothing is in flight. -->
+        <div x-show="aggregateActive()" x-cloak
+             class="rounded-2xl border border-teal-200/70 dark:border-teal-900/50 bg-teal-50/60 dark:bg-teal-950/20 px-4 py-3 flex items-center gap-3">
+          <i data-lucide="activity" class="size-4 text-accent shrink-0" aria-hidden="true"></i>
+          <span class="text-sm text-zinc-700 dark:text-zinc-300 shrink-0"
+                x-text="t('library.active.combined_count', {count: aggregateCount()})"></span>
+          <span class="text-sm font-mono tabular-nums text-zinc-700 dark:text-zinc-300 shrink-0"
+                x-text="formatSpeed(aggregateSpeed())"></span>
+          <svg class="flex-1 h-5 max-w-[160px]" viewBox="0 0 100 20"
+               preserveAspectRatio="none" aria-hidden="true">
+            <polyline :points="sparklinePoints(_aggHistory, 100, 20)"
+                      fill="none" stroke="rgb(var(--accent))" stroke-width="1.5"
+                      stroke-linejoin="round" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div x-show="hasDismissable()" class="flex justify-end">
+          <button @click="dismissAllCompleted()"
+                  class="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 inline-flex items-center gap-1.5"
+                  x-text="t('capture.dismiss_all')"></button>
+        </div>
+        <template x-for="j in activeJobs" :key="j.id">
+          <div class="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 relative">
+            <button @click="dismissJob(j.id)"
+                    x-show="isTerminal(j) || isFailed(j)"
+                    class="absolute top-3 end-3 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+                    :aria-label="t('capture.dismiss')">
+              <i data-lucide="x" class="size-4"></i>
+            </button>
+            <bdi class="block font-mono text-sm truncate text-zinc-500 dark:text-zinc-400 mb-3 pe-7" x-text="j.url"></bdi>
+            <div class="flex items-start justify-between gap-3">
+              <template x-for="phase in ['page','media','hash','sign']" :key="phase">
+                <div class="flex-1 flex flex-col items-center gap-1.5">
+                  <div class="size-11 rounded-full grid place-items-center transition-all"
+                       :class="phaseClass(j, phase)"
+                       :aria-label="t('capture.phases.' + phase)">
+                    <i :data-lucide="phaseIcon(phase)" class="size-5"></i>
+                  </div>
+                  <span class="text-xs text-zinc-600 dark:text-zinc-400" x-text="t('capture.phases.' + phase)"></span>
+                </div>
+              </template>
+            </div>
+            <!-- Lightweight progress bar — only renders while downloading.
+                 Width transitions only under motion-safe; an unknown total
+                 leaves the bar at 0% (no animated stripe to keep this calm). -->
+            <template x-if="isDownloading(j)">
+              <div class="mt-3 h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
+                <div class="h-full bg-accent rounded-full motion-safe:transition-[width] duration-300"
+                     :style="`width: ${jobPct(j) ?? 0}%`"></div>
+              </div>
+            </template>
+            <!-- Two-line progress readout: label (which file/step) on top,
+                 bytes/percent below. The label removes the apparent "loop"
+                 by naming each yt-dlp sub-step (video/audio/merging/…). -->
+            <div class="mt-2 flex flex-col items-end gap-0.5 min-h-[2rem]">
+              <span class="text-xs text-zinc-700 dark:text-zinc-300" x-text="progressLabel(j)"></span>
+              <span class="text-xs font-mono text-zinc-500" x-text="progressBytes(j)"></span>
+            </div>
+            <!-- Retrying: amber banner with attempt count + countdown -->
+            <div x-show="isRetrying(j)" class="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 p-3 text-sm">
+              <i data-lucide="rotate-ccw" class="size-4 text-amber-700 dark:text-amber-400 flex-shrink-0 mt-0.5"></i>
+              <div class="text-amber-800 dark:text-amber-300 min-w-0">
+                <div class="font-medium" x-text="t(j.error?.i18n_key || 'errors.network')"></div>
+                <div class="text-xs mt-0.5 flex items-center gap-2">
+                  <span x-text="attemptsText(j)"></span>
+                  <span x-show="attemptsText(j) && retryWaitText(j)">·</span>
+                  <span x-text="retryWaitText(j)"></span>
+                </div>
+              </div>
+            </div>
+            <!-- Permanent failure: rose banner -->
+            <div x-show="j.error && isFailed(j)" class="mt-3 flex items-start gap-2 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 p-3 text-sm">
+              <i data-lucide="triangle-alert" class="size-4 text-rose-700 dark:text-rose-400 flex-shrink-0 mt-0.5"></i>
+              <div class="text-rose-800 dark:text-rose-300" x-text="t(j.error?.i18n_key || 'errors.unknown')"></div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- "Where the files live" panel: heading + folder icon + path + labelled copy/open buttons.
+           Sits above the recent-captures grid so the destination is anchored
+           visually before the user looks at what's already been captured. -->
+      <div class="mt-10">
+        <p class="text-xs text-zinc-500 mb-2" data-t="simple.path.label"></p>
+        <div class="flex items-center gap-2 px-4 py-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50">
+          <i data-lucide="folder-open" class="size-5 text-accent flex-shrink-0"></i>
+          <code class="font-mono text-xs text-zinc-600 dark:text-zinc-300 truncate flex-1 text-end"
+                :title="systemVersion?.paths?.host_quick_captures_dir || systemVersion?.paths?.quick_captures_dir || ''"
+                x-text="systemVersion?.paths?.host_quick_captures_dir || systemVersion?.paths?.quick_captures_dir || ''"></code>
+          <button @click="copyPath(systemVersion?.paths?.host_quick_captures_dir || systemVersion?.paths?.quick_captures_dir)"
+                  :aria-label="t('simple.path.copy.aria')"
+                  class="h-9 px-3 inline-flex items-center gap-1.5 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition flex-shrink-0">
+            <i :data-lucide="pathCopied ? 'check' : 'copy'" class="size-4"></i>
+            <span class="text-sm hidden sm:inline" data-t="simple.path.copy.label"></span>
+          </button>
+          <button @click="revealQuickFolder()"
+                  :aria-label="t('simple.path.open.aria')"
+                  class="h-9 px-3 inline-flex items-center gap-1.5 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition flex-shrink-0">
+            <i data-lucide="external-link" class="size-4"></i>
+            <span class="text-sm hidden sm:inline" data-t="simple.path.open.label"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Recent captures (thumbnail-dominant, with platform + date for context). -->
+      <div x-show="recentCaptures.length" class="mt-10">
+        <h2 class="text-sm font-medium text-zinc-500 mb-3" data-t="simple.recent.heading"></h2>
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          <template x-for="item in recentCaptures" :key="item.id">
+            <article class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden cursor-default">
+              <div class="aspect-video bg-zinc-100 dark:bg-zinc-800 grid place-items-center text-zinc-400 relative">
+                <i :data-lucide="item.capture_kind==='media' ? 'film' : 'layout-template'" class="size-10"></i>
+                <img :src="'/static/icons/platforms/' + (item.platform||'generic') + '.svg'"
+                     onerror="this.src='/static/icons/platforms/generic.svg'"
+                     class="absolute top-2 start-2 size-5 text-zinc-700 dark:text-zinc-300"
+                     :alt="item.platform||''" aria-hidden="true" />
+              </div>
+              <div class="p-3">
+                <bdi class="block text-sm font-medium truncate" x-text="item.title"></bdi>
+                <div class="mt-1 text-xs text-zinc-500 capitalize truncate"
+                     x-text="(item.platform || '') + ' · ' + (item.capture_date ? relTime(item.capture_date) : '')"></div>
+              </div>
+            </article>
+          </template>
+        </div>
+      </div>
+
+      <!-- Empty state: illustration only + one tiny headline. -->
+      <div x-show="!recentCaptures.length && !activeJobs.length" class="mt-14 flex flex-col items-center text-center">
+        <svg viewBox="0 0 280 180" class="w-64 h-auto text-accent" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <ellipse cx="140" cy="158" rx="92" ry="6" fill="currentColor" fill-opacity="0.06" stroke="none"/>
+          <rect x="64" y="38" width="152" height="100" rx="10" stroke-opacity="0.5"/>
+          <rect x="92" y="28" width="96" height="20" rx="4" fill="currentColor" fill-opacity="0.10"/>
+          <path d="M88 76 h104 M88 96 h78 M88 116 h60" stroke-opacity="0.35"/>
+          <circle cx="216" cy="42" r="14" fill="currentColor" fill-opacity="0.12" stroke="currentColor"/>
+          <path d="M210 42 l4 4 l8 -8" stroke-width="2.5"/>
+        </svg>
+        <h3 class="mt-6 text-base text-zinc-700 dark:text-zinc-300 max-w-md leading-relaxed" data-t="simple.empty.headline"></h3>
+      </div>
+    </section>
+
+    <!-- ============ Settings ============ -->
+    <section x-show="route==='settings'" x-cloak>
+      <h1 class="text-3xl font-semibold tracking-tight mb-6" data-t="settings.heading"></h1>
+
+      <div class="space-y-6">
+        <!-- Language -->
+        <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6">
+          <h2 class="text-base font-medium mb-4" data-t="settings.lang.heading"></h2>
+          <div class="flex gap-2 flex-wrap">
+            <template x-for="L in languages" :key="L">
+              <button @click="setLang(L)" :class="['px-3 py-1.5 rounded-lg border text-sm', locale===L ? 'border-accent bg-accent text-white' : 'border-zinc-200 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-800']" x-text="t('lang.' + L)"></button>
+            </template>
+          </div>
+        </div>
+
+        <!-- Signing key -->
+        <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6">
+          <h2 class="text-base font-medium mb-4" data-t="settings.signing.heading"></h2>
+          <p class="text-sm font-mono text-zinc-700 dark:text-zinc-300" x-text="t('settings.signing.fingerprint', {fp: systemVersion?.signing_key_fingerprint || '—'})"></p>
+        </div>
+
+        <!-- Browser extension -->
+        <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6">
+          <div class="flex items-start justify-between gap-4 mb-3">
+            <div>
+              <h2 class="text-base font-medium" data-t="settings.extension.heading"></h2>
+              <p class="text-sm text-zinc-500 mt-1" data-t="settings.extension.subtitle"></p>
+            </div>
+            <button @click="pairExtension()" :disabled="extension.pairing"
+                    class="shrink-0 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent text-white text-sm font-medium hover:brightness-95 transition disabled:opacity-50">
+              <i data-lucide="plug-zap" class="size-4"></i>
+              <span data-t="settings.extension.pair_button"></span>
+            </button>
+          </div>
+
+          <!-- How to install. Collapsible <details> — open by default for
+               first-time users (no tokens yet), collapsed once paired so
+               returning investigators don't see the wall of steps. -->
+          <details class="rounded-lg border border-zinc-200 dark:border-zinc-800 overflow-hidden mt-3 group"
+                   :open="(extension.tokens?.length || 0) === 0">
+            <summary class="flex items-center justify-between gap-2 px-4 py-2.5 cursor-pointer select-none text-sm font-medium hover:bg-zinc-50 dark:hover:bg-zinc-800/50">
+              <span class="inline-flex items-center gap-2">
+                <i data-lucide="download-cloud" class="size-4"></i>
+                <span data-t="settings.extension.install.toggle"></span>
+              </span>
+              <i data-lucide="chevron-down" class="size-4 transition-transform group-open:rotate-180"></i>
+            </summary>
+            <div class="px-4 pb-4 pt-1 text-sm text-zinc-700 dark:text-zinc-300 space-y-3">
+              <p class="text-zinc-600 dark:text-zinc-400" data-t="settings.extension.install.intro"></p>
+
+              <ol class="list-decimal ps-5 space-y-3">
+                <!-- Step 1: download -->
+                <li>
+                  <div class="font-medium" data-t="settings.extension.install.step1.title"></div>
+                  <p class="text-zinc-600 dark:text-zinc-400 mt-1" data-t="settings.extension.install.step1.body"></p>
+                  <a href="/api/extension/download"
+                     class="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-zinc-200 dark:border-zinc-700 text-xs font-medium hover:bg-zinc-50 dark:hover:bg-zinc-800">
+                    <i data-lucide="download" class="size-3.5"></i>
+                    <span data-t="settings.extension.install.download_button"></span>
+                  </a>
+                </li>
+
+                <!-- Step 2: open the browser's extensions page -->
+                <li>
+                  <div class="font-medium" data-t="settings.extension.install.step2.title"></div>
+                  <ul class="mt-1 space-y-1 text-zinc-600 dark:text-zinc-400">
+                    <li data-t="settings.extension.install.step2.chrome"></li>
+                    <li data-t="settings.extension.install.step2.firefox"></li>
+                  </ul>
+                </li>
+
+                <!-- Step 3: load unpacked -->
+                <li>
+                  <div class="font-medium" data-t="settings.extension.install.step3.title"></div>
+                  <ul class="mt-1 space-y-1 text-zinc-600 dark:text-zinc-400">
+                    <li data-t="settings.extension.install.step3.chrome"></li>
+                    <li data-t="settings.extension.install.step3.firefox"></li>
+                  </ul>
+                </li>
+
+                <!-- Step 4: pair (same flow for Chrome and Firefox) -->
+                <li>
+                  <div class="font-medium" data-t="settings.extension.install.step4.title"></div>
+                  <p class="text-zinc-600 dark:text-zinc-400 mt-1" data-t="settings.extension.install.step4.intro"></p>
+                  <ol class="list-[lower-alpha] ps-5 space-y-1.5 mt-2 text-zinc-600 dark:text-zinc-400">
+                    <li data-t="settings.extension.install.step4.a"></li>
+                    <li data-t="settings.extension.install.step4.b"></li>
+                    <li data-t="settings.extension.install.step4.c"></li>
+                    <li data-t="settings.extension.install.step4.d"></li>
+                    <li data-t="settings.extension.install.step4.e"></li>
+                    <li data-t="settings.extension.install.step4.f"></li>
+                    <li data-t="settings.extension.install.step4.g"></li>
+                  </ol>
+                </li>
+              </ol>
+
+              <p class="text-xs text-zinc-500 mt-2" data-t="settings.extension.install.troubleshoot"></p>
+            </div>
+          </details>
+
+          <!-- Forensic-implications note. -->
+          <div class="text-sm rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-900/10 p-3 my-3">
+            <p data-t="settings.extension.implications" class="text-amber-900 dark:text-amber-200"></p>
+          </div>
+
+          <!-- Freshly minted token (revealed exactly once). -->
+          <div x-show="extension.justIssued" x-cloak
+               class="rounded-lg border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-900/10 p-3 my-3">
+            <div class="text-sm font-medium text-emerald-800 dark:text-emerald-200" data-t="settings.extension.token_caption"></div>
+            <code class="block mt-2 px-3 py-2 rounded bg-white dark:bg-zinc-950 border border-emerald-200 dark:border-emerald-900/60 text-xs font-mono break-all" x-text="extension.justIssued?.token"></code>
+            <div class="mt-2 flex items-center gap-3">
+              <button @click="copyExtensionToken()"
+                      class="inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs bg-white dark:bg-zinc-950 border border-emerald-200 dark:border-emerald-900/60 hover:bg-emerald-50 dark:hover:bg-emerald-900/20">
+                <i data-lucide="copy" class="size-3.5"></i>
+                <span data-t="settings.extension.copy_button"></span>
+              </button>
+              <span class="text-xs text-emerald-700 dark:text-emerald-300" x-text="t('settings.extension.fingerprint_label', {fp: extension.justIssued?.server_fingerprint || '—'})"></span>
+            </div>
+          </div>
+
+          <!-- List of paired extensions. -->
+          <h3 class="text-sm font-medium mt-4 mb-2 text-zinc-700 dark:text-zinc-300" data-t="settings.extension.list_title"></h3>
+          <div x-show="(extension.tokens?.length || 0) === 0" class="text-sm text-zinc-500" data-t="settings.extension.list_empty"></div>
+          <ul class="divide-y divide-zinc-100 dark:divide-zinc-800">
+            <template x-for="tok in extension.tokens" :key="tok.id">
+              <li class="flex items-center justify-between py-2">
+                <div>
+                  <div class="text-sm font-medium" x-text="tok.label"></div>
+                  <div class="text-xs text-zinc-500" x-text="t('settings.extension.last_used', {when: tok.last_used_at || t('settings.extension.never')})"></div>
+                </div>
+                <button @click="revokeExtensionToken(tok.id)"
+                        class="text-xs text-red-600 hover:underline" data-t="settings.extension.revoke_button"></button>
+              </li>
+            </template>
+          </ul>
+        </div>
+
+        <!-- Updates -->
+        <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6">
+          <h2 class="text-base font-medium mb-4" data-t="settings.update.heading"></h2>
+          <div class="text-sm text-zinc-500 mb-4">yt-dlp <span class="font-mono" x-text="systemVersion?.yt_dlp || '—'"></span></div>
+          <button @click="checkForUpdates()" :disabled="updating" class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800 transition disabled:opacity-50">
+            <i data-lucide="refresh-cw" class="size-4" :class="updating ? 'animate-spin' : ''"></i>
+            <span x-text="updating ? t('settings.update.installing') : t('settings.update.button')"></span>
+          </button>
+          <div x-show="updateResult" class="mt-3 text-sm" x-text="updateResult"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Toast -->
+  <div x-show="toast" x-cloak x-transition.opacity
+       class="fixed bottom-16 inset-x-0 flex justify-center pointer-events-none z-50">
+    <div class="rounded-full bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 px-4 py-2 text-sm shadow-lg" x-text="toast"></div>
+  </div>
+
+  <!-- Status bar -->
+  <footer class="sticky bottom-0 h-10 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50/85 dark:bg-zinc-950/85 backdrop-blur-md flex items-center px-6 text-xs text-zinc-500">
+    <div class="inline-flex items-center gap-2">
+      <span class="relative flex size-2">
+        <span class="absolute inline-flex h-full w-full rounded-full bg-accent opacity-60 animate-ping" x-show="activeJobs.length > 0"></span>
+        <span class="relative inline-flex size-2 rounded-full" :class="activeJobs.length > 0 ? 'bg-accent' : 'bg-zinc-300 dark:bg-zinc-700'"></span>
+      </span>
+      <span x-text="t('statusbar.active', {count: activeJobs.length})"></span>
+    </div>
+    <div class="ms-auto inline-flex items-center gap-2">
+      <i data-lucide="shield-check" class="size-3.5 text-emerald-600 dark:text-emerald-500"></i>
+      <span data-t="statusbar.all_clear"></span>
+    </div>
+  </footer>
+</body>
+</html>

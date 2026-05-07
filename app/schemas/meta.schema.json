@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capsule.example/schemas/meta.schema.json",
+  "title": "Capsule capture metadata (meta.json)",
+  "description": "Per-capture forensic record. Source of truth for the integrity story; signed by the case keypair.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "job_uuid",
+    "capture_kind",
+    "case",
+    "url_submitted",
+    "url_final",
+    "url_redirect_chain",
+    "platform",
+    "title",
+    "title_original",
+    "capture_date",
+    "artifacts",
+    "checksums",
+    "tools",
+    "signing_key_fp"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "job_uuid": { "type": "string" },
+    "capture_kind": { "enum": ["media", "page_only"] },
+    "case": {
+      "type": "object",
+      "required": ["id", "slug", "name"],
+      "properties": {
+        "id": { "type": "integer" },
+        "slug": { "type": "string" },
+        "name": { "type": "string" }
+      }
+    },
+    "url_submitted": { "type": "string" },
+    "url_final": { "type": "string" },
+    "url_redirect_chain": { "type": "array", "items": { "type": "string" } },
+    "platform": { "type": "string" },
+    "video_id": { "type": ["string", "null"] },
+    "uploader": { "type": ["string", "null"] },
+    "uploader_original": { "type": ["string", "null"] },
+    "title": { "type": "string" },
+    "title_original": { "type": "string" },
+    "description_original": { "type": ["string", "null"] },
+    "upload_date": { "type": ["string", "null"] },
+    "capture_date": { "type": "string", "description": "ISO 8601 UTC" },
+    "duration_seconds": { "type": ["integer", "null"] },
+    "format_details": { "type": ["object", "null"] },
+    "response_headers": { "type": ["object", "null"] },
+    "authenticated_domains": { "type": "array", "items": { "type": "string" } },
+    "artifacts": {
+      "type": "object",
+      "description": "Artifact role → relative path under /downloads.",
+      "additionalProperties": { "type": "string" }
+    },
+    "checksums": {
+      "type": "object",
+      "description": "Artifact role → { md5, sha256, size_bytes }.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["md5", "sha256", "size_bytes"],
+        "properties": {
+          "md5": { "type": "string" },
+          "sha256": { "type": "string" },
+          "size_bytes": { "type": "integer" }
+        }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "required": ["app_version", "ytdlp_version", "chromium_version", "browsertrix_version"],
+      "properties": {
+        "app_version": { "type": "string" },
+        "ytdlp_version": { "type": "string" },
+        "chromium_version": { "type": "string" },
+        "browsertrix_version": { "type": "string" }
+      }
+    },
+    "audit_log_entry_id": { "type": ["integer", "null"] },
+    "signing_key_fp": { "type": "string" }
+  }
+}
