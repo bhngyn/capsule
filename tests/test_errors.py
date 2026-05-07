@@ -144,12 +144,39 @@ def test_every_pattern_has_an_i18n_key():
 def test_arabic_bundle_has_same_keys_as_english():
     en = json.loads(Path("app/i18n/en.json").read_text(encoding="utf-8"))
     ar = json.loads(Path("app/i18n/ar.json").read_text(encoding="utf-8"))
-    en_errors = {k for k in en if k.startswith("errors.")}
-    ar_errors = {k for k in ar if k.startswith("errors.")}
-    assert en_errors == ar_errors
+    assert set(en) == set(ar), f"key mismatch: {set(en) ^ set(ar)}"
 
 
 def test_japanese_bundle_has_same_keys_as_english():
     en = json.loads(Path("app/i18n/en.json").read_text(encoding="utf-8"))
     ja = json.loads(Path("app/i18n/ja.json").read_text(encoding="utf-8"))
     assert set(en) == set(ja), f"key mismatch: {set(en) ^ set(ja)}"
+
+
+def test_translated_bundles_actually_translated():
+    """Non-English bundles must not silently echo the English string for
+    user-facing keys. MD5/SHA-256 and brand/app names are technical
+    identifiers that legitimately stay identical across locales."""
+    en = json.loads(Path("app/i18n/en.json").read_text(encoding="utf-8"))
+    ALLOWED_IDENTICAL = {
+        "app.name",
+        "pdf.brand.name",
+        "pdf.item.md5",
+        "pdf.item.sha256",
+        "manifest.col.md5",
+        "manifest.col.sha256",
+        "lang.en",
+        "lang.ja",
+        "lang.ar",
+    }
+    for lang in ("ja", "ar"):
+        bundle = json.loads(
+            Path(f"app/i18n/{lang}.json").read_text(encoding="utf-8")
+        )
+        leaks = {
+            k for k, v in bundle.items()
+            if k in en and v == en[k] and k not in ALLOWED_IDENTICAL
+        }
+        assert leaks == set(), (
+            f"{lang}.json echoes English for: {sorted(leaks)}"
+        )
