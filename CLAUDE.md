@@ -132,7 +132,7 @@ The investigator spends 100% of their time in this UI. It must feel like a polis
 
 ### 4.1 Visual-first design language (multilingual-resilient)
 
-Because the UI must serve English, Arabic, Spanish, French, and (eventually) more — including right-to-left scripts — **rely on visuals first, words second**. Words translate; icons mostly don't need to.
+Because the UI must serve English, Japanese, Arabic, and (eventually) more — including right-to-left scripts — **rely on visuals first, words second**. Words translate; icons mostly don't need to.
 
 Rules:
 
@@ -172,7 +172,7 @@ The v1 UI has two surfaces: the **Downloader** (home) and **Settings**. Backend 
 
 ### 4.5 Internationalization (i18n)
 
-The interface must be trivial to translate. **First-tier languages: English (`en`) and Arabic (`ar`).** Spanish (`es`) and French (`fr`) follow.
+The interface must be trivial to translate. **First-tier languages: English (`en`), Japanese (`ja`), and Arabic (`ar`).**
 
 - **All user-facing strings live in `/app/i18n/{lang}.json` flat key-value files.** No nested objects, no plurals-as-objects — use [ICU MessageFormat](https://unicode-org.github.io/icu/userguide/format_parse/messages/) for plurals and interpolation. Arabic has six plural forms (`zero`, `one`, `two`, `few`, `many`, `other`); the runtime must handle them all.
 - **Keys are dotted, semantic, English.** `home.url_input.placeholder`, not `t1` or `pasteHere`.
@@ -183,7 +183,7 @@ The interface must be trivial to translate. **First-tier languages: English (`en
 - **Date/number/filesize formatting** uses `Intl.DateTimeFormat` / `Intl.NumberFormat` — never hand-rolled. Arabic locales default to Arabic-Indic digits; do not override.
 - **Translation bundle is fetched once on load** from `/api/i18n/{lang}` and cached. Language switch is instant (no reload).
 - **Frontend i18n runtime: [`@formatjs/intl-messageformat`](https://formatjs.github.io/)**. Backend (for error responses and PDF reports): [Babel](https://babel.pocoo.org/). Both speak the same ICU syntax; `en.json` is shared.
-- **Arabic font: Noto Sans Arabic**, bundled as a webfont alongside Inter for Latin.
+- **Arabic font: Noto Sans Arabic**, bundled as a webfont alongside Inter for Latin. **Japanese font: Noto Sans JP**, bundled as a webfont alongside Inter for Latin and Noto Sans Arabic.
 - **CI check:** a grep step fails the build if any visible HTML text or Python error string is hardcoded English instead of going through the translation layer.
 - Document the translation workflow in `/docs/TRANSLATING.md`.
 
@@ -229,12 +229,17 @@ Every capture produces, at minimum, a page snapshot package (MHTML + screenshot 
 ### Path layout
 
 ```
-/downloads/{case_slug}/{canonical_filename}                 ← media file (media kind only)
-/downloads/{case_slug}/sidecars/{canonical_filename_stem}/  ← per-item sidecar folder
-/downloads/{case_slug}/sidecars/{page_only_stem}/           ← page-only items
+/downloads/{case_slug}/{stem}/                          ← per-item folder
+/downloads/{case_slug}/{stem}/{stem}.{ext}              ← media file (if any)
+/downloads/{case_slug}/{stem}/{stem}.manifest.pdf       ← per-item manifest PDF
+/downloads/{case_slug}/{stem}/{stem}.meta.json          ← canonical record
+/downloads/{case_slug}/{stem}/{stem}.meta.json.sig
+/downloads/{case_slug}/{stem}/{stem}.checksums.txt
+/downloads/{case_slug}/{stem}/{stem}.page.{mhtml,png,warc.gz}
+...                                                     ← per-item folder is flat
 ```
 
-Per-item sidecar folder keeps the case folder browsable: media files at the case root, the noisier sidecars (MHTML, WARC, screenshots, info JSON, etc.) one level down, named by stem.
+Per-item folder keeps the case folder browsable: each capture is a single, self-contained folder with the media file, the page snapshot, the manifest PDF, and forensic sidecars all colocated.
 
 ### Canonical filename pattern (media kind)
 
@@ -281,12 +286,13 @@ twitter__Some_Important_Tweet_Title__dl-2026-05-06__a1b2c3d4e5f6        (page_on
 
 ---
 
-## 6. Sidecar files
+## 6. Item folder contents
 
-For a media capture `foo.mp4`, write into `sidecars/foo/`. For a page-only capture with stem `bar`, write into `sidecars/bar/` (no top-level media file).
+For every capture, all files live together in `/downloads/{case_slug}/{stem}/`. The media file (if any) and every sidecar are stem-prefixed so they remain forensically identifiable when copied or extracted from the folder.
 
 | File                       | Always present? | Source / contents                                                                                                                                                                                                                                                                                                                                                                  |
 |----------------------------|------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `{stem}.manifest.pdf`      | Yes              | Locale-aware per-item evidence manifest (PDF). Header with source URL, capture timestamp UTC, and signing-key fingerprint, then a table of every file in the item folder with MD5 and SHA-256. Hash recorded in `meta.json` and `checksums.txt` and transitively signed via `meta.json.sig`. |
 | `{stem}.meta.json`         | Yes              | **Our** structured metadata. Includes capture_kind, filenames, original/final URLs, redirect chain, response headers, platform, uploader, title (sanitized + original), description, upload_date, capture_date (UTC), duration, format details, file sizes, MD5/SHA-256 of every artifact, app/yt-dlp/browsertrix/Chromium versions, signing key fingerprint, audit-log entry id, list of authenticated domains (no cookie values) |
 | `{stem}.meta.json.sig`     | Yes              | Detached Ed25519 signature of `meta.json`                                                                                                                                                                                                                                                                                                                                          |
 | `{stem}.checksums.txt`     | Yes              | Lines of `MD5  <hash>  <relpath>` and `SHA256  <hash>  <relpath>` for every artifact (compatible with `md5sum -c` / `sha256sum -c`)                                                                                                                                                                                                                                              |
@@ -439,9 +445,16 @@ Per-case export bundle:
 ├── verify.py                         ← standalone verifier (only `cryptography` dependency)
 ├── README.txt                        ← short instructions for the recipient
 └── downloads/
-    └── {canonical_stem}/
-        ├── {media_filename}          ← present for media kind
-        └── sidecars/                 ← all sidecars per §6
+    └── {stem}/                       ← per-item folder, flat
+        ├── {stem}.{ext}              ← media file (present for media kind)
+        ├── {stem}.manifest.pdf       ← per-item manifest PDF
+        ├── {stem}.meta.json
+        ├── {stem}.meta.json.sig
+        ├── {stem}.checksums.txt
+        ├── {stem}.page.mhtml
+        ├── {stem}.page.png
+        ├── {stem}.page.warc.gz
+        └── ...                       ← media-only sidecars (info.json, description.txt, thumbnail) per §6
 ```
 
 ### PDF report
@@ -514,13 +527,13 @@ Capsule/
 │   │   └── meta.schema.json
 │   ├── i18n/
 │   │   ├── en.json
+│   │   ├── ja.json
 │   │   ├── ar.json
-│   │   ├── es.json            ← Phase 6
-│   │   ├── fr.json            ← Phase 6
 │   │   └── ...
 │   ├── templates/
 │   │   ├── verify.py.tmpl     ← copied into evidence exports verbatim
-│   │   └── case_report.html   ← WeasyPrint source
+│   │   ├── case_report.html   ← WeasyPrint source (case-level export PDF)
+│   │   └── item_manifest.html ← WeasyPrint source (per-item manifest PDF)
 │   └── static/                ← frontend
 │       ├── index.html
 │       ├── app.js
@@ -570,6 +583,7 @@ When working on this project:
 12. **When in doubt, choose boring.** Boring is debuggable, translatable, and shippable.
 13. **Preserve, don't modify.** Suppress yt-dlp's metadata muxing. When transformation is unavoidable (e.g., merging separate video+audio streams), log it in the audit log with input and output hashes.
 14. **Capture-side mutations are recorded, never silent.** Network blocks (ad/tracker blocklist) and CSS-only banner hides are explicitly recorded in `meta.json.capture.*` and the audit log (`capture.ads_blocked`, `capture.banners_hidden`, `capture.readiness_timed_out`). Mutations that touch the DOM — auto-clicking consent banners, removing tracker pixel elements, modifying the source HTML — remain forbidden. CSS hiding is OK because the underlying DOM is preserved in the MHTML and WARC; clicking would change the site's consent state and we don't.
+15. **When changing on-disk layout, update §5 and §6 in lockstep with the code.** The path layout diagram, the item-folder contents table, and the post-processor implementation must agree. Drift here breaks evidence-export bundles and the verifier; reviewers should reject layout changes that touch only one side.
 
 ---
 
@@ -616,7 +630,7 @@ The README is the user's first contact. Write for an investigator who has never 
 - **Updates:** manual only. No automatic GitHub polling.
 - **Raw fragment retention:** off by default. Per-case opt-in.
 - **Time:** UTC in storage; user's local TZ in display via `Intl.DateTimeFormat`.
-- **First-tier languages:** English + Arabic (`ar`, generic — revisit if specific dialect requested). Spanish + French follow.
+- **First-tier languages:** English + Japanese + Arabic (`ar`, generic — revisit if specific dialect requested).
 - **Image size:** ~2GB. Documented in README.
 - **Logo:** bell jar over a browser-window specimen on a plinth — preservation/museum metaphor, deliberately not a UI button. The mark stays neutral graphite; the accent dot inside the window's title bar uses the app accent (teal-600). Variants live under `app/static/icons/brand/` (`logo.svg`, `logo-mono.svg`, `logo-favicon.svg`, `logomark.svg`); the brand-mark section of `docs/DESIGN.md` is the canonical spec.
 
@@ -633,6 +647,8 @@ The README is the user's first contact. Write for an investigator who has never 
 - **Ephemeral cookies opt-in per submission** via `cookie_persistence: "ephemeral"` on `POST /api/extension/capture`. One-shot tmpdir, never written to the case directory, discarded after job completion.
 - **Cookie-set provenance hash** (`cookies_snapshot_sha256`) recorded per job in `meta.json` and the audit log.
 - **New audit actions:** `extension.tab_context_received`, `extension.id_mismatch`, `extension.token_rotated`, `cookies.stale_at_capture`, `cookies.ephemeral_used`, `capture.ads_blocked`, `capture.banners_hidden`, `capture.readiness_timed_out`.
+- **Per-item PDF manifest** at capture time, locale-aware, hashed in `meta.json` and signed transitively via `meta.json.sig`. Lives at `{stem}.manifest.pdf` inside the per-item folder.
+- **Layout:** per-item folder colocates media, snapshot, sidecars, and manifest PDF under `/downloads/{case}/{stem}/`. Old `sidecars/{stem}/` subfolder removed.
 
 ## 16. Still open
 
