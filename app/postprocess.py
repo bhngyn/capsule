@@ -109,6 +109,26 @@ class CaptureInput:
     user_browser_har: Path | None = None
     user_browser_environment: Path | None = None
     user_browser_label: str | None = None  # extension label, recorded in audit
+    # Hardening pass: structured tab context (UA / viewport / scroll / tz),
+    # per-origin session/local storage, and a click-time DOM snapshot.
+    # All optional; each rides through the same hash-and-sign path as the
+    # other artifacts.
+    user_browser_tab_context: Path | None = None
+    user_browser_session_state: Path | None = None
+    user_browser_dom_snapshot_html: Path | None = None
+    user_browser_dom_snapshot_meta: Path | None = None
+    # Capture-side mutations + render-wait outcomes. Recorded into
+    # ``meta.json.capture`` so a court reviewer can answer "what did the
+    # capture process actually do?". The dict is the output of
+    # ``CaptureReport.to_dict``.
+    capture_report: dict[str, Any] | None = None
+    # SHA-256 of the cookie file the job consumed. Binds the capture to
+    # an exact cookie set without ever logging values.
+    cookies_snapshot_sha256: str | None = None
+    # True iff the cookie file was a one-shot ephemeral file (not the
+    # persistent case file). Recorded for audit; does not affect on-disk
+    # artifacts.
+    ephemeral_cookies_used: bool = False
 
 
 @dataclass(frozen=True)
@@ -283,10 +303,13 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             ("user_browser_screenshot", capture_input.user_browser_screenshot),
             ("user_browser_har", capture_input.user_browser_har),
             ("user_browser_environment", capture_input.user_browser_environment),
+            ("user_browser_tab_context", capture_input.user_browser_tab_context),
+            ("user_browser_session_state", capture_input.user_browser_session_state),
+            ("user_browser_dom_snapshot_html", capture_input.user_browser_dom_snapshot_html),
+            ("user_browser_dom_snapshot_meta", capture_input.user_browser_dom_snapshot_meta),
         ):
             if src is None or not src.exists():
                 continue
-            ext_p = src.suffix.lstrip(".") or "bin"
             named = {
                 "page_mhtml": f"{stem}.page.mhtml",
                 "page_screenshot": f"{stem}.page.png",
@@ -295,6 +318,10 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 "user_browser_screenshot": f"{stem}.user-browser.png",
                 "user_browser_har": f"{stem}.user-browser.har",
                 "user_browser_environment": f"{stem}.user-browser.environment.json",
+                "user_browser_tab_context": f"{stem}.user-browser.tab-context.json",
+                "user_browser_session_state": f"{stem}.user-browser.session-state.json",
+                "user_browser_dom_snapshot_html": f"{stem}.user-browser.dom-snapshot.html",
+                "user_browser_dom_snapshot_meta": f"{stem}.user-browser.dom-snapshot.json",
             }[role]
             dest = _move_into(sidecar_dir, src, new_name=named)
             moved.append(dest)
@@ -318,7 +345,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         kp = signing.ensure_keypair()
         fp = signing.fingerprint(kp.public)
         meta = {
-            "schema_version": 1,
+            "schema_version": 2,
             "job_uuid": capture_input.job_uuid,
             "capture_kind": capture_kind,
             "case": {"id": case.id, "slug": case.slug, "name": case.name},
@@ -350,6 +377,12 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 "chromium_version": capture_input.chromium_version,
                 "browsertrix_version": capture_input.browsertrix_version,
             },
+            # Hardening pass: capture-side mutations and the cookie-set
+            # provenance hash. Per CLAUDE.md §13, every blocking and every
+            # banner-hide is recorded — never silent.
+            "capture": capture_input.capture_report or {},
+            "cookies_snapshot_sha256": capture_input.cookies_snapshot_sha256,
+            "ephemeral_cookies_used": capture_input.ephemeral_cookies_used,
             "audit_log_entry_id": None,  # filled below
             "signing_key_fp": fp,
         }
@@ -534,6 +567,10 @@ def extend_capture(
         "user_browser_screenshot": f"{stem}.user-browser.png",
         "user_browser_har":        f"{stem}.user-browser.har",
         "user_browser_environment": f"{stem}.user-browser.environment.json",
+        "user_browser_tab_context": f"{stem}.user-browser.tab-context.json",
+        "user_browser_session_state": f"{stem}.user-browser.session-state.json",
+        "user_browser_dom_snapshot_html": f"{stem}.user-browser.dom-snapshot.html",
+        "user_browser_dom_snapshot_meta": f"{stem}.user-browser.dom-snapshot.json",
         "media":                   None,  # media goes alongside, not in sidecar dir
     }
     if role not in name_for:
