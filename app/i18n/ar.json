@@ -13,6 +13,7 @@
   "lang.en": "English",
   "lang.ar": "العربية",
   "lang.ja": "日本語",
+  "lang.es": "Español",
   "errors.rate_limited": "الموقع يحدّ من معدّل طلباتنا. انتظر قليلًا.",
   "errors.blocked": "هذا الموقع يمنع التنزيل.",
   "errors.unavailable": "هذا الفيديو خاص أو تم حذفه.",

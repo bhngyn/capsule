@@ -153,10 +153,18 @@ def test_japanese_bundle_has_same_keys_as_english():
     assert set(en) == set(ja), f"key mismatch: {set(en) ^ set(ja)}"
 
 
+def test_spanish_bundle_has_same_keys_as_english():
+    en = json.loads(Path("app/i18n/en.json").read_text(encoding="utf-8"))
+    es = json.loads(Path("app/i18n/es.json").read_text(encoding="utf-8"))
+    assert set(en) == set(es), f"key mismatch: {set(en) ^ set(es)}"
+
+
 def test_translated_bundles_actually_translated():
     """Non-English bundles must not silently echo the English string for
     user-facing keys. MD5/SHA-256 and brand/app names are technical
-    identifiers that legitimately stay identical across locales."""
+    identifiers that legitimately stay identical across locales — and a
+    handful of Spanish-via-Latin words ("Error", unit "/s") happen to
+    spell identically without being untranslated."""
     en = json.loads(Path("app/i18n/en.json").read_text(encoding="utf-8"))
     ALLOWED_IDENTICAL = {
         "app.name",
@@ -168,8 +176,11 @@ def test_translated_bundles_actually_translated():
         "lang.en",
         "lang.ja",
         "lang.ar",
+        "lang.es",
+        "common.error",
+        "capture.progress.speed_suffix",
     }
-    for lang in ("ja", "ar"):
+    for lang in ("ja", "ar", "es"):
         bundle = json.loads(
             Path(f"app/i18n/{lang}.json").read_text(encoding="utf-8")
         )

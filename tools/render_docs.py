@@ -1,13 +1,14 @@
-"""Render docs/*.{en,ja,ar}.md into matching PDFs via WeasyPrint.
+"""Render docs/*.{en,ja,ar,es}.md into matching PDFs via WeasyPrint.
 
 Usage:
     .venv/bin/python tools/render_docs.py            # render quickstart + user-guide
     .venv/bin/python tools/render_docs.py docs/foo.en.md  # render specific files
 
 Output is written next to each input as ``{stem}.pdf`` (e.g. ``quickstart.en.md``
-becomes ``quickstart.en.pdf``). Locale is detected from the ``.{en,ja,ar}.md``
-suffix; Arabic pages render right-to-left with appropriate fallback fonts, and
-Japanese pages pick up Noto Sans CJK JP for full glyph coverage.
+becomes ``quickstart.en.pdf``). Locale is detected from the ``.{en,ja,ar,es}.md``
+suffix; Arabic pages render right-to-left with appropriate fallback fonts,
+Japanese pages pick up Noto Sans CJK JP for full glyph coverage, and Spanish
+pages use the same Latin font stack as English.
 
 Requires ``markdown-it-py`` (``.venv/bin/pip install markdown-it-py``) and
 ``weasyprint`` (already in ``[evidence]``).
@@ -26,6 +27,7 @@ DEFAULT_TARGETS = [
     ROOT / "docs" / "quickstart.en.md",
     ROOT / "docs" / "quickstart.ar.md",
     ROOT / "docs" / "quickstart.ja.md",
+    ROOT / "docs" / "quickstart.es.md",
     ROOT / "docs" / "user-guide.en.md",
     ROOT / "docs" / "user-guide.ar.md",
     # docs/dist-only/ holds Markdown sources that are only rendered into the
@@ -105,6 +107,8 @@ def render_one(src: Path) -> Path:
         locale = "ja"
     elif stem.endswith(".ar.md"):
         locale = "ar"
+    elif stem.endswith(".es.md"):
+        locale = "es"
     else:
         locale = "en"
     direction = "rtl" if locale == "ar" else "ltr"
