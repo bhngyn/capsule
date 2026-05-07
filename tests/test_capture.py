@@ -2,11 +2,30 @@
 
 from __future__ import annotations
 
+import email
 import importlib
 import os
+from email import policy
 from pathlib import Path
 
 import pytest
+
+
+def _decoded_html_bodies(mhtml_text: str) -> str:
+    """Return the concatenated decoded text of every text/html part in an MHTML file.
+
+    The raw MHTML wraps the rendered DOM in quoted-printable encoding (so ``=`` becomes
+    ``=3D``) and echoes the original page URL in headers like ``Snapshot-Content-Location:``.
+    Tests that want to assert "the rendered DOM contained X" must look at the *decoded*
+    HTML body, not the raw bytes — otherwise quoted-printable escaping or a ``data:`` URL
+    in a header gives false positives/negatives.
+    """
+    msg = email.message_from_string(mhtml_text, policy=policy.default)
+    parts: list[str] = []
+    for part in msg.walk():
+        if part.get_content_type() == "text/html":
+            parts.append(part.get_content())
+    return "\n".join(parts)
 
 
 @pytest.fixture
@@ -345,8 +364,9 @@ async def test_capture_uses_desktop_viewport(capture_module, tmp_path):
         url=url, case_slug=None, work_dir=tmp_path,
     )
     mhtml = bundle.mhtml.read_text(encoding="utf-8", errors="replace")
-    assert f"WIDTH={capture_module.DEFAULT_VIEWPORT_WIDTH}" in mhtml
-    assert f"HEIGHT={capture_module.DEFAULT_VIEWPORT_HEIGHT}" in mhtml
+    body = _decoded_html_bodies(mhtml)
+    assert f"WIDTH={capture_module.DEFAULT_VIEWPORT_WIDTH}" in body
+    assert f"HEIGHT={capture_module.DEFAULT_VIEWPORT_HEIGHT}" in body
 
 
 @pytest.mark.asyncio
@@ -385,5 +405,6 @@ async def test_capture_warms_lazy_loaded_content(capture_module, tmp_path):
         url=url, case_slug=None, work_dir=tmp_path,
     )
     mhtml = bundle.mhtml.read_text(encoding="utf-8", errors="replace")
-    assert "MARKER_AFTER" in mhtml
-    assert "MARKER_BEFORE" not in mhtml
+    body = _decoded_html_bodies(mhtml)
+    assert "MARKER_AFTER" in body
+    assert "MARKER_BEFORE" not in body
