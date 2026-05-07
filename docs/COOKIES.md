@@ -34,6 +34,7 @@ The recommended extensions are all open source, work entirely on your machine, a
 ## What happens to the cookies after you import them
 
 - Stored at `/config/cases/{case_slug}/cookies.txt` inside the container, with file mode `0600` on macOS/Linux.
+- **Same file feeds every downloader.** yt-dlp (video), Playwright + browsertrix (page snapshot), and gallery-dl (image galleries — Twitter image threads, Pixiv, DeviantArt, Imgur, etc.) all read the same Netscape `cookies.txt`. You log in once per site; every Capsule downloader sees the same authenticated session.
 - The file is **never** included in evidence-export bundles.
 - Cookie *values* are **never** logged, **never** echoed in the audit trail, and **never** returned by any API. Only the list of domains and per-domain expiry information is surfaced.
 - The audit log records that an upload happened, which domains it covered, and which target URL the investigator was trying to cover — but nothing that could be replayed to log into the site.
