@@ -101,7 +101,8 @@ RUN set -eux; \
         "httpx>=0.28" \
         "weasyprint>=63" \
         "babel>=2.16" \
-        "yt-dlp>=2025.1.1"; \
+        "yt-dlp>=2025.1.1" \
+        "gallery-dl>=1.30"; \
     playwright install chromium --only-shell; \
     mkdir -p /usr/share/fonts/truetype/capsule; \
     curl -fsSL -o /usr/share/fonts/truetype/capsule/NotoSansJP-Regular.otf \
