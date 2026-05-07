@@ -99,3 +99,57 @@ def test_issue_rejects_empty_label(tokens_module):
 
 def test_list_tokens_empty_when_no_file(tokens_module):
     assert tokens_module.list_tokens() == []
+
+
+# --- Hardening pass: extension_id binding + rotation ----------------------
+
+
+def test_verify_accepts_token_with_no_extension_binding_when_id_missing(tokens_module):
+    """Tokens issued without an ``extension_id`` (legacy / pre-hardening)
+    are grandfathered: any caller can verify without supplying an id."""
+    _, raw = tokens_module.issue("legacy")
+    assert tokens_module.verify(raw) is not None
+    assert tokens_module.verify(raw, extension_id="anything") is not None
+
+
+def test_verify_rejects_when_bound_id_mismatches(tokens_module):
+    _, raw = tokens_module.issue("bound", extension_id="abc123")
+    # Right id passes.
+    record = tokens_module.verify(raw, extension_id="abc123")
+    assert record is not None
+    # Missing id raises.
+    with pytest.raises(tokens_module.ExtensionIdMismatch):
+        tokens_module.verify(raw, extension_id=None)
+    # Wrong id raises.
+    with pytest.raises(tokens_module.ExtensionIdMismatch):
+        tokens_module.verify(raw, extension_id="def456")
+
+
+def test_rotate_revokes_old_and_issues_new(tokens_module):
+    record, raw_old = tokens_module.issue("toRotate", extension_id="abc")
+    result = tokens_module.rotate(record.id)
+    assert result is not None
+    new_record, raw_new = result
+    assert raw_new != raw_old
+    assert new_record.id != record.id
+    # Label and binding carry over.
+    assert new_record.label == "toRotate"
+    assert new_record.extension_id == "abc"
+    # Old token no longer verifies.
+    assert tokens_module.verify(raw_old, extension_id="abc") is None
+    # New token does.
+    assert tokens_module.verify(raw_new, extension_id="abc") is not None
+
+
+def test_rotate_unknown_returns_none(tokens_module):
+    assert tokens_module.rotate("does-not-exist") is None
+
+
+def test_rotate_keeps_other_tokens_intact(tokens_module):
+    a_record, a_raw = tokens_module.issue("a")
+    b_record, b_raw = tokens_module.issue("b")
+    tokens_module.rotate(a_record.id)
+    # The other token still verifies.
+    assert tokens_module.verify(b_raw) is not None
+    # And there are still exactly two tokens persisted.
+    assert len(tokens_module.list_tokens()) == 2

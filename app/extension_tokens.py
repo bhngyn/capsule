@@ -14,8 +14,13 @@ Hard rules:
 * Tokens grant write-only access (submit captures, upload cookies, list
   cases). They never grant read access to existing captures or audit log;
   see ``main.py`` for the routes they unlock.
-* Revocation is permanent — there's no "rotate" because the extension can
-  always re-pair to obtain a new token.
+* When a token is paired with an ``extension_id``, every authenticated
+  request must present that same id (Chrome guarantees the id can only be
+  forged with developer access to the build process). Tokens paired
+  without an id (legacy) are grandfathered.
+* :func:`rotate` issues a fresh token and revokes the prior one in a single
+  call so a token leak can be remediated without re-pairing the extension
+  from scratch.
 """
 
 from __future__ import annotations
@@ -32,13 +37,22 @@ from . import config
 
 __all__ = [
     "Token",
+    "ExtensionIdMismatch",
     "tokens_path",
     "issue",
     "list_tokens",
     "verify",
     "touch",
     "revoke",
+    "rotate",
 ]
+
+
+class ExtensionIdMismatch(ValueError):
+    """Raised by :func:`verify` when the presented extension_id does not
+    match the id the token was bound to. The API layer surfaces this as a
+    403 (the right answer for "you sent valid creds for the wrong device").
+    """
 
 
 def tokens_path() -> Path:
@@ -134,11 +148,17 @@ def list_tokens() -> list[Token]:
     return [_row_to_token(r) for r in _load()]
 
 
-def verify(raw: str) -> Token | None:
+def verify(raw: str, *, extension_id: str | None = None) -> Token | None:
     """Constant-time check against every stored hash.
 
     Returns the matching :class:`Token` or ``None``. Callers should follow
     a successful verify with :func:`touch` to keep ``last_used_at`` fresh.
+
+    When the matched token was paired with an ``extension_id``, the caller
+    must present the same value or this function raises
+    :class:`ExtensionIdMismatch`. Tokens paired without an id (legacy) are
+    accepted regardless. The extension passes its ``chrome.runtime.id`` in
+    the ``X-Extension-Id`` header on every authenticated request.
     """
     if not raw:
         return None
@@ -150,7 +170,19 @@ def verify(raw: str) -> Token | None:
         # Always compare to keep the loop's timing data-independent.
         if secrets.compare_digest(presented_b, stored) and match is None:
             match = row
-    return _row_to_token(match) if match is not None else None
+    if match is None:
+        return None
+    bound = match.get("extension_id")
+    if bound:
+        if not extension_id:
+            raise ExtensionIdMismatch(
+                f"token bound to extension_id {bound!r} but request supplied none"
+            )
+        if str(extension_id) != str(bound):
+            raise ExtensionIdMismatch(
+                f"token bound to extension_id {bound!r}, got {extension_id!r}"
+            )
+    return _row_to_token(match)
 
 
 def touch(token_id: str) -> None:
@@ -185,3 +217,39 @@ def revoke(token_id: str) -> Token | None:
         return None
     _save(kept)
     return _row_to_token(removed)
+
+
+def rotate(token_id: str) -> tuple[Token, str] | None:
+    """Issue a replacement token for an existing pairing.
+
+    Atomic: the prior row is removed and the new row is written in a
+    single :func:`_save` call so a crash mid-rotation can't leave both
+    tokens active.
+
+    Returns ``(record, raw_token)`` on success, or ``None`` if no token
+    with ``token_id`` existed. The label and extension_id binding carry
+    over from the prior pairing.
+    """
+    rows = _load()
+    prior_idx: int | None = None
+    for i, row in enumerate(rows):
+        if row.get("id") == token_id:
+            prior_idx = i
+            break
+    if prior_idx is None:
+        return None
+    prior = rows[prior_idx]
+    raw = secrets.token_urlsafe(32)
+    digest = _hash(raw)
+    new_record = {
+        "id": _short_id(digest),
+        "hash": digest,
+        "label": prior.get("label", ""),
+        "extension_id": prior.get("extension_id"),
+        "created_at": _utcnow(),
+        "last_used_at": None,
+    }
+    rows.pop(prior_idx)
+    rows.append(new_record)
+    _save(rows)
+    return _row_to_token(new_record), raw
