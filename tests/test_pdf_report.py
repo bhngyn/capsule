@@ -107,13 +107,15 @@ def test_load_pdf_strings_ar_returns_arabic(env):
     assert labels["pdf.summary.items"] != "Items"
 
 
-def test_load_pdf_strings_ja_falls_back_to_english(env):
-    """Track B owns ja.json; on this branch it doesn't exist yet, so
-    ``merged_with_fallback`` returns English. Once Track B lands, this
-    same call will start returning Japanese labels."""
+def test_load_pdf_strings_ja_returns_japanese(env):
+    """Japanese bundle (ja.json) is present after Track B's merge; assert
+    that the Japanese translation surfaces, not the English fallback."""
     labels = env["pdf_report"]._load_pdf_strings("ja")
+    # Brand stays Latin in every locale.
     assert labels["pdf.brand.name"] == "Capsule"
-    assert labels["manifest.heading"] == "File manifest"
+    # The manifest heading is translated, not transliterated.
+    assert labels["manifest.heading"] != "File manifest"
+    assert labels["manifest.heading"]  # non-empty
 
 
 # --- render_case_report ---------------------------------------------------
@@ -240,7 +242,7 @@ def test_render_item_manifest_html_has_correct_lang_and_dir_for_ar(env):
     assert labels["manifest.col.path"] in html_doc
 
 
-def test_render_item_manifest_html_for_ja_is_ltr_with_en_fallback(env):
+def test_render_item_manifest_html_for_ja_is_ltr_with_japanese_labels(env):
     html_doc = env["pdf_report"]._render_item_manifest_html(
         case=env["case"],
         item_view={
@@ -253,8 +255,11 @@ def test_render_item_manifest_html_for_ja_is_ltr_with_en_fallback(env):
         lang="ja",
     )
     assert '<html lang="ja" dir="ltr">' in html_doc
-    # Until Track B's ja.json lands the labels fall back to English.
-    assert "File manifest" in html_doc
+    # Japanese bundle is present; manifest heading should appear translated.
+    labels = env["pdf_report"]._load_pdf_strings("ja")
+    assert labels["manifest.heading"] in html_doc
+    # And the English source string should NOT appear (no fallback leakage).
+    assert "File manifest" not in html_doc
 
 
 def test_render_item_manifest_with_no_files_renders_empty_marker(env):
