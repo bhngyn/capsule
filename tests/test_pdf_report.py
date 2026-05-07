@@ -276,3 +276,164 @@ def test_render_item_manifest_with_no_files_renders_empty_marker(env):
     )
     labels = env["pdf_report"]._load_pdf_strings("en")
     assert labels["manifest.empty"] in html_doc
+
+
+def test_item_manifest_emits_full_hashes(env):
+    """Forensic re-verification requires the FULL md5 + sha256 strings,
+    not the truncated 16-char + ellipsis form. Render a fixture and
+    assert both digests appear in their entirety in the rendered HTML.
+    """
+    pdf_report = env["pdf_report"]
+    full_md5 = "d41d8cd98f00b204e9800998ecf8427e"
+    full_sha = (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+    files = [
+        pdf_report.FileEntry(
+            relpath="ops/abc/abc.mp4",
+            size=2048,
+            md5=full_md5,
+            sha256=full_sha,
+        ),
+    ]
+    html_doc = pdf_report._render_item_manifest_html(
+        case=env["case"],
+        item_view={
+            "title": "T",
+            "source_url": "https://x.test",
+            "captured_utc": "2026-05-06T12:00:00+00:00",
+            "signing_key_fp": "fp",
+        },
+        files=files,
+        lang="en",
+    )
+    # Full strings present, untruncated.
+    assert full_md5 in html_doc
+    assert full_sha in html_doc
+    # And the legacy truncation marker is gone — make sure no row got
+    # rendered as ``<hex16>…``.
+    assert f"{full_md5[:16]}…" not in html_doc
+    assert f"{full_sha[:16]}…" not in html_doc
+
+
+# --- render_item_report ---------------------------------------------------
+
+
+def _report_view(**overrides):
+    base = {
+        "title": "Hello world",
+        "source_url": "https://example.com/x",
+        "final_url": "https://example.com/x",
+        "redirect_chain": [],
+        "captured_utc": "2026-05-06T12:00:00+00:00",
+        "signing_key_fp": "abcdef0123",
+        "platform": "youtube",
+        "uploader": "veritasium",
+        "upload_date": "20240812",
+        "duration_seconds": 600,
+        "authenticated_domains": [],
+        "description": "A short description.",
+        "tools": {
+            "app_version": "0.1.0",
+            "ytdlp_version": "2026.03.17",
+            "chromium_version": "125",
+            "browsertrix_version": "1.6",
+        },
+        "capture": {
+            "render_waits": [{"name": "load", "ok": True}],
+            "blocked_request_count": 4,
+            "banner_hide_applied": True,
+            "banner_hide_version": "v1",
+            "tab_context_used": False,
+            "report_lang": "en",
+        },
+        "manifest_filename": "stem.manifest.pdf",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_render_item_report_en_produces_pdf_bytes(env):
+    pdf = env["pdf_report"].render_item_report(
+        case=env["case"], item_view=_report_view(), lang="en",
+    )
+    assert pdf.startswith(b"%PDF-")
+    assert len(pdf) > 1000
+
+
+def test_render_item_report_ar_produces_pdf_bytes_and_rtl(env):
+    html_doc = env["pdf_report"]._render_item_report_html(
+        case=env["case"], item_view=_report_view(), lang="ar",
+    )
+    assert '<html lang="ar" dir="rtl">' in html_doc
+    pdf = env["pdf_report"].render_item_report(
+        case=env["case"], item_view=_report_view(), lang="ar",
+    )
+    assert pdf.startswith(b"%PDF-")
+
+
+def test_item_report_renders_full_description(env):
+    """Long descriptions paginate naturally — no truncation marker."""
+    long_desc = "\n".join(
+        f"line {i}: " + ("lorem ipsum " * 8) for i in range(120)
+    )
+    assert len(long_desc) > 2000  # sanity: actually long
+    html_doc = env["pdf_report"]._render_item_report_html(
+        case=env["case"],
+        item_view=_report_view(description=long_desc),
+        lang="en",
+    )
+    # Every line of the source is present — no clipping.
+    for i in (0, 60, 119):
+        assert f"line {i}:" in html_doc
+    # And no truncation markers are added by the renderer.
+    assert "[truncated]" not in html_doc
+    assert "…" not in html_doc.split("description")[1]  # rough guard
+
+
+def test_item_report_empty_description_uses_i18n_placeholder(env):
+    pdf_report = env["pdf_report"]
+    html_doc = pdf_report._render_item_report_html(
+        case=env["case"],
+        item_view=_report_view(description=None),
+        lang="en",
+    )
+    labels = pdf_report._load_pdf_strings("en")
+    assert labels["pdf.report.field.description_empty"] in html_doc
+
+
+def test_item_report_redirect_chain_renders_as_ordered_list(env):
+    chain = [
+        "https://t.co/abc",
+        "https://example.test/landing",
+        "https://example.test/canonical",
+    ]
+    html_doc = env["pdf_report"]._render_item_report_html(
+        case=env["case"],
+        item_view=_report_view(redirect_chain=chain),
+        lang="en",
+    )
+    assert "<ol>" in html_doc
+    for url in chain:
+        assert url in html_doc
+
+
+def test_item_report_authenticated_domains_empty_uses_i18n(env):
+    pdf_report = env["pdf_report"]
+    html_doc = pdf_report._render_item_report_html(
+        case=env["case"],
+        item_view=_report_view(authenticated_domains=[]),
+        lang="en",
+    )
+    labels = pdf_report._load_pdf_strings("en")
+    assert labels["pdf.report.field.authenticated_domains_empty"] in html_doc
+
+
+def test_item_report_ja_uses_japanese_labels(env):
+    html_doc = env["pdf_report"]._render_item_report_html(
+        case=env["case"], item_view=_report_view(), lang="ja",
+    )
+    assert '<html lang="ja" dir="ltr">' in html_doc
+    labels = env["pdf_report"]._load_pdf_strings("ja")
+    assert labels["pdf.report.heading.provenance"] in html_doc
+    assert labels["pdf.report.heading.tools"] in html_doc
