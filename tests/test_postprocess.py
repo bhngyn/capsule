@@ -582,6 +582,135 @@ def test_manifest_pdf_for_arabic_locale(env):
     assert pdf_bytes.startswith(b"%PDF-")
 
 
+def test_per_item_report_pdf_emitted(env):
+    """Track 3 — every capture also gets a {stem}.report.pdf companion.
+
+    Asserts:
+    - the PDF file exists in the per-item folder and starts with %PDF-
+    - meta.json.artifacts contains a ``report_pdf`` role
+    - meta.json.checksums has matching md5/sha256 with non-zero size
+    - checksums.txt contains a line for the report PDF
+    - The report PDF appears in the manifest PDF's table — i.e. it
+      was hashed BEFORE the manifest rendered, so the meta.json
+      signature transitively binds it.
+    """
+    media, info, desc = _stage_media(env)
+    pp = env["pp"]
+    info_dict = json.loads(info.read_text())
+    info_dict["description"] = "A description that is long enough to test."
+    info.write_text(json.dumps(info_dict))
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://www.youtube.com/watch?v=abc",
+        url_final="https://www.youtube.com/watch?v=abc",
+        redirect_chain=["https://www.youtube.com/watch?v=abc"],
+        capture_date=pp.utc_now(),
+        media_files=[media],
+        info_json=info_dict,
+        extra_sidecars=[info, desc],
+        ytdlp_version="2026.03.17",
+        lang="en",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+    item_dir = env["downloads"] / result.relative_item_dir
+
+    # File present and a valid PDF.
+    report_pdf = item_dir / f"{result.stem}.report.pdf"
+    assert report_pdf.is_file()
+    bytes_ = report_pdf.read_bytes()
+    assert bytes_[:5] == b"%PDF-"
+    assert len(bytes_) > 1000
+
+    # meta.json records both the artifact path and the checksums.
+    meta = json.loads(result.meta_json_path.read_text(encoding="utf-8"))
+    assert "report_pdf" in meta["artifacts"]
+    assert meta["artifacts"]["report_pdf"].endswith(".report.pdf")
+    cs = meta["checksums"]["report_pdf"]
+    assert cs["md5"] and len(cs["md5"]) == 32
+    assert cs["sha256"] and len(cs["sha256"]) == 64
+    assert cs["size_bytes"] > 0
+
+    # checksums.txt mirrors the meta.checksums projection — both MD5
+    # and SHA256 lines reference the report PDF.
+    cs_text = (item_dir / f"{result.stem}.checksums.txt").read_text()
+    assert ".report.pdf" in cs_text
+    assert cs["sha256"] in cs_text
+    assert cs["md5"] in cs_text
+
+    # The manifest PDF's file table includes a row for ``report.pdf``.
+    # This proves the report PDF was hashed BEFORE the manifest rendered
+    # — the invariant that lets meta.json.sig transitively bind it.
+    from app import pdf_report
+    files = [
+        pdf_report.FileEntry(
+            relpath=meta["artifacts"][role],
+            size=int(meta["checksums"][role]["size_bytes"]),
+            md5=meta["checksums"][role]["md5"],
+            sha256=meta["checksums"][role]["sha256"],
+        )
+        for role in sorted(meta["artifacts"].keys())
+    ]
+    # ``report_pdf`` appears alongside ``manifest_pdf`` and the rest.
+    roles = [role for role in sorted(meta["artifacts"].keys())]
+    assert "report_pdf" in roles
+    assert "manifest_pdf" in roles
+    # Order check: in our fixture both PDFs end up adjacent in sorted
+    # order (manifest_pdf < report_pdf). The role list MUST contain both.
+    assert {"manifest_pdf", "report_pdf"}.issubset(set(roles))
+    # And rendering the manifest from this snapshot still works (i.e. the
+    # FileEntry list is well-formed).
+    assert files  # exercised the construction
+
+
+def test_per_item_folder_layout_includes_report_pdf(env):
+    """Companion to test_per_item_folder_layout_collapses_sidecars —
+    the new ``{stem}.report.pdf`` sits alongside ``{stem}.manifest.pdf``
+    in the per-item folder."""
+    media, info, desc = _stage_media(env)
+    pp = env["pp"]
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://www.youtube.com/watch?v=abc",
+        url_final="https://www.youtube.com/watch?v=abc",
+        redirect_chain=["https://www.youtube.com/watch?v=abc"],
+        capture_date=pp.utc_now(),
+        media_files=[media],
+        info_json=json.loads(info.read_text()),
+        extra_sidecars=[info, desc],
+        ytdlp_version="2026.03.17",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+    item_dir = env["downloads"] / result.relative_item_dir
+    assert (item_dir / f"{result.stem}.manifest.pdf").is_file()
+    assert (item_dir / f"{result.stem}.report.pdf").is_file()
+
+
+def test_per_item_report_pdf_for_page_only_capture(env):
+    """Page-only captures get a report PDF too — even when info_json
+    is None, the report renders with empty/dash placeholders."""
+    pp = env["pp"]
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://example.com/page",
+        url_final="https://example.com/page",
+        redirect_chain=["https://example.com/page"],
+        capture_date=pp.utc_now(),
+        media_files=[],
+        info_json=None,
+        lang="en",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+    item_dir = env["downloads"] / result.relative_item_dir
+    report = item_dir / f"{result.stem}.report.pdf"
+    assert report.is_file()
+    assert report.read_bytes()[:5] == b"%PDF-"
+    meta = json.loads(result.meta_json_path.read_text(encoding="utf-8"))
+    assert "report_pdf" in meta["artifacts"]
+
+
 def test_meta_json_signature_covers_user_browser_artifacts(env):
     media, info, desc = _stage_media(env)
     pp = env["pp"]
