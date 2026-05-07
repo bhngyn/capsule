@@ -62,4 +62,11 @@ Click the language picker in the header, or visit `?lang=ar`. Arabic switches th
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Capsule itself is MIT-licensed. See [LICENSE](LICENSE).
+
+For the third-party software Capsule depends on, bundles, or invokes
+(notably `browsertrix-crawler`, which is AGPL-3.0-or-later and is
+shipped inside the Docker image), see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). If you redistribute
+the Docker image or evidence-export bundles, include that file or a
+substantially-equivalent notice.

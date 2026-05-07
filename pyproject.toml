@@ -5,7 +5,7 @@ description = "Capsule — capture the web, with proof. A web-evidence capture t
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Capsule contributors" }]
+authors = [{ name = "bhngyn" }]
 
 dependencies = [
   "fastapi>=0.115",

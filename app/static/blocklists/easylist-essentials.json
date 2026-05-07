@@ -1,7 +1,7 @@
 {
   "version": "2026-05-06",
-  "description": "Capsule curated ad/tracker blocklist. Conservative high-signal subset derived from EasyList + EasyPrivacy. Hosts are blocked at the network layer; the captured WARC and the audit log record every blocked request URL so the ruleset is reproducible at review time.",
-  "license_note": "Source rules: EasyList (CC BY-SA 3.0) and EasyPrivacy (CC BY-SA 3.0). This is a derived work — a hand-curated subset.",
+  "description": "Capsule curated ad/tracker host blocklist. Original work: each entry is a publicly-known third-party domain operated by a named ad/tracking company. Hosts are blocked at the network layer; the captured WARC and the audit log record every blocked request URL so the ruleset is reproducible at review time.",
+  "license_note": "Original work, MIT-licensed under the project's LICENSE. Domain names are facts; this curated list is not derived from any specific upstream blocklist.",
   "blocked_hosts": [
     "doubleclick.net",
     "googlesyndication.com",

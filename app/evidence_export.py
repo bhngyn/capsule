@@ -246,8 +246,17 @@ def build_bundle(
         "    python verify.py .\n\n"
         "Verification re-checks every artifact's hash, every per-item\n"
         "signature, and the audit-log hash chain. The only dependency is\n"
-        "the `cryptography` library (PyPI).\n"
+        "the `cryptography` library (PyPI).\n\n"
+        "The verifier (verify.py) is MIT-licensed; see LICENSE in this\n"
+        "bundle for the exact terms.\n"
     ).encode("utf-8")
+
+    # The recipient will run ``verify.py``; ship the MIT license alongside
+    # so they know the terms under which they can run / redistribute it.
+    license_path = config.PROJECT_ROOT / "LICENSE"
+    license_bytes = (
+        license_path.read_bytes() if license_path.is_file() else b""
+    )
 
     # Write the zip.
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -258,6 +267,8 @@ def build_bundle(
         zf.writestr("verify.py", verifier_bytes)
         zf.writestr(EXPORT_README_NAME, readme)
         zf.writestr("case_report.pdf", pdf_bytes)
+        if license_bytes:
+            zf.writestr("LICENSE", license_bytes)
         for abs_path, rel_in_zip, _role in artifact_paths:
             zf.write(abs_path, rel_in_zip)
 

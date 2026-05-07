@@ -3,10 +3,14 @@
  *
  * Version: 2026-05-06
  *
- * Source: hand-curated subset of the well-known "I still don't care about
- * cookies" rule list, restricted to the most common consent libraries.
- * License of the upstream project: GPL-3.0-or-later. This file ships only
- * the CSS selectors derived from that list.
+ * License: original work, MIT-licensed under the project's LICENSE. The
+ * selectors target publicly-documented DOM identifiers that named
+ * commercial consent-banner products (OneTrust, Cookiebot, TrustArc,
+ * Quantcast Choice, Didomi, Sourcepoint, Usercentrics, Cookiehub,
+ * Iubenda) attach to their widgets. Element IDs and class names of
+ * third-party services are facts about how those services ship their
+ * code; this curated CSS file is not derived from any specific upstream
+ * rule list.
  *
  * Behaviour: every selector applies `display: none !important`. This:
  *   - Hides the banner visually so the screenshot, MHTML render, and
