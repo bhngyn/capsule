@@ -37,6 +37,7 @@ from . import (
     capture as capture_mod,
     cases,
     classify as classify_mod,
+    config,
     cookies as cookies_mod,
     db as db_mod,
     errors as errors_mod,
@@ -219,6 +220,11 @@ class Job:
     next_retry_at: str | None = None
     task_kind: str = TASK_FULL
     capture_group_id: str | None = None
+    # UI locale at submission time. Threaded through to
+    # ``CaptureInput.lang`` so the per-item manifest PDF picks up the
+    # right labels + direction + font stack. ``None`` ⇒ resolve to
+    # ``config.DEFAULT_LANG`` at run time.
+    lang: str | None = None
     created_at: str = field(default_factory=_utcnow)
     updated_at: str = field(default_factory=_utcnow)
 
@@ -238,6 +244,7 @@ class Job:
             "next_retry_at": self.next_retry_at,
             "task_kind": self.task_kind,
             "capture_group_id": self.capture_group_id,
+            "lang": self.lang,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -472,15 +479,21 @@ class JobOrchestrator:
         url: str,
         task_kind: str = TASK_FULL,
         capture_group_id: str | None = None,
+        lang: str | None = None,
     ) -> Job:
         if task_kind not in TASK_KINDS:
             raise ValueError(f"unknown task_kind {task_kind!r}")
+        # ``lang`` is the UI locale at submission time — propagated all
+        # the way to ``CaptureInput`` so the per-item manifest PDF
+        # renders in the right script. Resolved lazily in ``_run_inner``
+        # if the caller didn't supply one.
         job = Job(
             id=str(uuid.uuid4()),
             case_id=case_id,
             url=url,
             task_kind=task_kind,
             capture_group_id=capture_group_id,
+            lang=lang,
         )
         # Plan §U6 / Phase D: every full submission gets a fresh capture
         # group; partial-task submissions (archive / media re-fetch) must
@@ -1276,6 +1289,7 @@ class JobOrchestrator:
                 capture_report=report.to_dict(),
                 cookies_snapshot_sha256=cookies_snapshot_sha256,
                 ephemeral_cookies_used=ephemeral_cookies_path is not None,
+                lang=job.lang or config.DEFAULT_LANG,
             )
 
             # Whether or not postprocess succeeds, the ephemeral cookie
