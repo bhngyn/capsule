@@ -1100,6 +1100,7 @@ class JobOrchestrator:
                     cookies_path=ephemeral_cookies_path,
                     block_ads=block_ads,
                     hide_cookie_banners=hide_cookie_banners,
+                    app_version=postprocess.APP_VERSION,
                 )
             except Exception as exc:
                 bundle = capture_mod.CaptureBundle(
@@ -1169,6 +1170,20 @@ class JobOrchestrator:
                 "banner_hide_applied": report.banner_hide_applied,
                 "tab_context_used": report.tab_context_used,
                 "cookies_snapshot_sha256": cookies_snapshot_sha256,
+                # v7 hardening counters — surfaced so the UI can show a
+                # compact "page-faithfulness" tooltip without re-fetching
+                # meta.json. None of these contain user data.
+                "animations_frozen": report.animations_frozen,
+                "videos_paused": report.videos_paused,
+                "lazy_promoted_count": report.lazy_promoted_count,
+                "iframes_seen": report.iframes_seen,
+                "screenshot_truncated_at_px": report.screenshot_truncated_at_px,
+                "readiness_timed_out": report.readiness_timed_out,
+                "console_message_count": report.console_message_count,
+                "console_error_count": report.console_error_count,
+                "media_context_captured": report.media_context_captured,
+                "warc_captured_in_session": report.warc_captured_in_session,
+                "warc_record_count": report.warc_record_count,
             })
 
             # Step 2b: yt-dlp
@@ -1495,9 +1510,13 @@ class JobOrchestrator:
                 page_mhtml=bundle.mhtml,
                 page_screenshot=bundle.screenshot,
                 page_warc=bundle.warc,
+                page_har=bundle.har,
+                page_console=bundle.console_log,
+                page_context_screenshot=bundle.context_screenshot,
                 authenticated_domains=classification.authenticated_domains,
                 chromium_version=bundle.chromium_version,
                 browsertrix_version=bundle.browsertrix_version,
+                warcio_version=bundle.warcio_version,
                 ytdlp_version=ytdlp_version,
                 user_browser_mhtml=user_bundle.mhtml if user_bundle else None,
                 user_browser_screenshot=user_bundle.screenshot if user_bundle else None,
