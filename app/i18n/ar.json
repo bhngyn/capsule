@@ -192,6 +192,7 @@
   "pdf.report.field.ytdlp_version": "إصدار yt-dlp",
   "pdf.report.field.chromium_version": "إصدار Chromium",
   "pdf.report.field.browsertrix_version": "إصدار browsertrix",
+  "pdf.report.field.warcio_version": "إصدار warcio",
   "pdf.report.field.gallery_dl_version": "إصدار gallery-dl",
   "pdf.report.field.gallery_meta": "تم حفظ {count} صورة · التُقطت بواسطة gallery-dl ({extractor})",
   "pdf.report.field.render_wait": "انتظار العرض",

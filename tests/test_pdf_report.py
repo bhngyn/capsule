@@ -437,3 +437,89 @@ def test_item_report_ja_uses_japanese_labels(env):
     labels = env["pdf_report"]._load_pdf_strings("ja")
     assert labels["pdf.report.heading.provenance"] in html_doc
     assert labels["pdf.report.heading.tools"] in html_doc
+
+
+# --- Tools-table rows reflect the WARC engine that actually ran (v0.6) ----
+
+
+def test_is_real_version_filters_placeholder_strings():
+    from app.pdf_report import is_real_version
+    assert is_real_version("1.7.4") is True
+    assert is_real_version("0.13.4") is True
+    # Placeholders that look like versions but mean "tool didn't run".
+    assert is_real_version(None) is False
+    assert is_real_version("") is False
+    assert is_real_version("0") is False
+    assert is_real_version("unknown") is False
+    assert is_real_version("UNKNOWN") is False
+    assert is_real_version("none") is False
+    assert is_real_version("  ") is False
+
+
+def test_item_report_in_session_capture_emits_warcio_row_only(env):
+    """When the in-session CDP→WARC writer ran, browsertrix_version is
+    "0" (subprocess wasn't invoked) and warcio_version carries a real
+    string. The tools table should show the warcio row and SUPPRESS the
+    browsertrix row — leaving a stray "browsertrix version: 0" would
+    mislead a reviewer about what produced the WARC."""
+    html_doc = env["pdf_report"]._render_item_report_html(
+        case=env["case"],
+        item_view=_report_view(tools={
+            "app_version": "0.1.0",
+            "ytdlp_version": "2026.03.17",
+            "chromium_version": "125",
+            "browsertrix_version": "0",
+            "warcio_version": "1.7.4",
+        }),
+        lang="en",
+    )
+    labels = env["pdf_report"]._load_pdf_strings("en")
+    warcio_label = labels["pdf.report.field.warcio_version"]
+    browsertrix_label = labels["pdf.report.field.browsertrix_version"]
+    assert warcio_label in html_doc
+    assert "1.7.4" in html_doc
+    assert browsertrix_label not in html_doc
+
+
+def test_item_report_subprocess_fallback_emits_browsertrix_row_only(env):
+    """Inverse case — browsertrix-crawler subprocess fallback ran and
+    the in-session writer was unavailable. warcio_version is null, so
+    only the browsertrix row should render."""
+    html_doc = env["pdf_report"]._render_item_report_html(
+        case=env["case"],
+        item_view=_report_view(tools={
+            "app_version": "0.1.0",
+            "ytdlp_version": "2026.03.17",
+            "chromium_version": "125",
+            "browsertrix_version": "1.6.2",
+            "warcio_version": None,
+        }),
+        lang="en",
+    )
+    labels = env["pdf_report"]._load_pdf_strings("en")
+    warcio_label = labels["pdf.report.field.warcio_version"]
+    browsertrix_label = labels["pdf.report.field.browsertrix_version"]
+    assert browsertrix_label in html_doc
+    assert "1.6.2" in html_doc
+    assert warcio_label not in html_doc
+
+
+def test_item_report_legacy_pre_v7_meta_still_shows_browsertrix(env):
+    """Forward-compat: a pre-v7 meta.json that has no warcio_version
+    field at all (legacy two-session captures) must still render the
+    browsertrix row — older evidence bundles should re-render cleanly."""
+    html_doc = env["pdf_report"]._render_item_report_html(
+        case=env["case"],
+        item_view=_report_view(tools={
+            "app_version": "0.1.0",
+            "ytdlp_version": "2026.03.17",
+            "chromium_version": "125",
+            "browsertrix_version": "1.5.1",
+            # warcio_version absent entirely
+        }),
+        lang="en",
+    )
+    labels = env["pdf_report"]._load_pdf_strings("en")
+    assert labels["pdf.report.field.browsertrix_version"] in html_doc
+    assert "1.5.1" in html_doc
+    assert labels["pdf.report.field.warcio_version"] not in html_doc

@@ -192,6 +192,7 @@
   "pdf.report.field.ytdlp_version": "yt-dlp のバージョン",
   "pdf.report.field.chromium_version": "Chromium のバージョン",
   "pdf.report.field.browsertrix_version": "browsertrix のバージョン",
+  "pdf.report.field.warcio_version": "warcio のバージョン",
   "pdf.report.field.gallery_dl_version": "gallery-dl のバージョン",
   "pdf.report.field.gallery_meta": "{count} 枚の画像を保存 · gallery-dl ({extractor}) で取得",
   "pdf.report.field.render_wait": "描画待機",

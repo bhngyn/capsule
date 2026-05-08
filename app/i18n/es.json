@@ -192,6 +192,7 @@
   "pdf.report.field.ytdlp_version": "Versión de yt-dlp",
   "pdf.report.field.chromium_version": "Versión de Chromium",
   "pdf.report.field.browsertrix_version": "Versión de browsertrix",
+  "pdf.report.field.warcio_version": "Versión de warcio",
   "pdf.report.field.gallery_dl_version": "Versión de gallery-dl",
   "pdf.report.field.gallery_meta": "{count} imágenes preservadas · capturadas por gallery-dl ({extractor})",
   "pdf.report.field.render_wait": "Espera de renderizado",

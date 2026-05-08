@@ -42,6 +42,27 @@ _ITEM_REPORT_TEMPLATE_PATH = config.APP_DIR / "templates" / "item_report.html"
 _PDF_KEY_PREFIXES = ("pdf.", "manifest.")
 
 
+def is_real_version(v: Any) -> bool:
+    """True iff ``v`` looks like a meaningful version string.
+
+    Used by the per-item PDF tools-table renderer to decide whether to
+    emit a row for an optional tool. ``None``, the empty string, ``"0"``,
+    ``"unknown"``, and ``"none"`` (case-insensitive) all read as "tool
+    didn't really run" — a v0.6 in-session WARC capture writes
+    ``browsertrix_version="0"`` because the browsertrix subprocess wasn't
+    invoked, and we want that row hidden rather than rendered as
+    ``browsertrix version: 0`` which would mislead a reviewer.
+    """
+    if v is None:
+        return False
+    s = str(v).strip().lower()
+    if not s:
+        return False
+    if s in ("0", "unknown", "none"):
+        return False
+    return True
+
+
 def _load_pdf_strings(lang: str) -> dict[str, str]:
     """Return the ``pdf.*`` + ``manifest.*`` slice of the locale bundle.
 
@@ -638,6 +659,30 @@ def _render_item_report_html(
     else:
         tool_gallery_dl_row = ""
 
+    # WARC-engine version rows (v0.6). Two complementary tools produce
+    # the page.warc.gz: warcio (in-session CDP→WARC writer) and
+    # browsertrix-crawler (subprocess fallback). Each row is only emitted
+    # when its tool actually ran — a reviewer can tell which engine wrote
+    # the WARC by which row appears (with the "WARC session" row in the
+    # capture-report dl confirming).
+    warcio_v = tools.get("warcio_version")
+    if is_real_version(warcio_v):
+        tool_warcio_row = (
+            f"<tr><td class='label'>{html.escape(labels['pdf.report.field.warcio_version'])}</td>"
+            f"<td><code>{html.escape(str(warcio_v))}</code></td></tr>"
+        )
+    else:
+        tool_warcio_row = ""
+
+    btx_v = tools.get("browsertrix_version")
+    if is_real_version(btx_v):
+        tool_browsertrix_row = (
+            f"<tr><td class='label'>{html.escape(labels['pdf.report.field.browsertrix_version'])}</td>"
+            f"<td><code>{html.escape(str(btx_v))}</code></td></tr>"
+        )
+    else:
+        tool_browsertrix_row = ""
+
     footer_template = labels.get(
         "pdf.footer",
         "Capsule evidence export · {context} · page {page} of {pages}",
@@ -679,7 +724,8 @@ def _render_item_report_html(
         "{{tool_app_version}}": html.escape(str(tools.get("app_version") or dash)),
         "{{tool_ytdlp_version}}": html.escape(str(tools.get("ytdlp_version") or dash)),
         "{{tool_chromium_version}}": html.escape(str(tools.get("chromium_version") or dash)),
-        "{{tool_browsertrix_version}}": html.escape(str(tools.get("browsertrix_version") or dash)),
+        "{{tool_browsertrix_row}}": tool_browsertrix_row,
+        "{{tool_warcio_row}}": tool_warcio_row,
         "{{capture_block}}": capture_block,
         "{{media_context_section}}": media_context_section,
         "{{gallery_section}}": gallery_section,
@@ -705,7 +751,6 @@ def _render_item_report_html(
         "{{label.app_version}}": html.escape(labels["pdf.report.field.app_version"]),
         "{{label.ytdlp_version}}": html.escape(labels["pdf.report.field.ytdlp_version"]),
         "{{label.chromium_version}}": html.escape(labels["pdf.report.field.chromium_version"]),
-        "{{label.browsertrix_version}}": html.escape(labels["pdf.report.field.browsertrix_version"]),
         "{{label.footer_prefix}}": _footer_prefix_for(footer_template, case_name),
     }.items():
         rendered = rendered.replace(needle, replacement)
