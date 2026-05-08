@@ -22,7 +22,7 @@
     "signing_key_fp"
   ],
   "properties": {
-    "schema_version": { "enum": [1, 2, 3, 4, 5, 6, 7] },
+    "schema_version": { "enum": [1, 2, 3, 4, 5, 6, 7, 8] },
     "job_uuid": { "type": "string" },
     "capture_kind": { "enum": ["media", "page_only", "gallery"] },
     "case": {
@@ -208,6 +208,10 @@
             },
             "format_version": { "type": ["string", "null"] }
           }
+        },
+        "stalled_count": {
+          "type": "integer",
+          "description": "Number of stall events the runner emitted during this capture (no progress JSON for >= STALL_THRESHOLD_S). Mirrors download_options.stalled_count. v8."
         }
       }
     },
@@ -230,6 +234,32 @@
     "gallery_extractor": {
       "type": ["string", "null"],
       "description": "gallery-dl ``category`` (its extractor identifier, lower-case — e.g. ``pixiv``, ``twitter``, ``imgur``) for the gallery this row preserves. ``null`` for non-gallery kinds. v6."
+    },
+    "download_options": {
+      "type": "object",
+      "description": "Investigator-facing download knobs (CLAUDE.md §15 v0.7). Always emitted on v8+ records so absence-vs-default is unambiguous; older records (v2–v7) omit this block. The signature on meta.json transitively binds these values.",
+      "properties": {
+        "audio_only": {
+          "type": "boolean",
+          "description": "True iff yt-dlp ran with -x and the downloaded artifact is the extracted audio stream. The page snapshot (MHTML/PNG/WARC) still preserves the original video; this flag is the unambiguous record that the on-disk media is audio-only. v8."
+        },
+        "quality_cap": {
+          "anyOf": [
+            { "type": "null" },
+            { "enum": ["audio", "480", "720", "1080", "best"] }
+          ],
+          "description": "Per-job format cap that overrode the profile default. ``audio`` is equivalent to audio_only=true; ``480``/``720``/``1080`` cap height with bestvideo+bestaudio fallback; ``best`` lifts any profile-imposed cap. ``null`` ⇒ profile default. v8."
+        },
+        "subtitle_langs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "BCP-47-ish language tags requested via --write-subs --sub-langs. The literal ``all`` sentinel maps to ``all,-live_chat``. Empty ⇒ no subtitles requested. v8."
+        },
+        "restart_count": {
+          "type": "integer",
+          "description": "Number of times the user clicked Restart (--no-continue + .part wipe) on this job before it finalized. 0 for jobs that succeeded on the first attempt. v8."
+        }
+      }
     },
     "audit_log_entry_id": { "type": ["integer", "null"] },
     "signing_key_fp": { "type": "string" }

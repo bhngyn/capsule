@@ -158,6 +158,13 @@ class CaptureInput:
     # with ``__c{N+1}`` so the UNIQUE(case_id, capture_kind, url_hash)
     # constraint passes and the new row sits as a sibling of the original.
     force_recapture: bool = False
+    # CLAUDE.md §15 v0.7: investigator-facing download options + reliability
+    # counters as a plain dict (the orchestrator owns the dataclass).
+    # Recorded into ``meta.json.download_options`` so a recipient can see
+    # what was in effect for this capture (audio_only, quality_cap,
+    # subtitle_langs, restart_count). The signature on meta.json binds
+    # these values transitively.
+    download_options: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -606,6 +613,10 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             "gallery_count": len(gallery_thumbnails),
             "gallery_extractor": capture_input.gallery_extractor if capture_kind == "gallery" else None,
             "gallery_thumbnails": gallery_thumbnails,
+            # CLAUDE.md §15 v0.7: forward investigator-facing knobs so the
+            # report PDF renders the Download options section. Empty/default
+            # values render nothing — the section disappears entirely.
+            "download_options": dict(capture_input.download_options or {}),
         }
         report_pdf_bytes = pdf_report.render_item_report(
             case=case, item_view=report_view, lang=capture_input.lang,
@@ -701,8 +712,24 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             else None
         )
 
+        # CLAUDE.md §15 v0.7: surface investigator-facing download knobs
+        # so a recipient can see what was in effect (audio_only, quality_cap,
+        # subtitle_langs, restart_count, stalled_count). Always emit the
+        # block so absence-vs-default is unambiguous; empty values are fine.
+        download_options_block = dict(capture_input.download_options or {})
+        download_options_block.setdefault("audio_only", False)
+        download_options_block.setdefault("quality_cap", None)
+        download_options_block.setdefault("subtitle_langs", [])
+        download_options_block.setdefault("restart_count", 0)
+        # capture.stalled_count: pull from the same dict so the audit
+        # trail matches what was on the orchestrator's Job at sign time.
+        stalled_count = int(download_options_block.pop("stalled_count", 0) or 0)
+        # Mirror onto the capture block so a reviewer reading the report
+        # PDF sees stall events alongside other capture-side counters.
+        capture_block.setdefault("stalled_count", stalled_count)
+
         meta = {
-            "schema_version": 7,
+            "schema_version": 8,
             "job_uuid": capture_input.job_uuid,
             "capture_kind": capture_kind,
             "case": {"id": case.id, "slug": case.slug, "name": case.name},
@@ -756,6 +783,10 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             # ``null`` for non-gallery kinds.
             "gallery_count": gallery_count,
             "gallery_extractor": capture_input.gallery_extractor if capture_kind == "gallery" else None,
+            # CLAUDE.md §15 v0.7: per-job download knobs + reliability
+            # counters. Always emitted (defaults included) so absence-vs-
+            # default is never ambiguous for downstream verifiers.
+            "download_options": download_options_block,
             "audit_log_entry_id": None,  # filled below
             "signing_key_fp": fp,
         }

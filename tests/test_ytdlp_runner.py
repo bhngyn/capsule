@@ -359,3 +359,246 @@ async def test_version_against_real_binary():
     assert v.count(".") >= 1
 
 
+# --- CLAUDE.md §15 v0.7: download options + restart + stall watchdog --------
+
+
+def test_build_format_spec_audio_only():
+    # Audio-only suppresses --format entirely (yt-dlp's -x picks the audio
+    # stream); the helper returns None so the argv builder skips --format.
+    assert ytdlp_runner.build_format_spec(
+        audio_only=True, quality_cap=None, fallback="best",
+    ) is None
+
+
+def test_build_format_spec_quality_cap_audio_alias():
+    # quality_cap="audio" is equivalent to audio_only=True per the v0.7
+    # contract — the segmented pill in the UI maps both to the same thing.
+    assert ytdlp_runner.build_format_spec(
+        audio_only=False, quality_cap="audio", fallback="best",
+    ) is None
+
+
+def test_build_format_spec_height_caps():
+    for cap in ("480", "720", "1080"):
+        spec = ytdlp_runner.build_format_spec(
+            audio_only=False, quality_cap=cap, fallback="best",
+        )
+        assert spec == f"bestvideo[height<={cap}]+bestaudio/best[height<={cap}]"
+
+
+def test_build_format_spec_best_overrides_fallback():
+    # When the user explicitly picks "Best" they want any profile-imposed
+    # cap lifted, not the slow profile's [height<=480] selector.
+    assert (
+        ytdlp_runner.build_format_spec(
+            audio_only=False, quality_cap="best",
+            fallback="bestvideo[height<=480]+bestaudio/best[height<=480]",
+        )
+        == "best"
+    )
+
+
+def test_build_format_spec_no_overrides_returns_fallback():
+    assert (
+        ytdlp_runner.build_format_spec(
+            audio_only=False, quality_cap=None, fallback="best",
+        )
+        == "best"
+    )
+    assert (
+        ytdlp_runner.build_format_spec(
+            audio_only=False, quality_cap=None, fallback=None,
+        )
+        is None
+    )
+
+
+def test_build_subtitle_argv_empty():
+    assert ytdlp_runner.build_subtitle_argv(None) == []
+    assert ytdlp_runner.build_subtitle_argv([]) == []
+    assert ytdlp_runner.build_subtitle_argv(["", "  "]) == []
+
+
+def test_build_subtitle_argv_csv():
+    out = ytdlp_runner.build_subtitle_argv(["en", "ar"])
+    assert "--write-subs" in out
+    assert "--sub-langs" in out
+    assert "en,ar" in out
+    assert "--sub-format" in out
+
+
+def test_build_subtitle_argv_all_sentinel():
+    out = ytdlp_runner.build_subtitle_argv(["all"])
+    # 'all' maps to all,-live_chat — exclude live-chat tracks.
+    idx = out.index("--sub-langs")
+    assert out[idx + 1] == "all,-live_chat"
+
+
+def test_build_argv_audio_only_emits_extract_flags(tmp_path):
+    argv = ytdlp_runner._build_argv(
+        "https://example.com/x",
+        case_dir=tmp_path,
+        cookies_file=None,
+        format_spec="best",  # should be ignored when audio_only is set
+        extra_args=None,
+        audio_only=True,
+    )
+    assert "-x" in argv
+    assert argv[argv.index("-x") + 1] == "--audio-format"
+    assert "mp3" in argv
+    assert "--audio-quality" in argv
+    # audio_only beats format_spec — no --format token survives.
+    assert "--format" not in argv
+
+
+def test_build_argv_quality_cap_height_overrides_format_spec(tmp_path):
+    argv = ytdlp_runner._build_argv(
+        "https://example.com/x",
+        case_dir=tmp_path,
+        cookies_file=None,
+        format_spec="bestvideo[height<=480]+bestaudio/best[height<=480]",
+        extra_args=None,
+        quality_cap="720",
+    )
+    fmt_idx = argv.index("--format")
+    assert argv[fmt_idx + 1] == (
+        "bestvideo[height<=720]+bestaudio/best[height<=720]"
+    )
+    # No -x leaked in.
+    assert "-x" not in argv
+
+
+def test_build_argv_subtitles_emits_flags(tmp_path):
+    argv = ytdlp_runner._build_argv(
+        "https://example.com/x",
+        case_dir=tmp_path,
+        cookies_file=None,
+        format_spec=None,
+        extra_args=None,
+        subtitle_langs=["en", "ja"],
+    )
+    assert "--write-subs" in argv
+    sub_idx = argv.index("--sub-langs")
+    assert argv[sub_idx + 1] == "en,ja"
+
+
+def test_build_argv_restart_swaps_continue_for_no_continue(tmp_path):
+    argv_resume = ytdlp_runner._build_argv(
+        "https://example.com/x",
+        case_dir=tmp_path,
+        cookies_file=None, format_spec=None, extra_args=None,
+        restart=False,
+    )
+    argv_restart = ytdlp_runner._build_argv(
+        "https://example.com/x",
+        case_dir=tmp_path,
+        cookies_file=None, format_spec=None, extra_args=None,
+        restart=True,
+    )
+    assert "--continue" in argv_resume
+    assert "--no-continue" not in argv_resume
+    assert "--no-continue" in argv_restart
+    assert "--continue" not in argv_restart
+
+
+def test_wipe_partial_files_removes_part_and_ytdl(tmp_path):
+    (tmp_path / "abc.mp4.part").write_bytes(b"partial")
+    (tmp_path / "abc.f137.mp4.part").write_bytes(b"partial")
+    (tmp_path / "abc.ytdl").write_bytes(b"state")
+    (tmp_path / "abc.info.json").write_bytes(b"{}")  # NOT wiped
+    (tmp_path / "abc.mp4").write_bytes(b"complete")  # NOT wiped
+    n = ytdlp_runner._wipe_partial_files(tmp_path)
+    assert n == 3
+    # Whitelist preserved.
+    assert (tmp_path / "abc.info.json").exists()
+    assert (tmp_path / "abc.mp4").exists()
+    # Blacklist gone.
+    assert not (tmp_path / "abc.mp4.part").exists()
+    assert not (tmp_path / "abc.f137.mp4.part").exists()
+    assert not (tmp_path / "abc.ytdl").exists()
+
+
+def test_wipe_partial_files_handles_missing_dir(tmp_path):
+    assert ytdlp_runner._wipe_partial_files(tmp_path / "does-not-exist") == 0
+
+
+@pytest.mark.asyncio
+async def test_run_restart_pre_deletes_part_files(fake_ytdlp, tmp_path):
+    # Stage a stale .part the prior (cancelled) run left behind.
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    stale = case_dir / "abc.mp4.part"
+    stale.write_bytes(b"corrupted-bytes")
+    res = await ytdlp_runner.run(
+        url="https://example.com/x",
+        case_dir=case_dir,
+        executable=str(fake_ytdlp),
+        restart=True,
+    )
+    assert res.ok
+    # The pre-wipe deleted the staged .part before yt-dlp started; the fake
+    # script never recreates one (it writes the final mp4 directly).
+    assert not stale.exists()
+
+
+@pytest.mark.asyncio
+async def test_stall_watchdog_emits_stalled_then_clears(tmp_path):
+    """Drive the runner against a fake yt-dlp that goes silent for the
+    stall threshold, then resumes. Verify exactly one ``stalled`` event
+    and one ``running``/``downloading`` clear, with no SIGTERM."""
+    script = tmp_path / "slow-ytdlp"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json, sys, time
+argv = sys.argv[1:]
+if argv == ["--version"]:
+    print("9999.99.99"); sys.exit(0)
+# First progress event.
+print(json.dumps({
+    "status": "downloading", "downloaded_bytes": 100, "total_bytes": 1000,
+    "speed": 1.0, "eta": 1, "filename": "x.mp4",
+}), flush=True)
+# Sleep past the test threshold (2s). Watchdog must fire here.
+time.sleep(3.0)
+# Second progress event clears the stall.
+print(json.dumps({
+    "status": "downloading", "downloaded_bytes": 500, "total_bytes": 1000,
+    "speed": 1.0, "eta": 1, "filename": "x.mp4",
+}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    os.chmod(script, stat.S_IRWXU)
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    queue: asyncio.Queue = asyncio.Queue()
+    res = await ytdlp_runner.run(
+        url="https://example.com/x",
+        case_dir=case_dir,
+        executable=str(script),
+        progress_queue=queue,
+        stall_threshold_s=2,
+    )
+    assert res.returncode == 0  # No SIGTERM — stall is a UI signal only.
+
+    # Drain the queue.
+    items: list = []
+    while True:
+        item = queue.get_nowait()
+        items.append(item)
+        if item is None:
+            break
+    statuses = [
+        getattr(it, "status", None) for it in items if it is not None
+    ]
+    # Exactly one synthetic "stalled" event surfaced.
+    assert statuses.count("stalled") == 1
+    # The second progress event surfaces with status "downloading"
+    # (the runner clears stall_active so the next stretch can re-fire).
+    assert "downloading" in statuses
+    # Order: a downloading came BEFORE the stalled, and another came
+    # AFTER it.
+    stalled_idx = statuses.index("stalled")
+    assert any(s == "downloading" for s in statuses[:stalled_idx])
+    assert any(s == "downloading" for s in statuses[stalled_idx + 1:])

@@ -521,6 +521,82 @@ def _format_capture_report(
     return f"<dl>{items}</dl>"
 
 
+def _format_download_options_section(
+    download_options: Mapping[str, Any] | None,
+    capture: Mapping[str, Any] | None,
+    labels: Mapping[str, str],
+) -> str:
+    """Render the Download options section for the per-item report PDF.
+
+    Returns an empty string when every knob is at its default — the
+    section then disappears from the PDF entirely so the layout stays
+    tight for plain captures. Forensically meaningful values (audio_only,
+    quality cap, subtitles, restart count, stall count) get one row each.
+    CLAUDE.md §15 v0.7.
+    """
+    opts = dict(download_options or {})
+    cap = dict(capture or {})
+    audio_only = bool(opts.get("audio_only"))
+    quality_cap = opts.get("quality_cap")
+    subs = list(opts.get("subtitle_langs") or [])
+    restart_count = int(opts.get("restart_count") or 0)
+    stalled_count = int(cap.get("stalled_count") or 0)
+
+    if not (audio_only or quality_cap or subs or restart_count or stalled_count):
+        return ""
+
+    rows: list[tuple[str, str]] = []
+
+    if audio_only:
+        rows.append((
+            labels["pdf.report.field.download_options.audio_only.label"],
+            html.escape(labels["pdf.report.field.download_options.audio_only.value"]),
+        ))
+
+    if quality_cap and quality_cap != "audio":
+        if quality_cap == "best":
+            value = labels["pdf.report.field.download_options.quality_cap.best"]
+        else:
+            template = labels["pdf.report.field.download_options.quality_cap.height"]
+            value = template.replace("{height}", str(quality_cap))
+        rows.append((
+            labels["pdf.report.field.download_options.quality_cap.label"],
+            html.escape(value),
+        ))
+
+    if subs:
+        rows.append((
+            labels["pdf.report.field.download_options.subs.label"],
+            html.escape(", ".join(subs)),
+        ))
+
+    if restart_count:
+        template = labels["pdf.report.field.download_options.restart_count"]
+        rows.append((
+            labels["pdf.report.field.download_options.restart_count.label"],
+            html.escape(template.replace("{count}", str(restart_count))),
+        ))
+
+    if stalled_count:
+        template = labels["pdf.report.field.download_options.stalled_count"]
+        rows.append((
+            labels["pdf.report.field.download_options.stalled_count.label"],
+            html.escape(template.replace("{count}", str(stalled_count))),
+        ))
+
+    items = "\n".join(
+        f"<dt>{html.escape(label)}</dt><dd>{value}</dd>"
+        for label, value in rows
+    )
+    heading = html.escape(labels["pdf.report.heading.download_options"])
+    return (
+        f"<section class='download-options-section'>"
+        f"<h2>{heading}</h2>"
+        f"<dl>{items}</dl>"
+        f"</section>"
+    )
+
+
 def _render_item_report_html(
     *,
     case: cases.Case,
@@ -576,6 +652,9 @@ def _render_item_report_html(
 
     capture = dict(item_view.get("capture") or {})
     capture_block = _format_capture_report(capture, labels)
+    download_options_section = _format_download_options_section(
+        item_view.get("download_options"), capture, labels,
+    )
 
     # Gallery section — only emitted for capture_kind == "gallery"
     # (CLAUDE.md §15 v0.5). Renders a grid of thumbnails (the actual
@@ -728,6 +807,7 @@ def _render_item_report_html(
         "{{tool_warcio_row}}": tool_warcio_row,
         "{{capture_block}}": capture_block,
         "{{media_context_section}}": media_context_section,
+        "{{download_options_section}}": download_options_section,
         "{{gallery_section}}": gallery_section,
         "{{tool_gallery_dl_row}}": tool_gallery_dl_row,
         "{{footer_note}}": html.escape(footer_note),
