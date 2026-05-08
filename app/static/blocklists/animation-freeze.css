@@ -1,0 +1,55 @@
+/*
+ * Capsule animation/transition freeze layer.
+ *
+ * Version: 2026-05-07
+ *
+ * Injected immediately before page.screenshot() and removed immediately
+ * after. Animations and CSS transitions are paused so the still PNG
+ * captures a stable frame rather than a half-finished tween. Caret-color
+ * is suppressed so a focused input doesn't paint a blinking cursor on top
+ * of the screenshot.
+ *
+ * Hard rules (CLAUDE.md §13 #14):
+ *
+ *  - CSS only. No DOM mutation. The MHTML and WARC, which are captured
+ *    BEFORE this stylesheet is injected, retain the page exactly as the
+ *    site rendered it.
+ *  - Removed before the snapshot returns, so stale style is never left
+ *    behind.
+ *  - The freeze is always applied — there is no per-site selector list,
+ *    because the goal is "no animations playing during the still capture"
+ *    universally.
+ *
+ * Source-of-truth: this file is the only definition. The `animation_freeze`
+ * module reads it, tags it with a sha256 fingerprint, and the capture
+ * pipeline records that fingerprint into meta.json.capture and the audit
+ * log so a forensic reviewer can answer "what stylesheet was applied to
+ * freeze the page during this screenshot?" by hash.
+ */
+
+*,
+*::before,
+*::after {
+  animation-play-state: paused !important;
+  animation-delay: 0s !important;
+  animation-duration: 0s !important;
+  transition: none !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+  caret-color: transparent !important;
+  scroll-behavior: auto !important;
+}
+
+/* Freeze CSS-driven scroll snap and any sticky-pulse placeholders. */
+html,
+body {
+  scroll-behavior: auto !important;
+}
+
+/* Some sites animate a `::after` shimmer on lazy-loaded skeletons. The
+ * universal animation-play-state above already handles this — listed
+ * explicitly so a reviewer reading the CSS file sees the intent. */
+[class*="skeleton" i],
+[class*="shimmer" i] {
+  animation-play-state: paused !important;
+}
