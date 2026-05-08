@@ -426,10 +426,70 @@ def _format_capture_report(
     if cap.get("banner_hide_applied") and banner_version:
         banner_html = f"{banner_applied} (<code>{html.escape(str(banner_version))}</code>)"
 
+    # WARC session provenance (v7) — in-session vs. subprocess fallback
+    # is forensically meaningful, so it gets a visible row.
+    warc_meta = cap.get("warc") or {}
+    if isinstance(warc_meta, dict) and warc_meta:
+        if warc_meta.get("captured_in_session"):
+            warc_html = (
+                labels["pdf.report.field.capture.warc_session.in_process"]
+                + f" — <code>{int(warc_meta.get('record_count') or 0)}</code> "
+                + labels["pdf.report.field.capture.warc_session.records"]
+            )
+        else:
+            warc_html = labels["pdf.report.field.capture.warc_session.subprocess"]
+    else:
+        warc_html = dash
+
+    # Animation freeze — applied just before screenshot. MHTML/WARC are
+    # captured before the freeze and unaffected.
+    if cap.get("animations_frozen"):
+        v = cap.get("animations_frozen_version")
+        anim_html = labels["pdf.report.field.capture.animations_frozen"]
+        if v:
+            anim_html = f"{anim_html} (<code>{html.escape(str(v))}</code>)"
+    else:
+        anim_html = _bool(cap.get("animations_frozen"))
+
+    # Console messages — single-line summary; the JSON sidecar holds the
+    # full event list under the ``page_console`` artifact role.
+    msg_count = cap.get("console_message_count") or 0
+    err_count = cap.get("console_error_count") or 0
+    console_html = labels["pdf.report.field.capture.console_messages"].format(
+        count=int(msg_count), errors=int(err_count),
+    )
+
+    # Media-context screenshot — surface the matched selector for
+    # forensic clarity.
+    if cap.get("media_context_captured"):
+        sel = cap.get("media_context_selector")
+        ctx_html = labels["pdf.report.field.capture.media_context.captured"]
+        if sel:
+            ctx_html = f"{ctx_html} (<code>{html.escape(str(sel))}</code>)"
+    else:
+        ctx_html = labels["pdf.report.field.capture.media_context.absent"]
+
+    # Page height + truncation flag.
+    h_px = int(cap.get("lazy_load_max_height_px") or 0)
+    trunc = cap.get("screenshot_truncated_at_px")
+    if trunc:
+        height_html = labels["pdf.report.field.capture.screenshot_truncated"].format(
+            px=int(trunc), full_px=h_px,
+        )
+    elif h_px:
+        height_html = f"{h_px}px"
+    else:
+        height_html = dash
+
     rows = [
         (labels["pdf.report.field.render_wait"], waits_html),
         (labels["pdf.report.field.blocked_requests"], blocked_html),
         (labels["pdf.report.field.banner_hide"], banner_html),
+        (labels["pdf.report.field.capture.animations_frozen.label"], anim_html),
+        (labels["pdf.report.field.capture.console.label"], console_html),
+        (labels["pdf.report.field.capture.media_context.label"], ctx_html),
+        (labels["pdf.report.field.capture.page_height.label"], height_html),
+        (labels["pdf.report.field.capture.warc_session.label"], warc_html),
         (labels["pdf.report.field.tab_context"], _bool(cap.get("tab_context_used"))),
         (labels["pdf.report.field.report_lang"], _scalar(cap.get("report_lang"))),
     ]
@@ -540,6 +600,32 @@ def _render_item_report_html(
     else:
         gallery_section = ""
 
+    # Media-context section (v7) — embeds the page_context_screenshot if
+    # one was captured, framed on the most prominent video element so a
+    # reviewer can see where the captured media lived on the page. Skipped
+    # when the capture pipeline didn't find a candidate element.
+    artifacts_map = dict(item_view.get("artifacts") or {})
+    context_rel = artifacts_map.get("page_context_screenshot")
+    if context_rel:
+        try:
+            ctx_abs = (config.DOWNLOADS_DIR / context_rel).resolve()
+            ctx_abs.relative_to(config.DOWNLOADS_DIR.resolve())
+            ctx_uri = ctx_abs.as_uri()
+            ctx_caption = capture.get("media_context_selector") or ""
+            media_context_section = (
+                f"<section class='media-context-section'>"
+                f"<h2>{html.escape(labels['pdf.report.heading.media_context'])}</h2>"
+                f"<figure class='media-context-figure'>"
+                f"<img src=\"{html.escape(ctx_uri)}\" alt=\"\">"
+                f"<figcaption><code>{html.escape(str(ctx_caption))}</code></figcaption>"
+                f"</figure>"
+                f"</section>"
+            )
+        except (ValueError, OSError):
+            media_context_section = ""
+    else:
+        media_context_section = ""
+
     # gallery-dl version row in the tools table — only when gallery-dl
     # ran or was attempted; otherwise the row is suppressed so video
     # captures keep the same compact 4-row table they had pre-v0.5.
@@ -595,6 +681,7 @@ def _render_item_report_html(
         "{{tool_chromium_version}}": html.escape(str(tools.get("chromium_version") or dash)),
         "{{tool_browsertrix_version}}": html.escape(str(tools.get("browsertrix_version") or dash)),
         "{{capture_block}}": capture_block,
+        "{{media_context_section}}": media_context_section,
         "{{gallery_section}}": gallery_section,
         "{{tool_gallery_dl_row}}": tool_gallery_dl_row,
         "{{footer_note}}": html.escape(footer_note),

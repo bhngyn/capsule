@@ -144,6 +144,19 @@
       font-size: 9pt;
       margin: 0 0 6pt 0;
     }
+    /* Media-context section (v7) — embeds the page_context_screenshot
+       framed on the most prominent <video>/<iframe> on the page. The
+       caption shows the CSS selector that was matched, recorded in
+       meta.json.capture.media_context_selector. */
+    .media-context-section { margin: 6pt 0; page-break-inside: avoid; }
+    .media-context-figure { margin: 0; padding: 4pt; border: 1px solid #e2e8f0; background: #f8fafc; }
+    .media-context-figure img { display: block; max-width: 100%; height: auto; }
+    .media-context-figure figcaption {
+      color: #64748b;
+      font-size: 9pt;
+      margin-top: 4pt;
+      word-break: break-all;
+    }
     bdi { unicode-bidi: isolate; }
   </style>
 </head>
@@ -196,6 +209,7 @@
   </section>
 
   {{gallery_section}}
+  {{media_context_section}}
 
   <section class="description-section">
     <h2>{{label.heading_description}}</h2>

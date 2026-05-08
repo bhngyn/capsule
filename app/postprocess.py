@@ -598,6 +598,9 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             },
             "capture": capture_block_for_report,
             "manifest_filename": f"{stem}.manifest.pdf",
+            # v7: forward the artifacts map so the report PDF can embed
+            # the page_context_screenshot (when present) inline.
+            "artifacts": dict(artifacts),
             # Gallery pass v0.5
             "capture_kind": capture_kind,
             "gallery_count": len(gallery_thumbnails),
