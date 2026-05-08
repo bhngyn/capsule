@@ -17,6 +17,12 @@ dependencies = [
 # Capture pipeline (added in Phase 2)
 capture = [
   "playwright>=1.49",
+  # In-session CDP→WARC writer (CLAUDE.md §"Hardening pass (v0.6)").
+  # Pure-Python WARC/1.1 reader/writer used by Webrecorder, pywb, and
+  # ArchiveBox — the de-facto reference. Pinned at the major-version
+  # boundary so future writer-API changes don't silently change record
+  # bytes.
+  "warcio>=1.7,<2",
 ]
 # Integrity & evidence export (added in Phase 1 / Phase 4)
 evidence = [

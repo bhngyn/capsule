@@ -95,6 +95,12 @@ class CaptureInput:
     page_mhtml: Path | None = None  # Phase 2
     page_screenshot: Path | None = None  # Phase 2
     page_warc: Path | None = None  # Phase 2
+    # v7 additions: in-session forensic sidecars (HAR + console events)
+    # and the media-context viewport screenshot. Each rides through the
+    # same hash-and-sign path as the canonical page artifacts.
+    page_har: Path | None = None
+    page_console: Path | None = None
+    page_context_screenshot: Path | None = None
     extra_sidecars: list[Path] = field(default_factory=list)  # description, thumbnail, subs
     # Gallery pass v0.5: gallery-dl producer outputs. Used when yt-dlp
     # returned no media but gallery-dl pulled images from the URL — see
@@ -110,6 +116,7 @@ class CaptureInput:
     authenticated_domains: list[str] = field(default_factory=list)
     chromium_version: str = "0"  # Phase 2 sets this
     browsertrix_version: str = "0"  # Phase 2 sets this
+    warcio_version: str | None = None  # v7: set when in-session WARC writer ran
     ytdlp_version: str = ""
     # Supplementary "as-rendered-by-the-investigator's-browser" artifacts
     # uploaded by the Capsule extension. Always additive — the canonical
@@ -481,6 +488,9 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             ("page_mhtml", capture_input.page_mhtml),
             ("page_screenshot", capture_input.page_screenshot),
             ("page_warc", capture_input.page_warc),
+            ("page_har", capture_input.page_har),
+            ("page_console", capture_input.page_console),
+            ("page_context_screenshot", capture_input.page_context_screenshot),
             ("user_browser_mhtml", capture_input.user_browser_mhtml),
             ("user_browser_screenshot", capture_input.user_browser_screenshot),
             ("user_browser_har", capture_input.user_browser_har),
@@ -496,6 +506,9 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 "page_mhtml": f"{stem}.page.mhtml",
                 "page_screenshot": f"{stem}.page.png",
                 "page_warc": f"{stem}.page.warc.gz",
+                "page_har": f"{stem}.page.har",
+                "page_console": f"{stem}.page.console.json",
+                "page_context_screenshot": f"{stem}.page.context.png",
                 "user_browser_mhtml": f"{stem}.user-browser.mhtml",
                 "user_browser_screenshot": f"{stem}.user-browser.png",
                 "user_browser_har": f"{stem}.user-browser.har",
@@ -580,10 +593,14 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 "ytdlp_version": capture_input.ytdlp_version,
                 "chromium_version": capture_input.chromium_version,
                 "browsertrix_version": capture_input.browsertrix_version,
+                "warcio_version": capture_input.warcio_version,
                 "gallery_dl_version": capture_input.gallery_dl_version,
             },
             "capture": capture_block_for_report,
             "manifest_filename": f"{stem}.manifest.pdf",
+            # v7: forward the artifacts map so the report PDF can embed
+            # the page_context_screenshot (when present) inline.
+            "artifacts": dict(artifacts),
             # Gallery pass v0.5
             "capture_kind": capture_kind,
             "gallery_count": len(gallery_thumbnails),
@@ -685,7 +702,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         )
 
         meta = {
-            "schema_version": 6,
+            "schema_version": 7,
             "job_uuid": capture_input.job_uuid,
             "capture_kind": capture_kind,
             "case": {"id": case.id, "slug": case.slug, "name": case.name},
@@ -716,7 +733,11 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 "app_version": APP_VERSION,
                 "ytdlp_version": capture_input.ytdlp_version,
                 "chromium_version": capture_input.chromium_version,
+                # Schema-required for back-compat with v2–v6: this stays
+                # populated even when the in-session WARC writer made
+                # browsertrix moot (it'll be "0" / null in that case).
                 "browsertrix_version": capture_input.browsertrix_version,
+                "warcio_version": capture_input.warcio_version,
                 "gallery_dl_version": capture_input.gallery_dl_version,
             },
             # Hardening pass: capture-side mutations and the cookie-set
@@ -845,6 +866,80 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             },
         )
 
+        # v7 capture-side audit rows. Each is conditional — emitted only
+        # when the corresponding capture step actually fired — so audit
+        # traffic stays proportional to evidence content, not to checklist.
+        capture_block = capture_block_for_report  # already merged above
+        warc_block = capture_block.get("warc") if isinstance(capture_block, dict) else None
+        if isinstance(warc_block, dict) and warc_block.get("captured_in_session"):
+            audit.append(
+                conn, "capture.warc_session_in_process",
+                case_id=case.id, download_id=download_id, actor="system",
+                details={
+                    "record_count": int(warc_block.get("record_count") or 0),
+                    "encoding_normalized": bool(warc_block.get("encoding_normalized")),
+                    "format_version": warc_block.get("format_version"),
+                    "warcio_version": capture_input.warcio_version,
+                },
+            )
+        elif isinstance(warc_block, dict) and warc_block.get("captured_in_session") is False and "page_warc" in artifacts:
+            audit.append(
+                conn, "capture.warc_session_subprocess",
+                case_id=case.id, download_id=download_id, actor="system",
+                details={
+                    "browsertrix_version": capture_input.browsertrix_version,
+                    "reason": "in_session_unavailable_or_failed",
+                },
+            )
+        if isinstance(capture_block, dict) and capture_block.get("animations_frozen"):
+            audit.append(
+                conn, "capture.animations_frozen",
+                case_id=case.id, download_id=download_id, actor="system",
+                details={"version": capture_block.get("animations_frozen_version")},
+            )
+        if isinstance(capture_block, dict) and capture_block.get("media_context_captured"):
+            audit.append(
+                conn, "capture.media_context_captured",
+                case_id=case.id, download_id=download_id, actor="system",
+                details={
+                    "selector": capture_block.get("media_context_selector"),
+                    "sha256": (checksums.get("page_context_screenshot") or {}).get("sha256"),
+                },
+            )
+        if isinstance(capture_block, dict) and capture_block.get("console_message_count", 0) > 0:
+            audit.append(
+                conn, "capture.console_messages_recorded",
+                case_id=case.id, download_id=download_id, actor="system",
+                details={
+                    "count": int(capture_block.get("console_message_count") or 0),
+                    "error_count": int(capture_block.get("console_error_count") or 0),
+                },
+            )
+        if isinstance(capture_block, dict) and capture_block.get("screenshot_truncated_at_px"):
+            audit.append(
+                conn, "capture.screenshot_truncated",
+                case_id=case.id, download_id=download_id, actor="system",
+                details={
+                    "truncated_at_px": int(capture_block.get("screenshot_truncated_at_px") or 0),
+                    "full_height_px": int(capture_block.get("lazy_load_max_height_px") or 0),
+                },
+            )
+        if isinstance(capture_block, dict) and capture_block.get("readiness_timed_out"):
+            # Distinct from `capture.readiness_timed_out` (already emitted
+            # by jobs.py for individual gate timeouts): this fires only when
+            # the outer 60s render-wait budget was exceeded and remaining
+            # gates were skipped. Same evidence story, more precise signal.
+            audit.append(
+                conn, "capture.readiness_budget_exceeded",
+                case_id=case.id, download_id=download_id, actor="system",
+                details={
+                    "render_waits": [
+                        {"name": w.get("name"), "ok": w.get("ok"), "timed_out": w.get("timed_out")}
+                        for w in (capture_block.get("render_waits") or [])
+                    ],
+                },
+            )
+
         # Supplementary capture from the Capsule extension's live browser
         # session, if present. Recorded as a separate audit row so a court
         # reviewer can see (a) that an additional, non-reproducible capture
@@ -953,6 +1048,9 @@ def extend_capture(
         "page_warc":               f"{stem}.page.warc.gz",
         "page_mhtml":              f"{stem}.page.mhtml",
         "page_screenshot":         f"{stem}.page.png",
+        "page_har":                f"{stem}.page.har",
+        "page_console":            f"{stem}.page.console.json",
+        "page_context_screenshot": f"{stem}.page.context.png",
         "user_browser_mhtml":      f"{stem}.user-browser.mhtml",
         "user_browser_screenshot": f"{stem}.user-browser.png",
         "user_browser_har":        f"{stem}.user-browser.har",

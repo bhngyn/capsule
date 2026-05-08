@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://capsule.example/schemas/meta.schema.json",
   "title": "Capsule capture metadata (meta.json)",
-  "description": "Per-capture forensic record. Source of truth for the integrity story; signed by the case keypair. Schema v2 (hardening pass) adds tab_context, capture-side mutations (blocking + banner hide), render-wait outcomes, and cookie-set provenance hash. Schema v3 (Track A) adds the per-item manifest PDF artifact role + checksum, plus capture.report_lang for the locale the manifest PDF was rendered in. Schema v4 adds the per-item report PDF (``report_pdf`` artifact role) — a human-readable companion to the manifest PDF carrying provenance, full description, tools, and the capture report; its hash is bound to meta.json by the same signature. Schema v5 adds ``url_canonical`` (canonical form of url_final used for dedup hashing) and ``force_recapture_index`` (set when the row was an intentional re-capture per CLAUDE.md §15; null otherwise). Schema v6 adds the ``gallery`` capture_kind for image-gallery captures (gallery-dl producer): ``gallery_count`` and ``gallery_extractor`` at the root, ``gallery_dl_version`` under tools, ``gallery_NNN`` / ``gallery_NNN_meta`` / ``gallery_info`` artifact roles, and ``capture.gallery_attempted`` / ``capture.gallery_outcome`` for the capture report.",
+  "description": "Per-capture forensic record. Source of truth for the integrity story; signed by the case keypair. Schema v2 (hardening pass) adds tab_context, capture-side mutations (blocking + banner hide), render-wait outcomes, and cookie-set provenance hash. Schema v3 (Track A) adds the per-item manifest PDF artifact role + checksum, plus capture.report_lang for the locale the manifest PDF was rendered in. Schema v4 adds the per-item report PDF (``report_pdf`` artifact role) — a human-readable companion to the manifest PDF carrying provenance, full description, tools, and the capture report; its hash is bound to meta.json by the same signature. Schema v5 adds ``url_canonical`` (canonical form of url_final used for dedup hashing) and ``force_recapture_index`` (set when the row was an intentional re-capture per CLAUDE.md §15; null otherwise). Schema v6 adds the ``gallery`` capture_kind for image-gallery captures (gallery-dl producer): ``gallery_count`` and ``gallery_extractor`` at the root, ``gallery_dl_version`` under tools, ``gallery_NNN`` / ``gallery_NNN_meta`` / ``gallery_info`` artifact roles, and ``capture.gallery_attempted`` / ``capture.gallery_outcome`` for the capture report. Schema v7 (page-preservation hardening pass) adds in-session WARC provenance (``capture.warc.*``), animation-freeze and video-pause counters, console + HAR sidecars (``page_console`` and ``page_har`` artifact roles), the navigation response block (``capture.response``), the media-context viewport screenshot (``page_context_screenshot`` role), and ``warcio_version`` / ``browsertrix_version: null`` for in-session captures.",
   "type": "object",
   "required": [
     "schema_version",
@@ -22,7 +22,7 @@
     "signing_key_fp"
   ],
   "properties": {
-    "schema_version": { "enum": [1, 2, 3, 4, 5, 6] },
+    "schema_version": { "enum": [1, 2, 3, 4, 5, 6, 7] },
     "job_uuid": { "type": "string" },
     "capture_kind": { "enum": ["media", "page_only", "gallery"] },
     "case": {
@@ -56,7 +56,7 @@
     "authenticated_domains": { "type": "array", "items": { "type": "string" } },
     "artifacts": {
       "type": "object",
-      "description": "Artifact role → relative path under /downloads. Roles include page_mhtml, page_screenshot, page_warc, user_browser_*, plus tab_context / session_state / dom_snapshot_* (v2). v3 adds ``manifest_pdf`` — the per-item evidence manifest PDF; its hash is bound to meta.json via the signature. v4 adds ``report_pdf`` — the human-readable per-item report PDF (provenance, description, tools, capture report); its hash is bound the same way. v6 adds gallery roles: ``gallery_NNN`` (one per image, NNN is a 1-based 3-digit zero-padded index), ``gallery_NNN_meta`` (gallery-dl per-image JSON sidecar), ``gallery_info`` (gallery-level info.json from gallery-dl).",
+      "description": "Artifact role → relative path under /downloads. Roles include page_mhtml, page_screenshot, page_warc, user_browser_*, plus tab_context / session_state / dom_snapshot_* (v2). v3 adds ``manifest_pdf`` — the per-item evidence manifest PDF; its hash is bound to meta.json via the signature. v4 adds ``report_pdf`` — the human-readable per-item report PDF (provenance, description, tools, capture report); its hash is bound the same way. v6 adds gallery roles: ``gallery_NNN`` (one per image, NNN is a 1-based 3-digit zero-padded index), ``gallery_NNN_meta`` (gallery-dl per-image JSON sidecar), ``gallery_info`` (gallery-level info.json from gallery-dl). v7 adds ``page_har`` (Playwright HAR sidecar with sensitive headers redacted), ``page_console`` (JSON of browser console + pageerror events captured during the session), and ``page_context_screenshot`` (viewport-sized PNG framed on the most prominent <video>/<iframe> for media-in-context evidence).",
       "additionalProperties": { "type": "string" }
     },
     "checksums": {
@@ -79,7 +79,14 @@
         "app_version": { "type": "string" },
         "ytdlp_version": { "type": "string" },
         "chromium_version": { "type": "string" },
-        "browsertrix_version": { "type": "string" },
+        "browsertrix_version": {
+          "type": ["string", "null"],
+          "description": "browsertrix-crawler version when the browsertrix subprocess fallback ran (capture.warc.captured_in_session = false). ``null`` or ``\"0\"`` when the in-session WARC writer succeeded and browsertrix wasn't invoked. Schema-required for back-compat with v2–v6 records that always populated this field."
+        },
+        "warcio_version": {
+          "type": ["string", "null"],
+          "description": "warcio version when the in-session CDP→WARC writer ran (capture.warc.captured_in_session = true). ``null`` when warcio is unavailable or the subprocess fallback ran. v7."
+        },
         "gallery_dl_version": {
           "type": ["string", "null"],
           "description": "gallery-dl version when gallery-dl ran (capture_kind == 'gallery') or was attempted. ``null`` for captures that never invoked gallery-dl (every video URL). v6."
@@ -125,6 +132,82 @@
         "gallery_outcome": {
           "enum": ["captured", "empty", "rate_limited", "auth_required", "failed", "skipped"],
           "description": "Outcome of the gallery-dl invocation, if attempted. ``captured`` means at least one image was retained; ``skipped`` means gallery-dl was disabled for this case. v6."
+        },
+        "lazy_promoted_count": {
+          "type": "integer",
+          "description": "Number of <img>/<iframe> elements whose loading=\"lazy\" attribute was promoted to \"eager\" before the lazy-load scroll, so the WARC and HAR see them on the wire. v7."
+        },
+        "lazy_load_max_height_px": {
+          "type": "integer",
+          "description": "Final document.scrollHeight after the lazy-load gate ran. Surfaces how tall the page actually rendered to. v7."
+        },
+        "videos_paused": {
+          "type": "integer",
+          "description": "Count of autoplaying <video> elements that were paused before the still PNG was captured. v7."
+        },
+        "animations_frozen": {
+          "type": "boolean",
+          "description": "True iff the animation-freeze CSS layer was injected before the screenshot (and removed after). MHTML and WARC are captured before the freeze and are unaffected. v7."
+        },
+        "animations_frozen_version": {
+          "type": ["string", "null"],
+          "description": "Version string from app/static/blocklists/animation-freeze.css. v7."
+        },
+        "shadow_dom_walked": {
+          "type": "boolean",
+          "description": "True iff the visible-images render-wait gate traversed shadow roots. v7."
+        },
+        "iframes_seen": {
+          "type": "integer",
+          "description": "Count of iframe/frame elements detected after lazy-load — includes both same-origin and cross-origin frames. v7."
+        },
+        "screenshot_truncated_at_px": {
+          "type": ["integer", "null"],
+          "description": "When the page exceeded DEFAULT_SCREENSHOT_MAX_HEIGHT_PX (30,000px), the still PNG was clipped at this height. ``null`` for normal full-page captures. MHTML and WARC are never clipped. v7."
+        },
+        "readiness_timed_out": {
+          "type": "boolean",
+          "description": "True iff the outer 60s render-wait budget was exceeded and remaining gates were skipped. v7."
+        },
+        "console_message_count": {
+          "type": "integer",
+          "description": "Count of browser console events captured during the session (every console.log/warn/error/info, plus pageerror exceptions). Full event list lives in the page_console artifact. v7."
+        },
+        "console_error_count": {
+          "type": "integer",
+          "description": "Subset of console_message_count counting pageerror exceptions only. v7."
+        },
+        "response": {
+          "type": ["object", "null"],
+          "description": "Navigation response block — final URL, status, redirect chain, sanitized headers (Cookie/Set-Cookie/Authorization stripped), and elapsed_ms. v7.",
+          "properties": {
+            "final_status": { "type": ["integer", "null"] },
+            "final_url": { "type": ["string", "null"] },
+            "redirect_chain": { "type": "array" },
+            "headers": { "type": "object" },
+            "elapsed_ms": { "type": "integer" }
+          }
+        },
+        "media_context_captured": {
+          "type": "boolean",
+          "description": "True iff a viewport-sized screenshot was captured framed on the most prominent <video>/<iframe> on the page. The artifact lives at the page_context_screenshot role. v7."
+        },
+        "media_context_selector": {
+          "type": ["string", "null"],
+          "description": "CSS selector of the element the media-context screenshot was framed on. Recorded for forensic clarity. v7."
+        },
+        "warc": {
+          "type": "object",
+          "description": "WARC session provenance. captured_in_session = true means the WARC was written by the same Playwright session that produced MHTML+PNG (CDP→WARC writer); false means the browsertrix-crawler subprocess fallback ran. v7.",
+          "properties": {
+            "captured_in_session": { "type": "boolean" },
+            "record_count": { "type": "integer" },
+            "encoding_normalized": {
+              "type": "boolean",
+              "description": "True iff response bodies were normalized to Content-Encoding: identity (CDP returns decoded bodies). False for browsertrix subprocess captures (those record on-the-wire bytes)."
+            },
+            "format_version": { "type": ["string", "null"] }
+          }
         }
       }
     },
