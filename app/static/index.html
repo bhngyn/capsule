@@ -237,6 +237,87 @@
         </div>
       </form>
 
+      <!-- Download options (Advanced disclosure) — CLAUDE.md §15 v0.7.
+           Closed by default per §4.2 #4 progressive disclosure. Visual-first:
+           every control gets a Lucide icon + translated aria-label. Settings
+           are persisted in localStorage so an investigator gets sticky
+           preferences across reloads, and ride on every JobBatchItem in
+           _postBatch(). -->
+      <details class="mt-4 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/60 dark:bg-zinc-900/60"
+               :open="hasNonDefaultDownloadOptions()">
+        <summary class="cursor-pointer select-none px-4 py-3 flex items-center gap-2 text-sm">
+          <i data-lucide="sliders-horizontal" class="size-4 text-zinc-500" aria-hidden="true"></i>
+          <span class="flex-1 text-zinc-700 dark:text-zinc-300"
+                x-text="t('download.options.advanced_toggle')"></span>
+          <span x-show="hasNonDefaultDownloadOptions()"
+                class="size-2 rounded-full bg-accent" aria-hidden="true"></span>
+          <i data-lucide="chevron-down" class="size-4 text-zinc-400" aria-hidden="true"></i>
+        </summary>
+        <div class="px-4 pb-4 pt-2 space-y-4">
+          <!-- Audio-only switch -->
+          <label class="flex items-center gap-3 cursor-pointer">
+            <i data-lucide="headphones" class="size-4 text-zinc-500" aria-hidden="true"></i>
+            <span class="flex-1 text-sm text-zinc-700 dark:text-zinc-300"
+                  x-text="t('download.options.audio_only.label')"></span>
+            <input type="checkbox"
+                   :checked="downloadOptions.audio_only"
+                   @change="setAudioOnly($event.target.checked)"
+                   :aria-label="t('download.options.audio_only.aria')"
+                   class="size-4 accent-accent" />
+          </label>
+          <!-- Quality segmented pill -->
+          <div>
+            <div class="flex items-center gap-2 mb-2">
+              <i data-lucide="monitor" class="size-4 text-zinc-500" aria-hidden="true"></i>
+              <span class="text-sm text-zinc-700 dark:text-zinc-300"
+                    x-text="t('download.options.quality.label')"></span>
+            </div>
+            <div class="inline-flex rounded-full bg-zinc-100 dark:bg-zinc-800 p-0.5"
+                 role="group">
+              <template x-for="opt in ['best','1080','720','480','audio']" :key="opt">
+                <button type="button" @click="setQualityCap(opt)"
+                        :aria-pressed="effectiveQualityCap() === opt"
+                        :class="effectiveQualityCap() === opt
+                                ? 'bg-accent text-white shadow-sm'
+                                : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100'"
+                        class="px-3 py-1 rounded-full text-xs font-medium transition">
+                  <span x-text="t('download.options.quality.option.' + opt)"></span>
+                </button>
+              </template>
+            </div>
+          </div>
+          <!-- Subtitles multi-select chips -->
+          <div>
+            <div class="flex items-center gap-2 mb-2">
+              <i data-lucide="subtitles" class="size-4 text-zinc-500" aria-hidden="true"></i>
+              <span class="text-sm text-zinc-700 dark:text-zinc-300"
+                    x-text="t('download.options.subs.label')"></span>
+            </div>
+            <div class="flex flex-wrap gap-1.5">
+              <template x-for="lang in ['en','ja','ar','es','fr','de','zh','pt','all']" :key="lang">
+                <button type="button" @click="toggleSubLang(lang)"
+                        :aria-pressed="downloadOptions.subtitle_langs.includes(lang)"
+                        :class="downloadOptions.subtitle_langs.includes(lang)
+                                ? 'bg-accent/15 text-accent border-accent'
+                                : 'bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 border-zinc-200 dark:border-zinc-700'"
+                        class="px-3 py-1 rounded-full text-xs border transition">
+                  <span x-text="t('download.options.subs.lang.' + lang)"></span>
+                </button>
+              </template>
+            </div>
+          </div>
+          <!-- Reset row -->
+          <div class="flex justify-end pt-1">
+            <button type="button" @click="resetDownloadOptions()"
+                    x-show="hasNonDefaultDownloadOptions()"
+                    class="inline-flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
+              <i data-lucide="rotate-ccw" class="size-3.5" aria-hidden="true"></i>
+              <span x-text="t('download.options.reset')"></span>
+            </button>
+          </div>
+        </div>
+      </details>
+
       <!-- Inline batch-submit error banner. Replaces the legacy alert() per
            CLAUDE.md §4.7: friendly headline + collapsible technical details
            the investigator can copy into a bug report or court annex. -->
@@ -362,6 +443,46 @@
             <div class="mt-2 flex flex-col items-end gap-0.5 min-h-[2rem]">
               <span class="text-xs text-zinc-700 dark:text-zinc-300" x-text="progressLabel(j)"></span>
               <span class="text-xs font-mono text-zinc-500" x-text="progressBytes(j)"></span>
+            </div>
+            <!-- Stalled chip (CLAUDE.md §15 v0.7). Set by the runner's
+                 watchdog when no progress JSON has arrived for >= threshold
+                 seconds. Cleared by the next real progress event. -->
+            <div x-show="j.stalled" x-cloak
+                 class="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-amber-100 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 border border-amber-200 dark:border-amber-900"
+                 :aria-label="t('download.stalled.aria')">
+              <i data-lucide="clock" class="size-3.5" aria-hidden="true"></i>
+              <span x-text="stalledChipText(j)"></span>
+            </div>
+            <!-- Per-job control toolbar (CLAUDE.md §15 v0.7). Pause/Resume
+                 visible based on status; Cancel always available unless
+                 terminal; Restart for failed/stalled jobs. Cancel and
+                 Restart go through the destructive-action confirm dialog. -->
+            <div class="mt-3 flex items-center justify-end gap-1.5"
+                 x-show="hasJobControls(j)" x-cloak>
+              <button type="button" @click="pauseJob(j.id)"
+                      x-show="canPause(j)"
+                      :aria-label="t('download.action.pause.aria')"
+                      class="size-8 rounded-md inline-flex items-center justify-center text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition">
+                <i data-lucide="pause" class="size-4"></i>
+              </button>
+              <button type="button" @click="resumeJob(j.id)"
+                      x-show="canResume(j)"
+                      :aria-label="t('download.action.resume.aria')"
+                      class="size-8 rounded-md inline-flex items-center justify-center text-zinc-500 hover:text-accent dark:hover:text-accent hover:bg-zinc-100 dark:hover:bg-zinc-800 transition">
+                <i data-lucide="play" class="size-4"></i>
+              </button>
+              <button type="button" @click="confirmRestart(j.id)"
+                      x-show="canRestart(j)"
+                      :aria-label="t('download.action.restart.aria')"
+                      class="size-8 rounded-md inline-flex items-center justify-center text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition">
+                <i data-lucide="rotate-ccw" class="size-4"></i>
+              </button>
+              <button type="button" @click="confirmCancel(j.id)"
+                      x-show="canCancel(j)"
+                      :aria-label="t('download.action.cancel.aria')"
+                      class="size-8 rounded-md inline-flex items-center justify-center text-zinc-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition">
+                <i data-lucide="x" class="size-4"></i>
+              </button>
             </div>
             <!-- Retrying: amber banner with attempt count + countdown -->
             <div x-show="isRetrying(j)" class="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 p-3 text-sm">
@@ -746,6 +867,48 @@
             <span x-text="clearDialog && t('recent.clear.dialog.confirm', {count: clearDialog.count})"></span>
           </button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cancel/Restart per-job confirmation dialog (CLAUDE.md §15 v0.7).
+       Cancel discards partial download bytes; Restart wipes .part and
+       starts the byte stream fresh. Both go through this dialog so
+       investigators don't fat-finger a destructive action on a half-
+       captured big download. -->
+  <div x-show="controlConfirm && controlConfirm.open" x-cloak
+       class="fixed inset-0 z-50 grid place-items-center bg-zinc-900/60 px-4"
+       role="dialog" aria-modal="true"
+       :aria-labelledby="'control-confirm-title'"
+       @keydown.escape.window="closeControlConfirm()">
+    <div class="w-full max-w-md rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-5 shadow-xl">
+      <div class="flex items-start gap-3">
+        <div class="size-10 rounded-full grid place-items-center bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 shrink-0">
+          <i :data-lucide="controlConfirm && controlConfirm.action === 'restart' ? 'rotate-ccw' : 'alert-triangle'"
+             class="size-5" aria-hidden="true"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div id="control-confirm-title"
+               class="text-base font-semibold text-zinc-900 dark:text-zinc-100"
+               x-text="controlConfirm && t('download.action.' + controlConfirm.action + '.confirm.title')"></div>
+          <div class="mt-2 text-sm text-zinc-700 dark:text-zinc-300"
+               x-text="controlConfirm && t('download.action.' + controlConfirm.action + '.confirm.body')"></div>
+        </div>
+      </div>
+      <div class="mt-5 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+        <button @click="closeControlConfirm()"
+                class="px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-sm"
+                x-text="controlConfirm && t('download.action.' + controlConfirm.action + '.confirm.cancel')"></button>
+        <button @click="executeControlConfirm()"
+                :disabled="controlConfirm && controlConfirm.busy"
+                :class="controlConfirm && controlConfirm.action === 'cancel'
+                        ? 'bg-rose-600 hover:bg-rose-700'
+                        : 'bg-accent hover:bg-teal-700'"
+                class="px-3 py-1.5 rounded-lg disabled:opacity-50 text-white text-sm inline-flex items-center gap-1.5">
+          <i :data-lucide="controlConfirm && controlConfirm.action === 'cancel' ? 'x' : 'rotate-ccw'"
+             class="size-4" aria-hidden="true"></i>
+          <span x-text="controlConfirm && t('download.action.' + controlConfirm.action + '.confirm.confirm')"></span>
+        </button>
       </div>
     </div>
   </div>

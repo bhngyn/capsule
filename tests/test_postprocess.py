@@ -616,14 +616,19 @@ def test_manifest_pdf_hash_present_in_meta_and_checksums(env):
     assert meta["checksums"]["manifest_pdf"]["sha256"]
     cs_text = (result.meta_json_path.parent / f"{result.stem}.checksums.txt").read_text()
     assert ".manifest.pdf" in cs_text
-    # Schema v6: adds the gallery capture_kind (gallery_count /
-    # gallery_extractor / gallery_NNN artifact roles), tools.gallery_dl_version,
-    # and capture.gallery_attempted / .gallery_outcome. Per CLAUDE.md §13.15,
-    # schema and producer move in lockstep. Manifest + report PDFs continue
-    # to ride the same artifact-binding transitive signature path.
-    assert meta["schema_version"] == 6
+    # Schema v8 (CLAUDE.md §15 v0.7): adds the ``download_options`` block
+    # at the root and ``capture.stalled_count`` for the per-job download
+    # knobs + reliability counters. Per CLAUDE.md §13.15, schema and
+    # producer move in lockstep. Manifest + report PDFs continue to ride
+    # the same artifact-binding transitive signature path.
+    assert meta["schema_version"] == 8
     assert meta["url_canonical"]
     assert meta["force_recapture_index"] is None
+    # CLAUDE.md §15 v0.7: download_options block always emitted on v8+.
+    assert "download_options" in meta
+    assert meta["download_options"]["audio_only"] is False
+    assert meta["download_options"]["restart_count"] == 0
+    assert meta["download_options"]["subtitle_langs"] == []
 
 
 def test_capture_input_lang_is_recorded_in_meta(env):

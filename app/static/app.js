@@ -149,6 +149,19 @@
       clearDialog: null,            // { open, count, case_name, freed_bytes_human } | null
       clearInProgress: false,
 
+      // CLAUDE.md §15 v0.7: per-submission download options (audio_only,
+      // quality cap, subtitle languages). Persisted in localStorage so
+      // sticky preferences survive reloads. Sent on every JobBatchItem in
+      // _postBatch().
+      downloadOptions: {
+        audio_only: false,
+        quality_cap: null,          // 'audio'|'480'|'720'|'1080'|'best'|null
+        subtitle_langs: [],
+      },
+      // Cancel/Restart per-job confirmation dialog. Goes through the same
+      // shape as clearDialog for the destructive-action discipline in §15.
+      controlConfirm: null,         // { open, action, jobId, busy } | null
+
       // --- Extension pairing (Settings → Browser extension) ---
       extension: {
         tokens: [],
@@ -162,6 +175,7 @@
       async boot() {
         await this.loadBundle(this.locale);
         this.applyHtmlAttrs();
+        this.loadDownloadOptions();
         this.parseHash();
         window.addEventListener('hashchange', () => this.parseHash());
         await this.refreshAll();
@@ -169,6 +183,188 @@
         await this.refreshRecentCaptures();
         this.renderAll();
         this.refreshIcons();
+      },
+
+      // --- Download options (CLAUDE.md §15 v0.7) ---
+
+      loadDownloadOptions() {
+        try {
+          const raw = localStorage.getItem('capsule.downloadOptions');
+          if (!raw) return;
+          const parsed = JSON.parse(raw);
+          if (typeof parsed === 'object' && parsed) {
+            this.downloadOptions.audio_only = !!parsed.audio_only;
+            this.downloadOptions.quality_cap = parsed.quality_cap || null;
+            const langs = Array.isArray(parsed.subtitle_langs)
+              ? parsed.subtitle_langs.filter(s => typeof s === 'string')
+              : [];
+            this.downloadOptions.subtitle_langs = langs;
+          }
+        } catch (_) { /* corrupted localStorage — ignore, defaults stand */ }
+      },
+
+      _persistDownloadOptions() {
+        try {
+          localStorage.setItem(
+            'capsule.downloadOptions',
+            JSON.stringify(this.downloadOptions),
+          );
+        } catch (_) { /* quota / private mode — best effort */ }
+      },
+
+      hasNonDefaultDownloadOptions() {
+        const o = this.downloadOptions;
+        return !!(o.audio_only || o.quality_cap || (o.subtitle_langs || []).length);
+      },
+
+      effectiveQualityCap() {
+        if (this.downloadOptions.audio_only) return 'audio';
+        return this.downloadOptions.quality_cap || 'best';
+      },
+
+      setAudioOnly(on) {
+        this.downloadOptions.audio_only = !!on;
+        // When audio-only is toggled on, the quality cap collapses to
+        // 'audio' so the segmented pill reflects the same state. When
+        // toggled off, drop back to 'best' so a height the user picked
+        // earlier doesn't silently re-apply.
+        if (on) {
+          this.downloadOptions.quality_cap = null;
+        }
+        this._persistDownloadOptions();
+      },
+
+      setQualityCap(cap) {
+        if (cap === 'audio') {
+          this.downloadOptions.audio_only = true;
+          this.downloadOptions.quality_cap = null;
+        } else if (cap === 'best') {
+          this.downloadOptions.audio_only = false;
+          this.downloadOptions.quality_cap = null;
+        } else {
+          this.downloadOptions.audio_only = false;
+          this.downloadOptions.quality_cap = cap;
+        }
+        this._persistDownloadOptions();
+      },
+
+      toggleSubLang(lang) {
+        const cur = this.downloadOptions.subtitle_langs;
+        if (lang === 'all') {
+          // 'all' is exclusive — picking it clears any specific picks.
+          this.downloadOptions.subtitle_langs = cur.includes('all') ? [] : ['all'];
+        } else {
+          if (cur.includes(lang)) {
+            this.downloadOptions.subtitle_langs = cur.filter(x => x !== lang);
+          } else {
+            this.downloadOptions.subtitle_langs = cur
+              .filter(x => x !== 'all')
+              .concat([lang]);
+          }
+        }
+        this._persistDownloadOptions();
+      },
+
+      resetDownloadOptions() {
+        this.downloadOptions.audio_only = false;
+        this.downloadOptions.quality_cap = null;
+        this.downloadOptions.subtitle_langs = [];
+        this._persistDownloadOptions();
+      },
+
+      // Build the per-item payload bits to ride along on JobBatchItem.
+      // Returns an empty object when nothing is set so the wire payload
+      // stays tight and existing tests on the legacy shape keep passing.
+      _downloadOptionsPayload() {
+        const out = {};
+        if (this.downloadOptions.audio_only) out.audio_only = true;
+        if (this.downloadOptions.quality_cap) {
+          out.quality_cap = this.downloadOptions.quality_cap;
+        }
+        if ((this.downloadOptions.subtitle_langs || []).length) {
+          out.subtitle_langs = this.downloadOptions.subtitle_langs.slice();
+        }
+        return out;
+      },
+
+      // --- Job control routes (CLAUDE.md §15 v0.7) ---
+
+      canPause(j) { return j && j.status === 'running'; },
+      canResume(j) { return j && j.status === 'paused'; },
+      canCancel(j) {
+        return j && j.status !== 'done' && j.status !== 'cancelled';
+      },
+      canRestart(j) {
+        if (!j) return false;
+        if (j.status === 'failed_permanent') return true;
+        if (j.stalled) return true;
+        return false;
+      },
+      hasJobControls(j) {
+        return this.canPause(j) || this.canResume(j)
+          || this.canCancel(j) || this.canRestart(j);
+      },
+
+      stalledChipText(j) {
+        if (!j || !j.stalled) return '';
+        const elapsed = (j.stalled && j.stalled.elapsed_s) || 0;
+        return this.t('download.stalled.chip', { seconds: elapsed });
+      },
+
+      async pauseJob(id) { return this._postControl(id, 'pause'); },
+      async resumeJob(id) { return this._postControl(id, 'resume'); },
+      async cancelJob(id) { return this._postControl(id, 'cancel'); },
+      async restartJob(id) { return this._postControl(id, 'restart'); },
+
+      confirmCancel(id) {
+        this.controlConfirm = { open: true, action: 'cancel', jobId: id, busy: false };
+        this.$nextTick(() => this.refreshIcons());
+      },
+      confirmRestart(id) {
+        this.controlConfirm = { open: true, action: 'restart', jobId: id, busy: false };
+        this.$nextTick(() => this.refreshIcons());
+      },
+      closeControlConfirm() {
+        this.controlConfirm = null;
+      },
+      async executeControlConfirm() {
+        if (!this.controlConfirm || this.controlConfirm.busy) return;
+        const { action, jobId } = this.controlConfirm;
+        this.controlConfirm.busy = true;
+        try {
+          await this._postControl(jobId, action);
+        } finally {
+          this.controlConfirm = null;
+        }
+      },
+
+      async _postControl(id, action) {
+        try {
+          const r = await fetch(`/api/jobs/${id}/${action}`, { method: 'POST' });
+          if (!r.ok) {
+            const detail = await r.text().catch(() => '');
+            this.batchError = {
+              headline: this.t('errors.unknown'),
+              technical: `POST /api/jobs/${id}/${action} → HTTP ${r.status}\n${detail}`,
+            };
+            return false;
+          }
+          // Optimistic: SSE will reconcile authoritative state shortly.
+          const idx = this.activeJobs.findIndex(j => j.id === id);
+          if (idx >= 0) {
+            const updated = await r.json().catch(() => null);
+            if (updated && updated.status) {
+              this.activeJobs[idx].status = updated.status;
+            }
+          }
+          return true;
+        } catch (e) {
+          this.batchError = {
+            headline: this.t('errors.unknown'),
+            technical: `POST /api/jobs/${id}/${action} threw ${e}`,
+          };
+          return false;
+        }
       },
 
       async refreshProfile() {
@@ -252,8 +448,44 @@
         });
         es.addEventListener('progress', e => {
           const data = safeJSON(e.data) || {};
-          update({ progress_latest: data });
+          // Real progress clears the stalled chip even if the backend
+          // didn't fire a separate 'progress' after 'stalled'. The runner
+          // does emit one, but the UI shouldn't depend on the order.
+          const mut = { progress_latest: data };
+          const j = this.activeJobs.find(x => x.id === job_id);
+          if (j && j.stalled) mut.stalled = false;
+          update(mut);
           this._startAggTick();
+        });
+        // CLAUDE.md §15 v0.7 — distinct lifecycle events. The orchestrator
+        // also emits a 'status' event, so these handlers focus on the
+        // visual transitions (clearing local error/stalled state, closing
+        // the channel on cancel) rather than the status flip.
+        es.addEventListener('paused', e => {
+          const data = safeJSON(e.data) || {};
+          update({ status: data.status || 'paused' });
+        });
+        es.addEventListener('resumed', e => {
+          const data = safeJSON(e.data) || {};
+          update({ status: data.status || 'queued', stalled: false });
+        });
+        es.addEventListener('cancelled', e => {
+          const data = safeJSON(e.data) || {};
+          update({ status: data.status || 'cancelled', error: null, stalled: false });
+          es.close(); delete this._jobSources[job_id];
+        });
+        es.addEventListener('restarted', e => {
+          const data = safeJSON(e.data) || {};
+          update({
+            status: data.status || 'queued',
+            error: null,
+            progress_latest: null,
+            stalled: false,
+          });
+        });
+        es.addEventListener('stalled', e => {
+          const data = safeJSON(e.data) || {};
+          update({ stalled: { elapsed_s: data.elapsed_s || 0, since: Date.now() } });
         });
         es.addEventListener('classification', e => {
           const data = safeJSON(e.data) || {};
@@ -565,9 +797,12 @@
         // they're either already-collapsed or unsubmittable.
         const items = [];
         const duplicateQueue = [];
+        // CLAUDE.md §15 v0.7: ride the per-submission download options on
+        // every JobBatchItem. Empty payload when nothing is set.
+        const opts = this._downloadOptionsPayload();
         for (const r of (preflight.results || [])) {
           if (r.status === 'new') {
-            items.push({ url: r.url_submitted });
+            items.push({ url: r.url_submitted, ...opts });
           } else if (r.status === 'duplicate') {
             duplicateQueue.push(r);
           }
@@ -683,11 +918,14 @@
           }
         } else if (choice === 'recapture') {
           // Append a forced-re-capture item to the pending list. The
-          // backend will suffix the url_hash with __c{N+1}.
+          // backend will suffix the url_hash with __c{N+1}. Carries the
+          // current download options too — the user may have toggled
+          // audio-only between the original capture and the re-capture.
           m.pending.push({
             url: dup.url_submitted,
             force_recapture: true,
             original_download_id: existingId,
+            ...this._downloadOptionsPayload(),
           });
         } else if (choice === 'cancelled') {
           await this._auditDuplicateOutcome(caseId, existingId, 'cancelled');
@@ -788,10 +1026,16 @@
           window.location.hash = 'settings';
           return;
         }
-        // Default: try the same URL again. Dismiss the failed card first
-        // so the new submission's card replaces it cleanly.
+        // Default: restart the same job in place. CLAUDE.md §15 v0.7
+        // routes the failed-job retry through the orchestrator's
+        // restart() so the audit trail is a clean ``job.restarted``
+        // (with restart_count++) instead of a fresh ``job.created`` —
+        // the latter would lose the connection to the original failure.
+        if (j && j.id) {
+          this.restartJob(j.id);
+          return;
+        }
         if (!url) return;
-        this.dismissJob(j.id);
         this._postBatch([url]);
       },
 

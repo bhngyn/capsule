@@ -55,9 +55,11 @@ __all__ = [
     "Job",
     "JobStatus",
     "JobOrchestrator",
+    "DownloadOptions",
     "MAX_CONCURRENT",
     "MAX_RETRY_BACKOFF_S",
     "PROGRESS_FLUSH_INTERVAL_S",
+    "STALL_THRESHOLD_S",
     "UserBrowserBundle",
     "attach_user_browser_bundle",
     "pop_user_browser_bundle",
@@ -75,6 +77,11 @@ MAX_RETRY_BACKOFF_S = 60 * 60  # 1h
 # for ~30s — that's a survivable amount of progress to lose on crash, while
 # keeping the write rate sane on long downloads.
 PROGRESS_FLUSH_INTERVAL_S = 30.0
+
+# CLAUDE.md §15 (v0.7): wall-clock seconds without a real progress event
+# before the runner emits a synthetic ``stalled`` ProgressUpdate so the UI
+# can amber-chip the job. Not a kill threshold — investigators decide.
+STALL_THRESHOLD_S = 90
 
 
 # Status values persisted in jobs.status. Keep this list in sync with the
@@ -224,6 +231,81 @@ def _cleanup_bundle(bundle: UserBrowserBundle) -> None:
 
 
 @dataclass
+class DownloadOptions:
+    """Per-job download-modification + reliability counters (CLAUDE.md §15 v0.7).
+
+    ``audio_only``, ``quality_cap``, and ``subtitle_langs`` are the
+    investigator-facing knobs; ``restart_count`` and ``stalled_count`` are
+    forensic counters bumped by the orchestrator/runner so the per-item
+    PDF report can disclose them.
+
+    Persisted as JSON on ``jobs.download_options_json`` and as a block on
+    ``meta.json.download_options`` (schema v8) — the latter is signed
+    transitively via ``meta.json.sig`` so a recipient can confirm what
+    options were in effect.
+    """
+    audio_only: bool = False
+    # 'audio' | '480' | '720' | '1080' | 'best' | None
+    quality_cap: str | None = None
+    subtitle_langs: list[str] = field(default_factory=list)
+    # Bumped by JobOrchestrator.restart(); persisted across the restart so
+    # the meta.json block records it.
+    restart_count: int = 0
+    # Bumped by the orchestrator on every ``stalled`` SSE event from the
+    # runner. Surfaced in meta.json.capture.stalled_count.
+    stalled_count: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "audio_only": bool(self.audio_only),
+            "quality_cap": self.quality_cap,
+            "subtitle_langs": list(self.subtitle_langs or []),
+            "restart_count": int(self.restart_count),
+            "stalled_count": int(self.stalled_count),
+        }
+
+    def to_json(self) -> str:
+        return _dumps(self.to_dict())
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any] | None) -> "DownloadOptions":
+        if not raw or not isinstance(raw, dict):
+            return cls()
+        langs = raw.get("subtitle_langs") or []
+        if not isinstance(langs, list):
+            langs = []
+        # Coerce types defensively — older rows may have nullable ints.
+        return cls(
+            audio_only=bool(raw.get("audio_only", False)),
+            quality_cap=(str(raw["quality_cap"])
+                         if raw.get("quality_cap") not in (None, "")
+                         else None),
+            subtitle_langs=[str(s) for s in langs if s],
+            restart_count=int(raw.get("restart_count") or 0),
+            stalled_count=int(raw.get("stalled_count") or 0),
+        )
+
+    @classmethod
+    def from_json(cls, blob: str | None) -> "DownloadOptions":
+        if not blob:
+            return cls()
+        try:
+            return cls.from_dict(json.loads(blob))
+        except (TypeError, ValueError):
+            return cls()
+
+    def is_default(self) -> bool:
+        """True if no investigator-facing knob is set. Used by audit logic
+        — we only emit ``download.options_applied`` when something actually
+        differs from the profile defaults."""
+        return (
+            not self.audio_only
+            and not self.quality_cap
+            and not self.subtitle_langs
+        )
+
+
+@dataclass
 class Job:
     id: str
     case_id: int
@@ -254,6 +336,18 @@ class Job:
     # original ``downloads`` row the user is re-capturing. Used to bind
     # the audit-log entries together so a verifier can trace the chain.
     original_download_id: int | None = None
+    # CLAUDE.md §15 v0.7: per-job download-modification + reliability
+    # counters. Persisted as JSON on jobs.download_options_json.
+    download_options: DownloadOptions = field(default_factory=DownloadOptions)
+    # Volatile — set True by ``restart()`` so the next dispatch passes
+    # ``restart=True`` to ytdlp_runner (which swaps --continue → --no-continue
+    # and pre-deletes ``*.part``/``*.ytdl``). Cleared after dispatch so a
+    # subsequent auto-retry uses ``--continue`` again.
+    restart_pending: bool = False
+    # Volatile UI hint: set True when a stalled SSE event fires; cleared on
+    # the next real progress event. Not persisted; recovers naturally on
+    # restart since the runner re-emits.
+    stalled: bool = False
     created_at: str = field(default_factory=_utcnow)
     updated_at: str = field(default_factory=_utcnow)
 
@@ -274,14 +368,17 @@ class Job:
             "task_kind": self.task_kind,
             "capture_group_id": self.capture_group_id,
             "lang": self.lang,
+            "download_options": self.download_options.to_dict(),
+            "stalled": self.stalled,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Job":
-        # ``task_kind`` and ``capture_group_id`` may be missing on rows
-        # written by an older binary; fall back gracefully.
+        # ``task_kind``, ``capture_group_id``, and ``download_options_json``
+        # may be missing on rows written by an older binary; fall back
+        # gracefully.
         keys = row.keys() if hasattr(row, "keys") else []
         return cls(
             id=row["id"],
@@ -299,6 +396,10 @@ class Job:
             task_kind=(row["task_kind"] if "task_kind" in keys else TASK_FULL),
             capture_group_id=(
                 row["capture_group_id"] if "capture_group_id" in keys else None
+            ),
+            download_options=DownloadOptions.from_json(
+                row["download_options_json"]
+                if "download_options_json" in keys else None
             ),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -329,13 +430,15 @@ def _insert_job(conn: sqlite3.Connection, job: Job) -> None:
                 id, case_id, source_url, status, phase, attempts,
                 progress_json, classification_json, result_json, error_json,
                 task_kind, capture_group_id,
+                download_options_json,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, '{}', NULL, NULL, NULL, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, '{}', NULL, NULL, NULL, ?, ?, ?, ?, ?)
             """,
             (
                 job.id, job.case_id, job.url, job.status, job.phase,
                 job.attempts, job.task_kind, job.capture_group_id,
+                job.download_options.to_json(),
                 job.created_at, job.updated_at,
             ),
         )
@@ -404,6 +507,7 @@ def _update_job(
         "last_error_kind = ?",
         "last_error_severity = ?",
         "next_retry_at = ?",
+        "download_options_json = ?",
         "updated_at = ?",
     ]
     params: list[Any] = [
@@ -416,6 +520,7 @@ def _update_job(
         job.last_error_kind,
         job.last_error_severity,
         job.next_retry_at,
+        job.download_options.to_json(),
         job.updated_at,
     ]
     if started:
@@ -511,6 +616,7 @@ class JobOrchestrator:
         lang: str | None = None,
         force_recapture: bool = False,
         original_download_id: int | None = None,
+        download_options: DownloadOptions | None = None,
     ) -> Job:
         if task_kind not in TASK_KINDS:
             raise ValueError(f"unknown task_kind {task_kind!r}")
@@ -521,6 +627,9 @@ class JobOrchestrator:
         # ``force_recapture`` is set when the user picked "Re-capture as
         # new entry" in the §15 modal — finalize() then suffixes the
         # url_hash with ``__c{N+1}`` instead of raising DuplicateCapture.
+        # ``download_options`` (CLAUDE.md §15 v0.7) carries audio_only,
+        # quality_cap, and subtitle_langs through to the runner; counters
+        # restart_count / stalled_count are filled in over the job's life.
         job = Job(
             id=str(uuid.uuid4()),
             case_id=case_id,
@@ -530,6 +639,7 @@ class JobOrchestrator:
             lang=lang,
             force_recapture=force_recapture,
             original_download_id=original_download_id,
+            download_options=download_options or DownloadOptions(),
         )
         # Plan §U6 / Phase D: every full submission gets a fresh capture
         # group; partial-task submissions (archive / media re-fetch) must
@@ -661,6 +771,7 @@ class JobOrchestrator:
                 )
             finally:
                 conn.close()
+            self._emit(job, "paused", {"status": STATUS_PAUSED})
             # Cancel the queued run task too (it's just waiting on the sema).
             rt = self._run_tasks.pop(job_id, None)
             if rt and not rt.done():
@@ -693,6 +804,7 @@ class JobOrchestrator:
                 )
             finally:
                 conn.close()
+            self._emit(job, "cancelled", {"status": STATUS_CANCELLED})
             rt = self._run_tasks.pop(job_id, None)
             if rt and not rt.done():
                 rt.cancel()
@@ -719,6 +831,7 @@ class JobOrchestrator:
             )
         finally:
             conn.close()
+        self._emit(job, "resumed", {"status": STATUS_QUEUED})
         self._run_tasks[job_id] = asyncio.create_task(self._run(job))
         return True
 
@@ -730,6 +843,94 @@ class JobOrchestrator:
             if await self.pause(jid):
                 n += 1
         return n
+
+    # -- restart (CLAUDE.md §15 v0.7) ----------------------------------
+
+    async def restart(self, job_id: str) -> bool:
+        """Force-restart a job: SIGTERM live subprocess, wipe ``.part`` and
+        ``.ytdl`` files, reset attempts, re-dispatch.
+
+        Distinct from ``resume()`` (which keeps ``.part`` and lets
+        ``--continue`` pick up where the byte stream stopped). Restart is
+        the escape hatch when a partial download is corrupted, when the
+        site changed mid-capture, or when the user wants forensically
+        clean bytes (no ambiguity about resumed fragments).
+
+        Returns True if the job will be re-dispatched, False if it was
+        unknown or in a state that can't be restarted (only ``done``
+        rejects — every other state restarts cleanly).
+        """
+        job = self._jobs.get(job_id) or self.get(job_id)
+        if job is None:
+            return False
+        if job.status == STATUS_DONE:
+            # Successful captures are immutable — re-running would only
+            # mint a duplicate row, which the §15 modal already handles.
+            return False
+
+        # Cancel any sleeping retry task and SIGTERM any live subprocess.
+        # Different from cancel() — we route through restart_pending so the
+        # next dispatch wipes .part files and uses --no-continue.
+        rt = self._retry_tasks.pop(job_id, None)
+        if rt and not rt.done():
+            rt.cancel()
+        proc = self._procs.get(job_id)
+        if proc is not None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+        # Cancel any in-flight run task too — we'll re-dispatch a fresh one.
+        run_task = self._run_tasks.pop(job_id, None)
+        if run_task and not run_task.done():
+            run_task.cancel()
+
+        # Clear any prior pause/cancel intent — restart wins.
+        self._user_intent.pop(job_id, None)
+
+        # Re-hydrate the in-memory cache if a long-finished-failed job is
+        # being restarted from a cold cache.
+        if job_id not in self._jobs:
+            self._jobs[job_id] = job
+            self._channels[job_id] = asyncio.Queue()
+        else:
+            # Replace the SSE channel so a stale ``done`` sentinel from a
+            # prior cancelled run doesn't terminate the new stream.
+            self._channels[job_id] = asyncio.Queue()
+
+        previous_status = job.status
+        job.download_options.restart_count += 1
+        job.attempts = 0
+        job.error = None
+        job.last_error_kind = None
+        job.last_error_severity = None
+        job.next_retry_at = None
+        job.phase = None
+        job.stalled = False
+        job.restart_pending = True
+
+        conn = db_mod.connect(self._db_path)
+        try:
+            self._set_status(conn, job, STATUS_QUEUED)
+            audit.append(
+                conn, "job.restarted",
+                case_id=job.case_id, actor="user",
+                details={
+                    "job_id": job_id,
+                    "from": previous_status,
+                    "restart_count": job.download_options.restart_count,
+                },
+            )
+        finally:
+            conn.close()
+        # Distinct SSE event so the UI can animate the transition (and
+        # clear any local error/stalled state) without diffing status.
+        self._emit(job, "restarted", {
+            "status": STATUS_QUEUED,
+            "restart_count": job.download_options.restart_count,
+        })
+        self._run_tasks[job_id] = asyncio.create_task(self._run(job))
+        return True
 
     # -- network monitor accessors (plan §U7) ---------------------------
 
@@ -1220,6 +1421,27 @@ class JobOrchestrator:
                 )
             progress_q: asyncio.Queue = asyncio.Queue()
 
+            # CLAUDE.md §15 v0.7: emit one ``download.options_applied`` row
+            # per dispatch when any investigator-facing knob is set, so a
+            # recipient walking the audit log sees what was in effect for
+            # this run (esp. after a restart with a new option set).
+            if not job.download_options.is_default():
+                audit.append(
+                    conn,
+                    "download.options_applied",
+                    case_id=case.id,
+                    actor="user",
+                    details={
+                        "job_id": job.id,
+                        "options": job.download_options.to_dict(),
+                    },
+                )
+            # restart_pending is set by ``restart()`` and consumed exactly
+            # once: this dispatch wipes ``.part`` files and uses
+            # --no-continue. Subsequent auto-retries revert to --continue.
+            restart_now = job.restart_pending
+            job.restart_pending = False
+
             proc_holder: list = []
             run_task = asyncio.create_task(
                 ytdlp_runner.run(
@@ -1232,6 +1454,10 @@ class JobOrchestrator:
                     socket_timeout_s=profile.socket_timeout_s,
                     limit_rate_kbps=profile.limit_rate_kbps,
                     format_spec=profile.default_format,
+                    audio_only=job.download_options.audio_only,
+                    quality_cap=job.download_options.quality_cap,
+                    subtitle_langs=job.download_options.subtitle_langs or None,
+                    restart=restart_now,
                 )
             )
             forward_task = asyncio.create_task(self._forward_progress(job, progress_q))
@@ -1532,6 +1758,7 @@ class JobOrchestrator:
                 ephemeral_cookies_used=ephemeral_cookies_path is not None,
                 lang=job.lang or config.DEFAULT_LANG,
                 force_recapture=job.force_recapture,
+                download_options=job.download_options.to_dict(),
             )
 
             # Whether or not postprocess succeeds, the ephemeral cookie
@@ -1707,6 +1934,12 @@ class JobOrchestrator:
                 )
                 progress_q: asyncio.Queue = asyncio.Queue()
                 proc_holder: list = []
+                # Extend tasks reuse the parent's download_options so a
+                # media re-fetch keeps the same audio_only / quality_cap
+                # the original job ran with. restart_pending is consumed
+                # the same way as the full pipeline.
+                restart_now = job.restart_pending
+                job.restart_pending = False
                 run_task = asyncio.create_task(
                     ytdlp_runner.run(
                         url=job.url,
@@ -1718,6 +1951,10 @@ class JobOrchestrator:
                         socket_timeout_s=profile.socket_timeout_s,
                         limit_rate_kbps=profile.limit_rate_kbps,
                         format_spec=profile.default_format,
+                        audio_only=job.download_options.audio_only,
+                        quality_cap=job.download_options.quality_cap,
+                        subtitle_langs=job.download_options.subtitle_langs or None,
+                        restart=restart_now,
                     )
                 )
                 forward_task = asyncio.create_task(
@@ -1824,6 +2061,62 @@ class JobOrchestrator:
                         flush_conn = flush_conn or db_mod.connect(self._db_path)
                         _flush_progress(flush_conn, job.id, last_persisted)
                     return
+                # CLAUDE.md §15 v0.7: synthetic stall events from the
+                # runner's watchdog. Don't change job.status (still
+                # 'running'); emit a distinct SSE event + audit row +
+                # bump the forensic counter.
+                if update.status == "stalled":
+                    if not job.stalled:
+                        job.stalled = True
+                        job.download_options.stalled_count += 1
+                        flush_conn = flush_conn or db_mod.connect(self._db_path)
+                        try:
+                            _update_job(flush_conn, job)
+                        except sqlite3.Error as exc:
+                            _log.warning(
+                                "could not persist stalled_count for %s: %s",
+                                job.id, exc,
+                            )
+                        elapsed = update.raw.get("elapsed_s") if isinstance(update.raw, dict) else None
+                        self._emit(job, "stalled", {
+                            "elapsed_s": elapsed,
+                            "stalled_count": job.download_options.stalled_count,
+                        })
+                        try:
+                            audit.append(
+                                flush_conn,
+                                "download.stalled",
+                                case_id=job.case_id,
+                                actor="system",
+                                details={
+                                    "job_id": job.id,
+                                    "elapsed_s": elapsed,
+                                    "stalled_count": job.download_options.stalled_count,
+                                },
+                            )
+                        except sqlite3.Error as exc:
+                            _log.warning(
+                                "could not write download.stalled for %s: %s",
+                                job.id, exc,
+                            )
+                    continue
+                # Real progress after a stall — clear the UI flag and audit.
+                if job.stalled and update.status in ("downloading", "running", "finished", "postprocess"):
+                    job.stalled = False
+                    flush_conn = flush_conn or db_mod.connect(self._db_path)
+                    try:
+                        audit.append(
+                            flush_conn,
+                            "download.stall_cleared",
+                            case_id=job.case_id,
+                            actor="system",
+                            details={"job_id": job.id},
+                        )
+                    except sqlite3.Error as exc:
+                        _log.warning(
+                            "could not write download.stall_cleared for %s: %s",
+                            job.id, exc,
+                        )
                 # Persisted payload (jobs-table progress_json) keeps the
                 # original schema — sub_status is a UI-only affordance and
                 # must not leak into forensic artifacts (CLAUDE.md §1).

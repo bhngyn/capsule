@@ -38,7 +38,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import (
     __version__,
@@ -337,6 +337,13 @@ async def upload_cookies(
 # --- Jobs --------------------------------------------------------------------
 
 
+_QUALITY_CAP_VALUES = {"audio", "480", "720", "1080", "best"}
+_KNOWN_SUB_LANGS = {
+    "en", "ja", "ar", "es", "fr", "de", "zh", "pt",
+    "all",
+}
+
+
 class JobBatchItem(BaseModel):
     url: str = Field(min_length=1)
     # CLAUDE.md §15: True iff the user picked "Re-capture as new entry"
@@ -344,6 +351,42 @@ class JobBatchItem(BaseModel):
     # url_hash with ``__c{N+1}`` so the row sits as a sibling.
     force_recapture: bool = False
     original_download_id: int | None = None
+    # CLAUDE.md §15 v0.7 — per-submission download options.
+    audio_only: bool = False
+    # 'audio' | '480' | '720' | '1080' | 'best' | None
+    quality_cap: str | None = None
+    subtitle_langs: list[str] | None = None
+
+    @field_validator("quality_cap")
+    @classmethod
+    def _validate_quality_cap(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if v not in _QUALITY_CAP_VALUES:
+            raise ValueError(
+                f"quality_cap must be one of {sorted(_QUALITY_CAP_VALUES)}"
+            )
+        return v
+
+    @field_validator("subtitle_langs")
+    @classmethod
+    def _validate_sub_langs(cls, v: list[str] | None) -> list[str] | None:
+        if not v:
+            return None
+        # Accept anything BCP-47-ish (lowercase letters / digits / hyphens),
+        # plus the literal 'all' sentinel. Reject untrusted long strings
+        # that could blow up the yt-dlp argv.
+        cleaned: list[str] = []
+        for s in v:
+            if not isinstance(s, str):
+                raise ValueError("subtitle_langs must be strings")
+            tag = s.strip().lower()
+            if not tag or len(tag) > 32:
+                continue
+            if not all(ch.isalnum() or ch == "-" for ch in tag):
+                raise ValueError(f"invalid subtitle language tag: {s!r}")
+            cleaned.append(tag)
+        return cleaned or None
 
 
 class JobBatch(BaseModel):
@@ -398,6 +441,9 @@ def _normalize_batch_items(body: JobBatch) -> list[JobBatchItem]:
             url=url,
             force_recapture=it.force_recapture,
             original_download_id=it.original_download_id,
+            audio_only=it.audio_only,
+            quality_cap=it.quality_cap,
+            subtitle_langs=it.subtitle_langs,
         ))
     if not out:
         raise HTTPException(status_code=400, detail="no URLs")
@@ -434,15 +480,96 @@ async def submit_jobs_batch(body: JobBatch) -> dict[str, Any]:
 
     submitted = []
     for it in items:
+        # Build DownloadOptions iff any v0.7 knob is set; otherwise pass
+        # None so the orchestrator uses the dataclass defaults.
+        opts: jobs_mod.DownloadOptions | None = None
+        if it.audio_only or it.quality_cap or it.subtitle_langs:
+            opts = jobs_mod.DownloadOptions(
+                audio_only=it.audio_only,
+                quality_cap=it.quality_cap,
+                subtitle_langs=list(it.subtitle_langs or []),
+            )
         job = await jobs_mod.orchestrator().submit(
             case_id=case.id,
             url=it.url,
             lang=body.lang,
             force_recapture=it.force_recapture,
             original_download_id=it.original_download_id,
+            download_options=opts,
         )
         submitted.append(job.to_dict())
     return {"case_id": case.id, "jobs": submitted}
+
+
+# --- Job control routes (CLAUDE.md §15 v0.7) ---------------------------------
+# These re-introduce the pause/resume/cancel HTTP surface that v0.3 removed,
+# alongside a new ``restart`` route. The orchestrator already owns the
+# state-machine work; these routes just invoke it and surface 404/409 in
+# the right shape for the frontend's banner system (CLAUDE.md §4.7).
+
+
+def _job_or_404(job_id: str) -> jobs_mod.Job:
+    job = jobs_mod.orchestrator().get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
+@app.post("/api/jobs/{job_id}/pause")
+async def pause_job(job_id: str) -> dict[str, Any]:
+    job = _job_or_404(job_id)
+    ok = await jobs_mod.orchestrator().pause(job_id)
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail="job is already terminal or not pausable",
+        )
+    # Refresh after the transition so the response carries the new status.
+    return _job_or_404(job_id).to_dict()
+
+
+@app.post("/api/jobs/{job_id}/resume")
+async def resume_job(job_id: str) -> dict[str, Any]:
+    _job_or_404(job_id)
+    ok = await jobs_mod.orchestrator().resume(job_id)
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail="job is not paused",
+        )
+    return _job_or_404(job_id).to_dict()
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str) -> dict[str, Any]:
+    _job_or_404(job_id)
+    ok = await jobs_mod.orchestrator().cancel(job_id)
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail="job is already terminal",
+        )
+    return _job_or_404(job_id).to_dict()
+
+
+@app.post("/api/jobs/{job_id}/restart")
+async def restart_job(job_id: str) -> dict[str, Any]:
+    """Force-restart: SIGTERM live subprocess, wipe ``.part``/``.ytdl``,
+    re-dispatch with ``--no-continue`` (CLAUDE.md §15 v0.7).
+
+    Distinct from resume: resume preserves ``.part`` files and lets
+    yt-dlp's ``--continue`` pick up where it stopped. Restart is the
+    investigator's escape hatch when the partial bytes are corrupted
+    or when forensically clean re-fetch is desired.
+    """
+    _job_or_404(job_id)
+    ok = await jobs_mod.orchestrator().restart(job_id)
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail="job cannot be restarted (already done or unknown)",
+        )
+    return _job_or_404(job_id).to_dict()
 
 
 # --- Preflight (CLAUDE.md §15) -----------------------------------------------

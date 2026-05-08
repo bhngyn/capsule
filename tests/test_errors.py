@@ -225,6 +225,20 @@ def test_translated_bundles_actually_translated():
         # "No" is the natural Spanish translation of "No" — they spell
         # identically without being untranslated.
         "pdf.report.field.no",
+        # CLAUDE.md §15 v0.7: subtitle-language picker uses autonyms (each
+        # language's name in its own language) — identical across bundles
+        # for any locale that matches the autonym English picked, exactly
+        # like lang.* above.
+        "download.options.subs.lang.en",
+        "download.options.subs.lang.ja",
+        "download.options.subs.lang.ar",
+        "download.options.subs.lang.es",
+        "download.options.subs.lang.fr",
+        "download.options.subs.lang.de",
+        "download.options.subs.lang.zh",
+        "download.options.subs.lang.pt",
+        # "Audio" is the natural Spanish word for audio — same spelling.
+        "download.options.quality.option.audio",
     }
     for lang in ("ja", "ar", "es"):
         bundle = json.loads(

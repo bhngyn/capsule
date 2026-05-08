@@ -27,7 +27,8 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,6 +39,11 @@ __all__ = [
     "version",
     "PROGRESS_TEMPLATE",
     "DEFAULT_SOCKET_TIMEOUT_S",
+    "DEFAULT_STALL_THRESHOLD_S",
+    "DEFAULT_AUDIO_FORMAT",
+    "DEFAULT_AUDIO_QUALITY",
+    "build_format_spec",
+    "build_subtitle_argv",
 ]
 
 
@@ -50,6 +56,90 @@ PROGRESS_TEMPLATE = "%(progress)j"
 # a high-latency VPN doesn't trip on TLS handshake; low enough that a truly
 # stalled connection doesn't hold a slot for an hour.
 DEFAULT_SOCKET_TIMEOUT_S = 30
+
+# CLAUDE.md §15 v0.7. Wall-clock seconds of silence on the progress
+# stream before the runner emits a synthetic ``stalled`` event so the
+# orchestrator/UI can amber-chip the job. Conservative — yt-dlp resolves
+# DASH manifests + does TLS handshake before the first progress JSON
+# fires, so 90s avoids false alarms on slow first-byte sites.
+DEFAULT_STALL_THRESHOLD_S = 90
+
+# Audio-only defaults. mp3 is universally playable; quality 0 = best
+# (yt-dlp's --audio-quality scale: 0..10, lower is better).
+DEFAULT_AUDIO_FORMAT = "mp3"
+DEFAULT_AUDIO_QUALITY = "0"
+
+
+def build_format_spec(
+    *,
+    audio_only: bool,
+    quality_cap: str | None,
+    fallback: str | None,
+) -> str | None:
+    """Resolve the yt-dlp ``--format`` argument from the v0.7 knobs.
+
+    Precedence:
+
+    * ``audio_only=True`` (or ``quality_cap == "audio"``) ⇒ no ``--format``;
+      ``-x --audio-format ...`` handles it. Returns None.
+    * ``quality_cap`` in ``{"480", "720", "1080"}`` ⇒
+      ``bestvideo[height<=N]+bestaudio/best[height<=N]``.
+    * ``quality_cap == "best"`` ⇒ ``best`` (overrides any profile fallback).
+    * Otherwise ⇒ ``fallback`` (the profile's default_format).
+    """
+    if audio_only or quality_cap == "audio":
+        return None
+    if quality_cap in ("480", "720", "1080"):
+        return (
+            f"bestvideo[height<={quality_cap}]+bestaudio/"
+            f"best[height<={quality_cap}]"
+        )
+    if quality_cap == "best":
+        return "best"
+    return fallback
+
+
+def build_subtitle_argv(subtitle_langs: list[str] | None) -> list[str]:
+    """Resolve subtitle flags. Empty/None ⇒ no subs.
+
+    The literal ``"all"`` sentinel maps to yt-dlp's ``all,-live_chat``
+    (excludes the live-chat track which is huge and rarely useful).
+    Otherwise we comma-join the BCP-47-ish language tags. ``--sub-format``
+    requests vtt with srt fallback so the canonical filename gets a
+    stable ``.{lang}.vtt`` (or ``.srt``) sidecar — matches CLAUDE.md §6.
+    """
+    if not subtitle_langs:
+        return []
+    cleaned = [s.strip() for s in subtitle_langs if s and s.strip()]
+    if not cleaned:
+        return []
+    if any(lang.lower() == "all" for lang in cleaned):
+        spec = "all,-live_chat"
+    else:
+        spec = ",".join(cleaned)
+    return ["--write-subs", "--sub-langs", spec, "--sub-format", "vtt/srt/best"]
+
+
+def _wipe_partial_files(case_dir: Path) -> int:
+    """Remove every ``*.part`` and ``*.ytdl`` in ``case_dir``.
+
+    Used by the v0.7 ``restart=True`` path. The orchestrator owns the
+    semantic decision (resume vs. fresh); the runner just executes it.
+    Returns the count actually removed so the caller can audit.
+    """
+    if not case_dir.exists() or not case_dir.is_dir():
+        return 0
+    n = 0
+    for pattern in ("*.part", "*.ytdl"):
+        for p in case_dir.glob(pattern):
+            try:
+                p.unlink()
+                n += 1
+            except OSError:
+                # Don't fail the whole restart over one stuck file —
+                # the caller has already SIGTERM'd anything that held a lock.
+                pass
+    return n
 
 
 @dataclass(frozen=True)
@@ -225,6 +315,12 @@ def _build_argv(
     socket_timeout_s: int = DEFAULT_SOCKET_TIMEOUT_S,
     limit_rate_kbps: int | None = None,
     proxy_url: str | None = None,
+    audio_only: bool = False,
+    audio_format: str = DEFAULT_AUDIO_FORMAT,
+    audio_quality: str = DEFAULT_AUDIO_QUALITY,
+    quality_cap: str | None = None,
+    subtitle_langs: list[str] | None = None,
+    restart: bool = False,
 ) -> list[str]:
     """Build the yt-dlp command line. Visible separately for tests.
 
@@ -240,8 +336,20 @@ def _build_argv(
     * ``--socket-timeout`` — caller-tunable; profiles override (Slow=60, Fast=20)
 
     ``limit_rate_kbps`` and ``proxy_url`` are accepted here so the profile
-    layer (still on its way) can plug into the same surface; today the
-    orchestrator passes only the resilience flags.
+    layer can plug into the same surface.
+
+    CLAUDE.md §15 v0.7 — investigator-facing knobs:
+
+    * ``audio_only=True`` ⇒ append ``-x --audio-format <f> --audio-quality <q>``;
+      ``quality_cap`` is ignored (audio-only wins).
+    * ``quality_cap`` ⇒ overrides ``format_spec`` with a height-capped
+      ``bestvideo+bestaudio/best`` selector. ``"audio"`` is equivalent to
+      ``audio_only=True``.
+    * ``subtitle_langs`` ⇒ ``--write-subs --sub-langs <csv>`` (or
+      ``all,-live_chat`` for the ``"all"`` sentinel).
+    * ``restart=True`` ⇒ ``--no-continue`` instead of ``--continue``; the
+      caller is expected to have already wiped ``*.part`` / ``*.ytdl`` so
+      yt-dlp doesn't re-incarnate them.
     """
     argv: list[str] = [
         _ytdlp_executable(),
@@ -257,7 +365,11 @@ def _build_argv(
         "--progress",  # but keep the structured progress
         "--progress-template",
         PROGRESS_TEMPLATE,
-        "--continue",
+    ]
+    # Restart wipes .part files (responsibility of the caller) and starts
+    # the byte stream fresh; the resume path is the default.
+    argv.append("--no-continue" if restart else "--continue")
+    argv += [
         "--retries", "infinite",
         "--fragment-retries", "infinite",
         "--file-access-retries", "10",
@@ -275,8 +387,26 @@ def _build_argv(
         argv += ["--proxy", proxy_url]
     if cookies_file is not None:
         argv += ["--cookies", str(cookies_file)]
-    if format_spec:
-        argv += ["--format", format_spec]
+
+    # Audio-only beats quality_cap height. Build the resolved format
+    # spec with the v0.7 helper so the precedence is identical at every
+    # call site.
+    resolved_format = build_format_spec(
+        audio_only=audio_only,
+        quality_cap=quality_cap,
+        fallback=format_spec,
+    )
+    if audio_only or quality_cap == "audio":
+        argv += [
+            "-x",
+            "--audio-format", audio_format,
+            "--audio-quality", audio_quality,
+        ]
+    if resolved_format:
+        argv += ["--format", resolved_format]
+
+    argv += build_subtitle_argv(subtitle_langs)
+
     if extra_args:
         argv += list(extra_args)
     argv.append(url)
@@ -297,6 +427,14 @@ async def run(
     limit_rate_kbps: int | None = None,
     proxy_url: str | None = None,
     proc_holder: list | None = None,
+    audio_only: bool = False,
+    audio_format: str = DEFAULT_AUDIO_FORMAT,
+    audio_quality: str = DEFAULT_AUDIO_QUALITY,
+    quality_cap: str | None = None,
+    subtitle_langs: list[str] | None = None,
+    restart: bool = False,
+    stall_threshold_s: int = DEFAULT_STALL_THRESHOLD_S,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> RunResult:
     """Invoke yt-dlp and return a ``RunResult``.
 
@@ -304,10 +442,27 @@ async def run(
     sentinel ``None`` is pushed at the end so consumers can drain. The
     function does not raise on a non-zero exit code — the caller inspects
     ``returncode`` and ``stderr`` (and feeds the latter to ``errors.classify``).
+
+    CLAUDE.md §15 v0.7:
+
+    * ``audio_only`` / ``audio_format`` / ``audio_quality`` / ``quality_cap`` /
+      ``subtitle_langs`` — investigator download knobs (see ``_build_argv``).
+    * ``restart=True`` — wipe ``*.part`` and ``*.ytdl`` in ``case_dir`` and
+      pass ``--no-continue`` so the byte stream starts fresh.
+    * ``stall_threshold_s`` — wall-clock seconds without a progress event
+      before the runner emits a synthetic ``stalled`` ProgressUpdate. The
+      orchestrator translates that into a ``stalled`` SSE event + audit row.
+      ``monotonic`` is overridable so the stall test can drive time
+      deterministically.
     """
     case_dir.mkdir(parents=True, exist_ok=True)
 
     before = {p.name for p in case_dir.iterdir() if p.is_file()}
+
+    if restart:
+        # Wipe .part / .ytdl before yt-dlp starts so --no-continue has a
+        # clean slate. The caller has already SIGTERM'd any prior process.
+        _wipe_partial_files(case_dir)
 
     argv = _build_argv(
         url,
@@ -318,6 +473,12 @@ async def run(
         socket_timeout_s=socket_timeout_s,
         limit_rate_kbps=limit_rate_kbps,
         proxy_url=proxy_url,
+        audio_only=audio_only,
+        audio_format=audio_format,
+        audio_quality=audio_quality,
+        quality_cap=quality_cap,
+        subtitle_langs=subtitle_langs,
+        restart=restart,
     )
     if executable:
         argv[0] = executable
@@ -339,8 +500,15 @@ async def run(
 
     last_pp_substatus: str | None = None
 
+    # Stall watchdog state. Initialised at proc start so a slow first byte
+    # still triggers stall detection. We poll instead of using events so
+    # one-shot subprocesses with no progress at all (failure cases) clear
+    # the wakeup naturally on subprocess exit.
+    last_progress_at = monotonic()
+    stall_active = False
+
     async def _drain_stdout() -> None:
-        nonlocal last_pp_substatus
+        nonlocal last_pp_substatus, last_progress_at, stall_active
         assert proc.stdout is not None
         while True:
             raw = await proc.stdout.readline()
@@ -350,6 +518,8 @@ async def run(
             stdout_chunks.append(line)
             update = _parse_progress_line(line)
             if update is not None:
+                last_progress_at = monotonic()
+                stall_active = False
                 if progress_queue is not None:
                     await progress_queue.put(update)
                 continue
@@ -359,6 +529,8 @@ async def run(
             pp = _detect_postprocess_substatus(line)
             if pp is not None and pp != last_pp_substatus and progress_queue is not None:
                 last_pp_substatus = pp
+                last_progress_at = monotonic()
+                stall_active = False
                 await progress_queue.put(
                     ProgressUpdate(
                         status="postprocess",
@@ -380,7 +552,56 @@ async def run(
                 return
             stderr_chunks.append(raw.decode(errors="replace"))
 
-    await asyncio.gather(_drain_stdout(), _drain_stderr())
+    async def _stall_watchdog() -> None:
+        """Emit one ``stalled`` ProgressUpdate per stall episode.
+
+        Wakes ~5s at a time so we don't block long on shutdown. Doesn't
+        kill the subprocess — UI affordance only.
+        """
+        nonlocal stall_active
+        if progress_queue is None or stall_threshold_s <= 0:
+            return
+        # Tick fast enough to fire shortly after the threshold. Fixed at
+        # min(5s, threshold/3) so a 90s threshold checks ~every 5s and a
+        # 2s test threshold checks ~every 0.66s.
+        tick = max(0.1, min(5.0, stall_threshold_s / 3.0))
+        try:
+            while proc.returncode is None:
+                await asyncio.sleep(tick)
+                if proc.returncode is not None:
+                    return
+                if stall_active:
+                    continue
+                elapsed = monotonic() - last_progress_at
+                if elapsed >= stall_threshold_s:
+                    stall_active = True
+                    await progress_queue.put(
+                        ProgressUpdate(
+                            status="stalled",
+                            downloaded_bytes=None,
+                            total_bytes=None,
+                            speed=None,
+                            eta=None,
+                            filename=None,
+                            raw={"elapsed_s": int(elapsed)},
+                            sub_status=None,
+                        )
+                    )
+        except asyncio.CancelledError:
+            return
+
+    watchdog_task = asyncio.create_task(_stall_watchdog())
+    try:
+        await asyncio.gather(_drain_stdout(), _drain_stderr())
+    finally:
+        # Subprocess EOF reached on both streams ⇒ shut the watchdog down
+        # before awaiting proc.wait() so a stall fired-after-EOF doesn't
+        # race with the sentinel.
+        watchdog_task.cancel()
+        try:
+            await watchdog_task
+        except asyncio.CancelledError:
+            pass
     rc = await proc.wait()
 
     if progress_queue is not None:

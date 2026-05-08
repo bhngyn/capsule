@@ -348,3 +348,179 @@ async def test_pause_in_retrying_state_cancels_retry_task(reload_modules, stub_p
     finally:
         conn.close()
     assert row["status"] == "paused"
+
+
+# --- CLAUDE.md §15 v0.7: DownloadOptions + restart() -----------------------
+
+
+def test_download_options_round_trip_via_json():
+    from app.jobs import DownloadOptions
+    a = DownloadOptions(
+        audio_only=True, quality_cap="720",
+        subtitle_langs=["en", "ar"], restart_count=2, stalled_count=1,
+    )
+    b = DownloadOptions.from_json(a.to_json())
+    assert b.audio_only is True
+    assert b.quality_cap == "720"
+    assert b.subtitle_langs == ["en", "ar"]
+    assert b.restart_count == 2
+    assert b.stalled_count == 1
+
+
+def test_download_options_from_json_handles_garbage():
+    from app.jobs import DownloadOptions
+    # Empty / corrupt blobs collapse to defaults — important for jobs
+    # rows pre-005 migration that have download_options_json = '{}'.
+    assert DownloadOptions.from_json(None).is_default()
+    assert DownloadOptions.from_json("").is_default()
+    assert DownloadOptions.from_json("{}").is_default()
+    assert DownloadOptions.from_json("not-json").is_default()
+
+
+def test_download_options_is_default_only_for_blank_state():
+    from app.jobs import DownloadOptions
+    assert DownloadOptions().is_default() is True
+    assert DownloadOptions(audio_only=True).is_default() is False
+    assert DownloadOptions(quality_cap="720").is_default() is False
+    assert DownloadOptions(subtitle_langs=["en"]).is_default() is False
+    # Counters alone are not "investigator-facing" knobs — they don't
+    # trigger the audit row, hence is_default still returns True.
+    assert DownloadOptions(restart_count=3).is_default() is True
+
+
+@pytest.mark.asyncio
+async def test_submit_persists_download_options(reload_modules, stub_pipeline):
+    db_mod, jobs_mod = reload_modules
+    orch = jobs_mod.JobOrchestrator(max_concurrent=1)
+
+    conn = db_mod.connect()
+    try:
+        db_mod.migrate(conn)
+        from app import cases
+        case = cases.ensure_default_case(conn)
+    finally:
+        conn.close()
+
+    opts = jobs_mod.DownloadOptions(
+        audio_only=True, quality_cap=None, subtitle_langs=["en"],
+    )
+    job = await orch.submit(
+        case_id=case.id, url="https://example.com/x",
+        download_options=opts,
+    )
+    deadline = asyncio.get_event_loop().time() + 3.0
+    while asyncio.get_event_loop().time() < deadline:
+        live = orch.get(job.id)
+        if live and live.status in jobs_mod.TERMINAL_STATUSES:
+            break
+        await asyncio.sleep(0.05)
+
+    conn = db_mod.connect()
+    try:
+        row = conn.execute(
+            "SELECT download_options_json FROM jobs WHERE id = ?", (job.id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    persisted = jobs_mod.DownloadOptions.from_json(row["download_options_json"])
+    assert persisted.audio_only is True
+    assert persisted.subtitle_langs == ["en"]
+
+
+@pytest.mark.asyncio
+async def test_restart_done_job_returns_false(reload_modules, stub_pipeline):
+    db_mod, jobs_mod = reload_modules
+
+    conn = db_mod.connect()
+    try:
+        db_mod.migrate(conn)
+        from app import cases
+        case = cases.ensure_default_case(conn)
+    finally:
+        conn.close()
+
+    orch = jobs_mod.JobOrchestrator(max_concurrent=1)
+    import uuid
+    job_id = str(uuid.uuid4())
+    job = jobs_mod.Job(
+        id=job_id, case_id=case.id, url="https://example.com/x",
+        status=jobs_mod.STATUS_DONE,
+    )
+    orch._jobs[job_id] = job
+    conn = db_mod.connect()
+    try:
+        jobs_mod._insert_job(conn, job)
+        with conn:
+            conn.execute(
+                "UPDATE jobs SET status = ? WHERE id = ?",
+                (jobs_mod.STATUS_DONE, job_id),
+            )
+    finally:
+        conn.close()
+
+    ok = await orch.restart(job_id)
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_restart_failed_job_increments_count_and_audits(
+    reload_modules, stub_pipeline, monkeypatch,
+):
+    db_mod, jobs_mod = reload_modules
+
+    conn = db_mod.connect()
+    try:
+        db_mod.migrate(conn)
+        from app import cases
+        case = cases.ensure_default_case(conn)
+    finally:
+        conn.close()
+
+    orch = jobs_mod.JobOrchestrator(max_concurrent=1)
+
+    import uuid
+    job_id = str(uuid.uuid4())
+    job = jobs_mod.Job(
+        id=job_id, case_id=case.id, url="https://example.com/x",
+        status=jobs_mod.STATUS_FAILED_PERMANENT,
+    )
+    orch._jobs[job_id] = job
+    orch._channels[job_id] = asyncio.Queue()
+    conn = db_mod.connect()
+    try:
+        jobs_mod._insert_job(conn, job)
+        with conn:
+            conn.execute(
+                "UPDATE jobs SET status = ? WHERE id = ?",
+                (jobs_mod.STATUS_FAILED_PERMANENT, job_id),
+            )
+    finally:
+        conn.close()
+
+    async def noop_run(j):
+        return
+
+    monkeypatch.setattr(orch, "_run", noop_run)
+
+    ok = await orch.restart(job_id)
+    assert ok is True
+
+    live = orch.get(job_id)
+    assert live.download_options.restart_count == 1
+    assert live.attempts == 0
+    assert live.error is None
+    assert live.restart_pending is True or live.restart_pending is False
+
+    conn = db_mod.connect()
+    try:
+        row = conn.execute(
+            "SELECT details_json FROM audit_log "
+            "WHERE action = 'job.restarted' ORDER BY id DESC LIMIT 1",
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    details = json.loads(row["details_json"])
+    assert details.get("job_id") == job_id
+    assert details.get("restart_count") == 1
+    assert details.get("from") == jobs_mod.STATUS_FAILED_PERMANENT
