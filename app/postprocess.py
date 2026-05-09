@@ -69,6 +69,33 @@ __all__ = [
 CHUNK = 1024 * 1024
 
 
+# Per-item folder layout (CLAUDE.md §6 v0.8):
+# the two human-readable PDFs sit at the item root; everything else is
+# routed into one of three subfolders so the per-item folder reads at a
+# glance even before the recipient opens any file. Empty string means
+# "item root" — used only for the report and manifest PDFs.
+SUBDIR_CAPTURES = "Captures"   # page snapshots: mhtml, png, warc.gz, har, console, context.png, user-browser.*
+SUBDIR_METADATA = "Metadata"   # meta.json + sig, checksums.txt, info.json, description, gallery_info, *_meta
+SUBDIR_MEDIA = "Media"         # the media file(s), gallery images, thumbnail, subtitles
+SUBDIR_ROOT = ""               # report.pdf, manifest.pdf
+
+
+def _subdir_for_sidecar(filename: str) -> str:
+    """Route a yt-dlp sidecar by its filename.
+
+    Visual or playable assets ride with the media file (Media/); textual
+    metadata sits in Metadata/. Defaults to Metadata/ for unknowns so a
+    new sidecar role lands somewhere sensible without forcing a code
+    change downstream of yt-dlp.
+    """
+    lower = filename.lower()
+    if lower.endswith((".vtt", ".srt", ".ass", ".ttml", ".sbv")):
+        return SUBDIR_MEDIA
+    if ".thumbnail." in lower or lower.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
+        return SUBDIR_MEDIA
+    return SUBDIR_METADATA
+
+
 class DuplicateCapture(Exception):
     """Raised when ``(case_id, capture_kind, url_hash)`` already exists.
 
@@ -378,27 +405,36 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
     artifacts: dict[str, str] = {}
 
     try:
-        # Step 4: move media + sidecars into the per-item folder.
+        # Step 4: move media + sidecars into the per-item folder. v0.8
+        # routes everything into Captures/ (page snapshots), Metadata/
+        # (meta + signed sidecars), or Media/ (the media file, gallery
+        # images, thumbnail, subtitles); the two PDFs (rendered later in
+        # this function) stay at the item root.
+        media_dir = item_dir / SUBDIR_MEDIA
+        metadata_dir = item_dir / SUBDIR_METADATA
+        captures_dir = item_dir / SUBDIR_CAPTURES
+
         relative_media_path: str | None = None
         if capture_kind == "media":
             primary = capture_input.media_files[0]
             ext_clean = ext or primary.suffix.lstrip(".")
             media_target_name = f"{stem}.{ext_clean}" if ext_clean else stem
-            media_target = _move_into(item_dir, primary, new_name=media_target_name)
+            media_target = _move_into(media_dir, primary, new_name=media_target_name)
             moved.append(media_target)
             relative_media_path = paths.relative_to_downloads(media_target)
             artifacts["media"] = relative_media_path
 
             # Any extra media files (e.g. multi-format) stay alongside the
-            # primary inside the same per-item folder.
+            # primary inside Media/.
             for i, extra in enumerate(capture_input.media_files[1:], start=2):
                 tail = f"{stem}.{i}.{extra.suffix.lstrip('.') or 'bin'}"
-                m = _move_into(item_dir, extra, new_name=tail)
+                m = _move_into(media_dir, extra, new_name=tail)
                 moved.append(m)
                 artifacts[f"media_{i}"] = paths.relative_to_downloads(m)
 
-        # yt-dlp sidecars: rename to share the new stem and drop into the
-        # per-item folder.
+        # yt-dlp sidecars: rename to share the new stem, then split by
+        # filename into Media/ (visual/playable: thumbnail, subtitles) or
+        # Metadata/ (textual: info.json, description, live_chat).
         for src in capture_input.extra_sidecars:
             if not src.exists():
                 continue
@@ -412,7 +448,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 # thumbnail or subs: keep the part after the original stem.
                 tail = src.name.split(".", 1)[1] if "." in src.name else src.name
                 rel_name = f"{stem}.{tail}"
-            dest = _move_into(item_dir, src, new_name=rel_name)
+            dest = _move_into(item_dir / _subdir_for_sidecar(rel_name), src, new_name=rel_name)
             moved.append(dest)
             artifacts[f"sidecar_{rel_name}"] = paths.relative_to_downloads(dest)
 
@@ -458,19 +494,19 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 role = f"gallery_{idx:03d}"
                 ext_clean = src.suffix.lstrip(".") or "bin"
                 tail = f"{stem}.{idx:03d}.{ext_clean}"
-                dest = _move_into(item_dir, src, new_name=tail)
+                dest = _move_into(media_dir, src, new_name=tail)
                 moved.append(dest)
                 artifacts[role] = paths.relative_to_downloads(dest)
                 meta_src = metadata_by_image.pop(src.name, None)
                 if meta_src is not None:
                     meta_tail = f"{stem}.{idx:03d}.json"
-                    meta_dest = _move_into(item_dir, meta_src, new_name=meta_tail)
+                    meta_dest = _move_into(metadata_dir, meta_src, new_name=meta_tail)
                     moved.append(meta_dest)
                     artifacts[f"{role}_meta"] = paths.relative_to_downloads(meta_dest)
 
             if gallery_info_src is not None:
                 info_dest = _move_into(
-                    item_dir, gallery_info_src, new_name=f"{stem}.gallery_info.json"
+                    metadata_dir, gallery_info_src, new_name=f"{stem}.gallery_info.json"
                 )
                 moved.append(info_dest)
                 artifacts["gallery_info"] = paths.relative_to_downloads(info_dest)
@@ -484,7 +520,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 if not src.exists():
                     continue
                 tail = f"{stem}.gallery_extra_{j:03d}{src.suffix}"
-                dest = _move_into(item_dir, src, new_name=tail)
+                dest = _move_into(metadata_dir, src, new_name=tail)
                 moved.append(dest)
                 artifacts[f"gallery_extra_{j:03d}_meta"] = paths.relative_to_downloads(dest)
 
@@ -525,7 +561,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 "user_browser_dom_snapshot_html": f"{stem}.user-browser.dom-snapshot.html",
                 "user_browser_dom_snapshot_meta": f"{stem}.user-browser.dom-snapshot.json",
             }[role]
-            dest = _move_into(item_dir, src, new_name=named)
+            dest = _move_into(captures_dir, src, new_name=named)
             moved.append(dest)
             artifacts[role] = paths.relative_to_downloads(dest)
 
@@ -621,15 +657,14 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         report_pdf_bytes = pdf_report.render_item_report(
             case=case, item_view=report_view, lang=capture_input.lang,
         )
-        # Both PDFs live in a per-item ``reports/`` subfolder so the case
-        # directory stays scannable: media + forensic sidecars at the item
-        # root, human-readable PDFs grouped beneath. The ``reports/``
-        # subpath becomes part of the artifact relpath, so checksums.txt,
+        # v0.8 layout: the two human-readable PDFs sit at the item root
+        # (Captures/, Metadata/, Media/ live one level below). They are
+        # the first thing a recipient sees when they open the folder; the
+        # rest of the artifacts are grouped by role beneath. Their
+        # relpaths still flow through ``artifacts``, so checksums.txt,
         # the manifest's file table, and the evidence-export ZIP all pick
-        # it up automatically without further wiring.
-        reports_dir = item_dir / "reports"
-        reports_dir.mkdir(parents=True, exist_ok=True)
-        report_pdf_path = reports_dir / f"{stem}.report.pdf"
+        # them up without further wiring.
+        report_pdf_path = item_dir / f"{stem}.report.pdf"
         report_pdf_path.write_bytes(report_pdf_bytes)
         moved.append(report_pdf_path)
         report_pdf_relpath = paths.relative_to_downloads(report_pdf_path)
@@ -660,7 +695,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             files=manifest_files,
             lang=capture_input.lang,
         )
-        manifest_pdf_path = reports_dir / f"{stem}.manifest.pdf"
+        manifest_pdf_path = item_dir / f"{stem}.manifest.pdf"
         manifest_pdf_path.write_bytes(manifest_pdf_bytes)
         moved.append(manifest_pdf_path)
 
@@ -672,7 +707,10 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         checksums["manifest_pdf"] = compute_hashes(manifest_pdf_path)
 
         # Step 5d: write checksums.txt now that the manifest PDF is hashed.
-        checksums_path = item_dir / f"{stem}.checksums.txt"
+        # checksums.txt lives in Metadata/ so the item root stays at "two
+        # PDFs + three folders" even at a glance.
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        checksums_path = metadata_dir / f"{stem}.checksums.txt"
         with checksums_path.open("w", encoding="utf-8") as fh:
             for role, h in sorted(checksums.items()):
                 rel = artifacts[role]
@@ -790,13 +828,14 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             "audit_log_entry_id": None,  # filled below
             "signing_key_fp": fp,
         }
-        meta_path = item_dir / f"{stem}.meta.json"
+        meta_path = metadata_dir / f"{stem}.meta.json"
         meta_bytes = json.dumps(meta, indent=2, ensure_ascii=False, sort_keys=True).encode(
             "utf-8"
         )
         meta_path.write_bytes(meta_bytes)
 
-        # Step 7: detached signature
+        # Step 7: detached signature — lands next to meta.json (so also in
+        # Metadata/) via signing.sign_file's path.with_name + ".sig".
         sig_path = signing.sign_file(meta_path)
 
         # Step 8: DB insert + audit, in one transaction
@@ -1074,35 +1113,36 @@ def extend_capture(
         raise FileNotFoundError(f"item dir missing: {item_dir}")
     stem = item_dir.name
 
-    # Map role → on-disk filename. Mirrors ``finalize``'s naming.
-    name_for = {
-        "page_warc":               f"{stem}.page.warc.gz",
-        "page_mhtml":              f"{stem}.page.mhtml",
-        "page_screenshot":         f"{stem}.page.png",
-        "page_har":                f"{stem}.page.har",
-        "page_console":            f"{stem}.page.console.json",
-        "page_context_screenshot": f"{stem}.page.context.png",
-        "user_browser_mhtml":      f"{stem}.user-browser.mhtml",
-        "user_browser_screenshot": f"{stem}.user-browser.png",
-        "user_browser_har":        f"{stem}.user-browser.har",
-        "user_browser_environment": f"{stem}.user-browser.environment.json",
-        "user_browser_tab_context": f"{stem}.user-browser.tab-context.json",
-        "user_browser_session_state": f"{stem}.user-browser.session-state.json",
-        "user_browser_dom_snapshot_html": f"{stem}.user-browser.dom-snapshot.html",
-        "user_browser_dom_snapshot_meta": f"{stem}.user-browser.dom-snapshot.json",
-        "media":                   None,  # named below using source extension
+    # Map role → (subdir, on-disk filename). Subdir mirrors the v0.8
+    # routing in ``finalize``: page snapshots into Captures/, the media
+    # file into Media/, and meta + checksums into Metadata/.
+    name_for: dict[str, tuple[str, str | None]] = {
+        "page_warc":                     (SUBDIR_CAPTURES, f"{stem}.page.warc.gz"),
+        "page_mhtml":                    (SUBDIR_CAPTURES, f"{stem}.page.mhtml"),
+        "page_screenshot":               (SUBDIR_CAPTURES, f"{stem}.page.png"),
+        "page_har":                      (SUBDIR_CAPTURES, f"{stem}.page.har"),
+        "page_console":                  (SUBDIR_CAPTURES, f"{stem}.page.console.json"),
+        "page_context_screenshot":       (SUBDIR_CAPTURES, f"{stem}.page.context.png"),
+        "user_browser_mhtml":            (SUBDIR_CAPTURES, f"{stem}.user-browser.mhtml"),
+        "user_browser_screenshot":       (SUBDIR_CAPTURES, f"{stem}.user-browser.png"),
+        "user_browser_har":              (SUBDIR_CAPTURES, f"{stem}.user-browser.har"),
+        "user_browser_environment":      (SUBDIR_CAPTURES, f"{stem}.user-browser.environment.json"),
+        "user_browser_tab_context":      (SUBDIR_CAPTURES, f"{stem}.user-browser.tab-context.json"),
+        "user_browser_session_state":    (SUBDIR_CAPTURES, f"{stem}.user-browser.session-state.json"),
+        "user_browser_dom_snapshot_html": (SUBDIR_CAPTURES, f"{stem}.user-browser.dom-snapshot.html"),
+        "user_browser_dom_snapshot_meta": (SUBDIR_CAPTURES, f"{stem}.user-browser.dom-snapshot.json"),
+        "media":                         (SUBDIR_MEDIA, None),  # named below using source extension
     }
     if role not in name_for:
         raise ValueError(f"unknown extend role {role!r}")
 
+    subdir, target_name = name_for[role]
+    target_dir = item_dir / subdir if subdir else item_dir
     if role == "media":
-        # Track A layout: media files live inside the per-item folder
-        # alongside the rest of the artifacts.
         ext = source.suffix.lstrip(".") or "bin"
-        target_name = f"{stem}.{ext}"
-        target = _move_into(item_dir, source, new_name=target_name)
+        target = _move_into(target_dir, source, new_name=f"{stem}.{ext}")
     else:
-        target = _move_into(item_dir, source, new_name=name_for[role])
+        target = _move_into(target_dir, source, new_name=target_name)
 
     new_hashes = compute_hashes(target)
     new_relpath = paths.relative_to_downloads(target)
@@ -1119,7 +1159,19 @@ def extend_capture(
     history.append({"role": role, "at": meta["updated_at"]})
     meta["update_history"] = history
 
-    meta_path = item_dir / f"{stem}.meta.json"
+    # meta.json + signature + checksums.txt all live in Metadata/. Older
+    # items captured before v0.8 carry a meta.json at the item root —
+    # honor that path so an extend on a legacy item updates the right
+    # file rather than spawning a stranded sibling.
+    legacy_meta = item_dir / f"{stem}.meta.json"
+    if legacy_meta.is_file():
+        meta_path = legacy_meta
+        checksums_path = item_dir / f"{stem}.checksums.txt"
+    else:
+        meta_dir = item_dir / SUBDIR_METADATA
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        meta_path = meta_dir / f"{stem}.meta.json"
+        checksums_path = meta_dir / f"{stem}.checksums.txt"
     new_meta_bytes = json.dumps(
         meta, indent=2, ensure_ascii=False, sort_keys=True,
     ).encode("utf-8")
@@ -1129,7 +1181,6 @@ def extend_capture(
     sig_path = signing.sign_file(meta_path)
 
     # Re-write checksums.txt to match the updated artifact set.
-    checksums_path = item_dir / f"{stem}.checksums.txt"
     with checksums_path.open("w", encoding="utf-8") as fh:
         for r, h in sorted(checksums.items()):
             rel = artifacts[r]

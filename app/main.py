@@ -879,8 +879,14 @@ async def verify_library(download_id: int | None = None) -> dict[str, Any]:
             meta = json.loads(r["meta_json"])
             item_dir = config.DOWNLOADS_DIR / r["item_dir"]
             stem = item_dir.name
-            meta_path = item_dir / f"{stem}.meta.json"
-            sig_path = item_dir / f"{stem}.meta.json.sig"
+            # v0.8 layout: meta.json + sig live in Metadata/. Fall back to
+            # the item root so existing items captured under the pre-v0.8
+            # layout still verify without manual reorganization.
+            meta_path = item_dir / "Metadata" / f"{stem}.meta.json"
+            sig_path = item_dir / "Metadata" / f"{stem}.meta.json.sig"
+            if not meta_path.is_file():
+                meta_path = item_dir / f"{stem}.meta.json"
+                sig_path = item_dir / f"{stem}.meta.json.sig"
             issues: list[str] = []
             sig_ok = False
             if meta_path.is_file() and sig_path.is_file():

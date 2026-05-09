@@ -70,19 +70,21 @@
 ```
 ~/Documents/Capsule/downloads/
 └── {stem}/
-    ├── {stem}.{ext}                  ← ملف الوسائط (إن وُجد)
-    ├── {stem}.meta.json              ← سجلّ البيانات الوصفية القانوني
-    ├── {stem}.meta.json.sig          ← توقيع Ed25519 المنفصل
-    ├── {stem}.checksums.txt          ← متوافق مع md5sum / sha256sum
-    ├── {stem}.page.mhtml             ← لقطة الصفحة
-    ├── {stem}.page.png               ← لقطة كاملة للصفحة
-    ├── {stem}.page.warc.gz           ← أرشيف WARC
-    └── reports/
-        ├── {stem}.manifest.pdf       ← بصمات كاملة (A4 أفقي)
-        └── {stem}.report.pdf         ← تقرير قابل للقراءة
+    ├── {stem}.report.pdf             ← تقرير قابل للقراءة (يحترم اللغة)
+    ├── {stem}.manifest.pdf           ← بصمات كاملة (A4 أفقي)
+    ├── Captures/                     ← لقطات الصفحة
+    │   ├── {stem}.page.mhtml
+    │   ├── {stem}.page.png           ← لقطة كاملة للصفحة
+    │   └── {stem}.page.warc.gz       ← أرشيف WARC
+    ├── Media/                        ← ملفات الوسائط والملحقات المرئية
+    │   └── {stem}.{ext}              ← ملف الوسائط (إن وُجد)
+    └── Metadata/                     ← السجلّات النصّية والتوقيعات
+        ├── {stem}.meta.json          ← سجلّ البيانات الوصفية القانوني
+        ├── {stem}.meta.json.sig      ← توقيع Ed25519 المنفصل
+        └── {stem}.checksums.txt      ← متوافق مع md5sum / sha256sum
 ```
 
-يضيف التقاط معرض الصور الملفات `{stem}.001.jpg` و `{stem}.001.json` … و`{stem}.gallery_info.json` إلى جانب الملفات الأخرى. المعرّف `downloads/` هو القضية الافتراضية، وأيّ قضية إضافية تعيش في مجلّد شقيق (`~/Documents/Capsule/{slug-القضية}/`).
+يضيف التقاط معرض الصور الملفات `{stem}.001.jpg` و `{stem}.002.png` … داخل `Media/`، والملفات المقابلة `{stem}.001.json` … و`{stem}.gallery_info.json` داخل `Metadata/`. المعرّف `downloads/` هو القضية الافتراضية، وأيّ قضية إضافية تعيش في مجلّد شقيق (`~/Documents/Capsule/{slug-القضية}/`).
 
 ---
 

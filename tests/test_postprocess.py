@@ -97,18 +97,18 @@ def test_media_capture_full_happy_path(env):
 
     case_dir = env["downloads"] / env["case"].slug
     item_dir = case_dir / result.stem
-    media_path = item_dir / f"{result.stem}.mp4"
+    media_path = item_dir / "Media" / f"{result.stem}.mp4"
     assert media_path.exists()
 
-    assert (item_dir / f"{result.stem}.info.json").exists()
-    assert (item_dir / f"{result.stem}.description").exists()
-    assert (item_dir / f"{result.stem}.checksums.txt").exists()
-    assert (item_dir / f"{result.stem}.meta.json").exists()
-    assert (item_dir / f"{result.stem}.meta.json.sig").exists()
+    assert (item_dir / "Metadata" / f"{result.stem}.info.json").exists()
+    assert (item_dir / "Metadata" / f"{result.stem}.description").exists()
+    assert (item_dir / "Metadata" / f"{result.stem}.checksums.txt").exists()
+    assert (item_dir / "Metadata" / f"{result.stem}.meta.json").exists()
+    assert (item_dir / "Metadata" / f"{result.stem}.meta.json.sig").exists()
 
     # Signature verifies against the active public key.
-    meta_bytes = (item_dir / f"{result.stem}.meta.json").read_bytes()
-    sig_bytes = (item_dir / f"{result.stem}.meta.json.sig").read_bytes()
+    meta_bytes = (item_dir / "Metadata" / f"{result.stem}.meta.json").read_bytes()
+    sig_bytes = (item_dir / "Metadata" / f"{result.stem}.meta.json.sig").read_bytes()
     assert env["signing"].verify(meta_bytes, sig_bytes) is True
 
     # DB row inserted.
@@ -148,7 +148,7 @@ def test_page_only_capture(env):
     assert result.relative_media_path is None
     assert result.stem.startswith("generic__")
     case_dir = env["downloads"] / env["case"].slug
-    assert (case_dir / result.stem / f"{result.stem}.meta.json").exists()
+    assert (case_dir / result.stem / "Metadata" / f"{result.stem}.meta.json").exists()
 
 
 def test_duplicate_raises(env):
@@ -246,10 +246,10 @@ def test_force_recapture_creates_sibling_with_c2_url_hash(env):
 
     # meta.json.force_recapture_index reflects the suffix.
     second_meta = json.loads(
-        (env["downloads"] / second.relative_item_dir / f"{second.stem}.meta.json").read_text()
+        (env["downloads"] / second.relative_item_dir / "Metadata" / f"{second.stem}.meta.json").read_text()
     )
     third_meta = json.loads(
-        (env["downloads"] / third.relative_item_dir / f"{third.stem}.meta.json").read_text()
+        (env["downloads"] / third.relative_item_dir / "Metadata" / f"{third.stem}.meta.json").read_text()
     )
     assert second_meta["force_recapture_index"] == 2
     assert third_meta["force_recapture_index"] == 3
@@ -460,7 +460,7 @@ def test_user_browser_artifacts_are_moved_into_item_dir(env):
     stem = result.stem
     for tail in (".user-browser.mhtml", ".user-browser.png",
                  ".user-browser.har", ".user-browser.environment.json"):
-        assert (item_dir / f"{stem}{tail}").is_file(), tail
+        assert (item_dir / "Captures" / f"{stem}{tail}").is_file(), tail
 
 
 def test_user_browser_artifacts_are_listed_in_meta_and_checksums(env):
@@ -496,7 +496,7 @@ def test_user_browser_artifacts_are_listed_in_meta_and_checksums(env):
         h = meta["checksums"][role]
         assert h["sha256"] and h["md5"] and h["size_bytes"] > 0
 
-    # checksums.txt mirrors the meta.json projection.
+    # checksums.txt mirrors the meta.json projection (lives in Metadata/).
     cs_text = (result.meta_json_path.parent / f"{result.stem}.checksums.txt").read_text()
     assert "user_browser_mhtml".replace("_", "_") not in cs_text  # reads relative paths, not roles
     # Just confirm the per-artifact lines exist by searching for filenames.
@@ -535,8 +535,9 @@ def test_user_browser_artifacts_trigger_audit_entry(env):
 
 
 def test_per_item_folder_layout_collapses_sidecars(env):
-    """All artifacts for one capture live directly under
-    ``/downloads/{case}/{stem}/`` — no ``sidecars/`` intermediate."""
+    """v0.8 layout: PDFs at item root, everything else under
+    ``Captures/`` / ``Media/`` / ``Metadata/`` subfolders. The legacy
+    ``sidecars/`` tier from earlier releases stays gone."""
     media, info, desc = _stage_media(env)
     pp = env["pp"]
     capture_input = pp.CaptureInput(
@@ -555,13 +556,16 @@ def test_per_item_folder_layout_collapses_sidecars(env):
     case_dir = env["downloads"] / env["case"].slug
     item_dir = case_dir / result.stem
 
-    # Old "sidecars/" tier must NOT exist.
+    # Legacy "sidecars/" tier must NOT exist.
     assert not (case_dir / "sidecars").exists()
-    # Media + sidecars all sit in the same per-item folder.
-    assert (item_dir / f"{result.stem}.mp4").is_file()
-    assert (item_dir / f"{result.stem}.info.json").is_file()
-    assert (item_dir / f"{result.stem}.meta.json").is_file()
-    assert (item_dir / f"{result.stem}.checksums.txt").is_file()
+    # Each role lands in its v0.8 subfolder.
+    assert (item_dir / "Media" / f"{result.stem}.mp4").is_file()
+    assert (item_dir / "Metadata" / f"{result.stem}.info.json").is_file()
+    assert (item_dir / "Metadata" / f"{result.stem}.meta.json").is_file()
+    assert (item_dir / "Metadata" / f"{result.stem}.checksums.txt").is_file()
+    # The two PDFs sit at the item root.
+    assert (item_dir / f"{result.stem}.report.pdf").is_file()
+    assert (item_dir / f"{result.stem}.manifest.pdf").is_file()
 
     # CaptureResult exposes the new field name.
     assert result.relative_item_dir.endswith(f"/{result.stem}")
@@ -589,7 +593,7 @@ def test_manifest_pdf_is_emitted_for_every_capture(env):
     )
     result = pp.finalize(env["conn"], capture_input)
     item_dir = env["downloads"] / result.relative_item_dir
-    manifest_pdf = item_dir / "reports" / f"{result.stem}.manifest.pdf"
+    manifest_pdf = item_dir / f"{result.stem}.manifest.pdf"
     assert manifest_pdf.is_file()
     assert manifest_pdf.read_bytes()[:5] == b"%PDF-"
 
@@ -698,7 +702,7 @@ def test_manifest_pdf_renders_for_page_only(env):
     )
     result = pp.finalize(env["conn"], capture_input)
     item_dir = env["downloads"] / result.relative_item_dir
-    assert (item_dir / "reports" / f"{result.stem}.manifest.pdf").is_file()
+    assert (item_dir / f"{result.stem}.manifest.pdf").is_file()
 
 
 def test_manifest_pdf_for_arabic_locale(env):
@@ -722,7 +726,7 @@ def test_manifest_pdf_for_arabic_locale(env):
     )
     result = pp.finalize(env["conn"], capture_input)
     item_dir = env["downloads"] / result.relative_item_dir
-    pdf_bytes = (item_dir / "reports" / f"{result.stem}.manifest.pdf").read_bytes()
+    pdf_bytes = (item_dir / f"{result.stem}.manifest.pdf").read_bytes()
     assert pdf_bytes.startswith(b"%PDF-")
 
 
@@ -760,7 +764,7 @@ def test_per_item_report_pdf_emitted(env):
     item_dir = env["downloads"] / result.relative_item_dir
 
     # File present and a valid PDF.
-    report_pdf = item_dir / "reports" / f"{result.stem}.report.pdf"
+    report_pdf = item_dir / f"{result.stem}.report.pdf"
     assert report_pdf.is_file()
     bytes_ = report_pdf.read_bytes()
     assert bytes_[:5] == b"%PDF-"
@@ -775,9 +779,9 @@ def test_per_item_report_pdf_emitted(env):
     assert cs["sha256"] and len(cs["sha256"]) == 64
     assert cs["size_bytes"] > 0
 
-    # checksums.txt mirrors the meta.checksums projection — both MD5
-    # and SHA256 lines reference the report PDF.
-    cs_text = (item_dir / f"{result.stem}.checksums.txt").read_text()
+    # checksums.txt (in Metadata/) mirrors the meta.checksums projection —
+    # both MD5 and SHA256 lines reference the report PDF.
+    cs_text = (item_dir / "Metadata" / f"{result.stem}.checksums.txt").read_text()
     assert ".report.pdf" in cs_text
     assert cs["sha256"] in cs_text
     assert cs["md5"] in cs_text
@@ -810,7 +814,7 @@ def test_per_item_report_pdf_emitted(env):
 def test_per_item_folder_layout_includes_report_pdf(env):
     """Companion to test_per_item_folder_layout_collapses_sidecars —
     the new ``{stem}.report.pdf`` sits alongside ``{stem}.manifest.pdf``
-    in the per-item ``reports/`` subfolder."""
+    at the item root (v0.8 layout)."""
     media, info, desc = _stage_media(env)
     pp = env["pp"]
     capture_input = pp.CaptureInput(
@@ -827,8 +831,8 @@ def test_per_item_folder_layout_includes_report_pdf(env):
     )
     result = pp.finalize(env["conn"], capture_input)
     item_dir = env["downloads"] / result.relative_item_dir
-    assert (item_dir / "reports" / f"{result.stem}.manifest.pdf").is_file()
-    assert (item_dir / "reports" / f"{result.stem}.report.pdf").is_file()
+    assert (item_dir / f"{result.stem}.manifest.pdf").is_file()
+    assert (item_dir / f"{result.stem}.report.pdf").is_file()
 
 
 def test_per_item_report_pdf_for_page_only_capture(env):
@@ -848,7 +852,7 @@ def test_per_item_report_pdf_for_page_only_capture(env):
     )
     result = pp.finalize(env["conn"], capture_input)
     item_dir = env["downloads"] / result.relative_item_dir
-    report = item_dir / "reports" / f"{result.stem}.report.pdf"
+    report = item_dir / f"{result.stem}.report.pdf"
     assert report.is_file()
     assert report.read_bytes()[:5] == b"%PDF-"
     meta = json.loads(result.meta_json_path.read_text(encoding="utf-8"))

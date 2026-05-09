@@ -70,19 +70,21 @@ Every capture lives in its own self-contained per-item folder under the case dir
 ```
 ~/Documents/Capsule/downloads/
 └── {stem}/
-    ├── {stem}.{ext}                  ← media file (if any)
-    ├── {stem}.meta.json              ← canonical metadata record
-    ├── {stem}.meta.json.sig          ← detached Ed25519 signature
-    ├── {stem}.checksums.txt          ← md5sum/sha256sum compatible
-    ├── {stem}.page.mhtml             ← page snapshot
-    ├── {stem}.page.png               ← full-page screenshot
-    ├── {stem}.page.warc.gz           ← WARC archive
-    └── reports/
-        ├── {stem}.manifest.pdf       ← full hashes (A4 landscape)
-        └── {stem}.report.pdf         ← human-readable report
+    ├── {stem}.report.pdf             ← human-readable report (locale-aware)
+    ├── {stem}.manifest.pdf           ← full hashes (A4 landscape)
+    ├── Captures/                     ← page snapshots
+    │   ├── {stem}.page.mhtml
+    │   ├── {stem}.page.png           ← full-page screenshot
+    │   └── {stem}.page.warc.gz       ← WARC archive
+    ├── Media/                        ← media file(s) and visual sidecars
+    │   └── {stem}.{ext}              ← media file (if any)
+    └── Metadata/                     ← textual records + signatures
+        ├── {stem}.meta.json          ← canonical metadata record
+        ├── {stem}.meta.json.sig      ← detached Ed25519 signature
+        └── {stem}.checksums.txt      ← md5sum/sha256sum compatible
 ```
 
-Image-gallery captures add `{stem}.001.jpg`, `{stem}.001.json`, … and `{stem}.gallery_info.json` next to the other files. The `downloads/` slug is the default case; additional cases live in sibling folders (`~/Documents/Capsule/{case-slug}/`).
+Image-gallery captures add `{stem}.001.jpg`, `{stem}.002.png`, … under `Media/`, and the matching `{stem}.001.json`, … plus `{stem}.gallery_info.json` under `Metadata/`. The `downloads/` slug is the default case; additional cases live in sibling folders (`~/Documents/Capsule/{case-slug}/`).
 
 ---
 

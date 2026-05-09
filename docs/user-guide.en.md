@@ -124,19 +124,21 @@ For every item, Capsule writes a self-contained per-item folder:
 ```
 ~/Documents/Capsule/downloads/
 └── youtube__veritasium__The_Most_Stubbornly_…__abc123XYZ/
-    ├── youtube__veritasium__…__abc123XYZ.mp4         ← media file
-    ├── youtube__veritasium__…__abc123XYZ.meta.json
-    ├── youtube__veritasium__…__abc123XYZ.meta.json.sig
-    ├── youtube__veritasium__…__abc123XYZ.checksums.txt
-    ├── youtube__veritasium__…__abc123XYZ.page.mhtml
-    ├── youtube__veritasium__…__abc123XYZ.page.png
-    ├── youtube__veritasium__…__abc123XYZ.page.warc.gz
-    ├── youtube__veritasium__…__abc123XYZ.info.json    ← yt-dlp metadata
-    ├── youtube__veritasium__…__abc123XYZ.description.txt
-    ├── youtube__veritasium__…__abc123XYZ.thumbnail.jpg
-    └── reports/
-        ├── youtube__veritasium__…__abc123XYZ.manifest.pdf
-        └── youtube__veritasium__…__abc123XYZ.report.pdf
+    ├── youtube__veritasium__…__abc123XYZ.report.pdf       ← human-readable
+    ├── youtube__veritasium__…__abc123XYZ.manifest.pdf     ← full hashes
+    ├── Captures/
+    │   ├── youtube__veritasium__…__abc123XYZ.page.mhtml
+    │   ├── youtube__veritasium__…__abc123XYZ.page.png
+    │   └── youtube__veritasium__…__abc123XYZ.page.warc.gz
+    ├── Media/
+    │   ├── youtube__veritasium__…__abc123XYZ.mp4          ← media file
+    │   └── youtube__veritasium__…__abc123XYZ.thumbnail.jpg
+    └── Metadata/
+        ├── youtube__veritasium__…__abc123XYZ.meta.json
+        ├── youtube__veritasium__…__abc123XYZ.meta.json.sig
+        ├── youtube__veritasium__…__abc123XYZ.checksums.txt
+        ├── youtube__veritasium__…__abc123XYZ.info.json    ← yt-dlp metadata
+        └── youtube__veritasium__…__abc123XYZ.description.txt
 ```
 
 The canonical filename pattern for media items is `{platform}__{uploader}__{title}__{date}__{video_id}.{ext}`, sanitized for cross-platform portability.
@@ -149,17 +151,20 @@ Image-gallery captures share the same per-item folder layout but replace the sin
 
 ```
 └── pixiv__user__series_title__dl-2026-05-07__a1b2c3d4e5f6/
-    ├── …001.jpg                ← image #1
-    ├── …001.json               ← gallery-dl per-image metadata
-    ├── …002.png
-    ├── …002.json
-    ├── …                       ← (up to gallery_max_items)
-    ├── …gallery_info.json      ← gallery-level metadata
-    ├── …meta.json              ← canonical record (incl. gallery_count, gallery_extractor)
-    ├── …meta.json.sig
-    └── reports/
-        ├── …manifest.pdf       ← every image listed with full hashes
-        └── …report.pdf         ← human-readable + thumbnail strip (up to 20 thumbs)
+    ├── …report.pdf             ← human-readable + thumbnail strip (up to 20 thumbs)
+    ├── …manifest.pdf           ← every image listed with full hashes
+    ├── Captures/               ← page.mhtml, page.png, page.warc.gz
+    ├── Media/
+    │   ├── …001.jpg            ← image #1
+    │   ├── …002.png
+    │   └── …                   ← (up to gallery_max_items)
+    └── Metadata/
+        ├── …001.json           ← gallery-dl per-image metadata
+        ├── …002.json
+        ├── …gallery_info.json  ← gallery-level metadata
+        ├── …meta.json          ← canonical record (incl. gallery_count, gallery_extractor)
+        ├── …meta.json.sig
+        └── …checksums.txt
 ```
 
 Each image gets its own MD5 + SHA-256, and the whole set is bound by the canonical `meta.json.sig` — a single signature covers every image.
@@ -168,7 +173,7 @@ The original, untruncated title and URL live in `meta.json` — never lost.
 
 ### The two per-item PDFs
 
-Every capture writes two locale-aware PDFs into a `reports/` subfolder:
+Every capture writes two locale-aware PDFs at the top of the per-item folder, so a recipient sees them first:
 
 - **`{stem}.manifest.pdf`** — A4 landscape, verifier-ready file table with **full** untruncated MD5 (32 hex) + SHA-256 (64 hex) for every file in the per-item folder. Header carries the source URL, capture timestamp UTC, and the signing-key fingerprint.
 - **`{stem}.report.pdf`** — Human-readable companion: provenance (URLs, redirect chain, captured-at UTC, uploader, upload date, duration, authenticated domains), the full untruncated description (paginated), a tools-and-versions table, and a capture-side report (render-wait outcomes, blocked-request count, banner-hide flags, readiness, report locale, animations frozen for the screenshot, browser console message and error counts, media-context screenshot status, WARC session provenance — single-session CDP→WARC vs. browsertrix-crawler subprocess fallback — and a screenshot-truncation note for very tall pages). When any non-default download knob was in effect — audio only, quality cap, subtitles, restart count, stall count — a **Download options** section is added so a recipient can see exactly which choices shaped this capture. For galleries, also a thumbnail strip of up to 20 images.
@@ -285,7 +290,7 @@ The bundle is a single zip file containing:
 - A locale-aware **PDF case report** (RTL-correct for Arabic).
 - `audit_log.json` — full audit-log entries for this case.
 - `verify.py` — the standalone verifier (only `cryptography` dependency).
-- A `downloads/` tree mirroring the on-disk per-item folder layout exactly: every `{stem}/` directory containing the media (when present), `meta.json` + `.sig`, `checksums.txt`, the page-snapshot trio (`mhtml`/`png`/`warc.gz`), and the `reports/{stem}.manifest.pdf` + `reports/{stem}.report.pdf` pair.
+- A `downloads/` tree mirroring the on-disk per-item folder layout exactly: every `{stem}/` directory holds the two PDFs (`{stem}.report.pdf` + `{stem}.manifest.pdf`) at the root, plus the `Captures/`, `Media/`, and `Metadata/` subfolders with the page-snapshot trio (`mhtml`/`png`/`warc.gz`), media file (when present), and `meta.json` + `.sig` + `checksums.txt`.
 
 The recipient runs `python verify.py path/to/bundle/` and gets a PASS/FAIL report. They do not need to install Capsule.
 

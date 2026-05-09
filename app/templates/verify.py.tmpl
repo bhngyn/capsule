@@ -89,9 +89,15 @@ def _verify_per_item_signatures(export_dir: Path, public_key) -> tuple[bool, lis
         if not stem_dir.is_dir():
             continue
         stem = stem_dir.name
-        meta = stem_dir / f"{stem}.meta.json"
-        sig = stem_dir / f"{stem}.meta.json.sig"
-        if not meta.is_file() or not sig.is_file():
+        # v0.8: meta.json lives in Metadata/. Fall back to the stem
+        # directory itself so older bundles still verify under a newer
+        # verifier copy.
+        for candidate in (stem_dir / "Metadata", stem_dir):
+            meta = candidate / f"{stem}.meta.json"
+            sig = candidate / f"{stem}.meta.json.sig"
+            if meta.is_file() and sig.is_file():
+                break
+        else:
             issues.append(f"meta or sig missing for {stem}")
             continue
         if not _verify_signature(

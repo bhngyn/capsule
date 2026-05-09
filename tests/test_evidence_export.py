@@ -215,14 +215,18 @@ def test_export_includes_per_item_manifest_pdf(env):
         names = zf.namelist()
     manifest_pdfs = [n for n in names if n.endswith(".manifest.pdf")]
     assert len(manifest_pdfs) >= 1
-    # Layout: per-item folder under downloads/{stem}/, no sidecars/ tier.
+    # Layout (v0.8): per-item folder under downloads/{stem}/, with
+    # Captures/ Media/ Metadata/ subfolders. Legacy sidecars/ and reports/
+    # tiers are gone.
     assert all("/sidecars/" not in n for n in names if n.startswith("downloads/"))
-    # The two human-readable PDFs live in the per-item ``reports/``
-    # subfolder; the ZIP mirrors that on-disk shape so the export and the
-    # case directory never drift.
+    assert all("/reports/" not in n for n in names if n.startswith("downloads/"))
+    # The two human-readable PDFs sit at the item root.
     item_pdfs = [n for n in names
                  if n.startswith("downloads/") and n.endswith(".pdf")]
-    assert all("/reports/" in n for n in item_pdfs), item_pdfs
+    for p in item_pdfs:
+        # downloads/{stem}/{stem}.{report|manifest}.pdf — exactly two
+        # path segments after "downloads/".
+        assert p.count("/") == 2, p
 
 
 def test_export_default_lang_is_english(env):

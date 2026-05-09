@@ -234,18 +234,32 @@ Every capture produces, at minimum, a page snapshot package (MHTML + screenshot 
 
 ```
 /downloads/{case_slug}/{stem}/                              ← per-item folder
-/downloads/{case_slug}/{stem}/{stem}.{ext}                  ← media file (if any)
-/downloads/{case_slug}/{stem}/{stem}.meta.json              ← canonical record
-/downloads/{case_slug}/{stem}/{stem}.meta.json.sig
-/downloads/{case_slug}/{stem}/{stem}.checksums.txt
-/downloads/{case_slug}/{stem}/{stem}.page.{mhtml,png,warc.gz}
-/downloads/{case_slug}/{stem}/reports/                      ← human-readable PDFs
-/downloads/{case_slug}/{stem}/reports/{stem}.manifest.pdf   ← per-item manifest PDF (full hashes, A4 landscape)
-/downloads/{case_slug}/{stem}/reports/{stem}.report.pdf     ← per-item human-readable report PDF
+/downloads/{case_slug}/{stem}/{stem}.report.pdf             ← per-item human-readable report PDF
+/downloads/{case_slug}/{stem}/{stem}.manifest.pdf           ← per-item manifest PDF (full hashes, A4 landscape)
+/downloads/{case_slug}/{stem}/Captures/                     ← page snapshots
+/downloads/{case_slug}/{stem}/Captures/{stem}.page.{mhtml,png,warc.gz}
+/downloads/{case_slug}/{stem}/Captures/{stem}.page.{har,console.json,context.png}
+/downloads/{case_slug}/{stem}/Captures/{stem}.user-browser.*  ← extension-supplied (when present)
+/downloads/{case_slug}/{stem}/Media/                        ← media file(s) and visual sidecars
+/downloads/{case_slug}/{stem}/Media/{stem}.{ext}            ← media file (if any)
+/downloads/{case_slug}/{stem}/Media/{stem}.thumbnail.{ext}
+/downloads/{case_slug}/{stem}/Media/{stem}.{lang}.vtt       ← subtitles
+/downloads/{case_slug}/{stem}/Metadata/                     ← textual records + signatures
+/downloads/{case_slug}/{stem}/Metadata/{stem}.meta.json     ← canonical record
+/downloads/{case_slug}/{stem}/Metadata/{stem}.meta.json.sig
+/downloads/{case_slug}/{stem}/Metadata/{stem}.checksums.txt
+/downloads/{case_slug}/{stem}/Metadata/{stem}.info.json     ← yt-dlp info (media kind)
+/downloads/{case_slug}/{stem}/Metadata/{stem}.description   ← video description
 ...
 ```
 
-Per-item folder keeps the case folder browsable: each capture is a single, self-contained folder with the media file, the page snapshot, and the forensic sidecars at the top tier, plus a `reports/` subfolder grouping the two human-readable PDFs so the case directory stays scannable. The PDFs render in the UI locale active at submission time (`lang` flows from the frontend through `JobBatch` → `JobOrchestrator.submit` → `CaptureInput.lang` → `pdf_report.render_item_{report,manifest}`).
+Per-item folder keeps the case folder browsable. The two locale-aware PDFs sit at the item root so a recipient sees them first; everything else is grouped under three subfolders by role:
+
+- **`Captures/`** — page snapshots (MHTML, screenshot, WARC, HAR, console events, media-context PNG) plus any extension-supplied user-browser captures.
+- **`Media/`** — the media file(s), gallery images, thumbnail, subtitles. Anything a viewer would *play* or *see*.
+- **`Metadata/`** — canonical `meta.json` + detached signature + `checksums.txt`, plus textual sidecars (yt-dlp `info.json`, `description`, gallery-level + per-image JSON).
+
+Each capture is still a single, self-contained folder. The PDFs render in the UI locale active at submission time (`lang` flows from the frontend through `JobBatch` → `JobOrchestrator.submit` → `CaptureInput.lang` → `pdf_report.render_item_{report,manifest}`).
 
 ### Canonical filename pattern (media kind)
 
@@ -296,29 +310,29 @@ twitter__Some_Important_Tweet_Title__dl-2026-05-06__a1b2c3d4e5f6        (page_on
 
 ## 6. Item folder contents
 
-For every capture, all files live together in `/downloads/{case_slug}/{stem}/`. The media file (if any) and every sidecar are stem-prefixed so they remain forensically identifiable when copied or extracted from the folder. The two human-readable PDFs live in a `reports/` subfolder so the case directory stays scannable; both are still referenced by hash in `meta.json` and therefore signed transitively via `meta.json.sig`.
+For every capture, all files live together in `/downloads/{case_slug}/{stem}/`. The media file (if any) and every sidecar are stem-prefixed so they remain forensically identifiable when copied or extracted from the folder. The two human-readable PDFs sit at the item root so a recipient sees them first; everything else is grouped under three subfolders by role — `Captures/`, `Media/`, `Metadata/` — for v0.8 onward (CLAUDE.md §15 v0.8). The two PDFs are still referenced by hash in `meta.json` and therefore signed transitively via `meta.json.sig`.
 
 | File                              | Always present? | Source / contents                                                                                                                                                                                                                                                                                                                                                                  |
 |-----------------------------------|------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `reports/{stem}.manifest.pdf`     | Yes              | Locale-aware per-item evidence manifest (PDF, A4 landscape). Header with source URL, capture timestamp UTC, and signing-key fingerprint, then a table of every file in the item folder with **full** MD5 (32 hex) and **full** SHA-256 (64 hex) — verifier-ready, no truncation. Rendered in the UI locale active at submission time. Hash recorded in `meta.json` and `checksums.txt` and transitively signed via `meta.json.sig`. |
-| `reports/{stem}.report.pdf`       | Yes              | Locale-aware per-item human-readable report (PDF). Provenance (URLs, redirects, capture timestamp UTC, uploader, title, upload date, duration, authenticated domains), full untruncated description (paginated), tools/versions table, and capture-side report (render-wait outcomes, blocked-request count, banner-hide flags, readiness, report locale). Companion to `reports/{stem}.manifest.pdf`. Rendered in the UI locale active at submission time. Hash recorded in `meta.json` and `checksums.txt` and transitively signed via `meta.json.sig`. |
-| `{stem}.meta.json`         | Yes              | **Our** structured metadata. Includes capture_kind, filenames, original/final URLs, redirect chain, response headers, platform, uploader, title (sanitized + original), description, upload_date, capture_date (UTC), duration, format details, file sizes, MD5/SHA-256 of every artifact, app/yt-dlp/browsertrix/Chromium versions, signing key fingerprint, audit-log entry id, list of authenticated domains (no cookie values) |
-| `{stem}.meta.json.sig`     | Yes              | Detached Ed25519 signature of `meta.json`                                                                                                                                                                                                                                                                                                                                          |
-| `{stem}.checksums.txt`     | Yes              | Lines of `MD5  <hash>  <relpath>` and `SHA256  <hash>  <relpath>` for every artifact (compatible with `md5sum -c` / `sha256sum -c`)                                                                                                                                                                                                                                              |
-| `{stem}.page.mhtml`        | Yes              | Single-file MHTML snapshot of the source page at capture time (Playwright)                                                                                                                                                                                                                                                                                                         |
-| `{stem}.page.png`          | Yes              | Full-page screenshot at capture time (Playwright)                                                                                                                                                                                                                                                                                                                                  |
-| `{stem}.page.warc.gz`      | Yes              | WARC archive of source page + every sub-resource (browsertrix scope=`page+resources`)                                                                                                                                                                                                                                                                                              |
-| `{stem}.info.json`         | Media kind only  | yt-dlp's full `--write-info-json` output, untouched                                                                                                                                                                                                                                                                                                                                |
-| `{stem}.description.txt`   | Media kind only  | Video description, plain text, LF line endings (yt-dlp `--write-description`)                                                                                                                                                                                                                                                                                                      |
-| `{stem}.thumbnail.{ext}`   | Media kind only  | Best available thumbnail (yt-dlp `--write-thumbnail`)                                                                                                                                                                                                                                                                                                                              |
-| `{stem}.{lang}.vtt`        | When requested   | Subtitles per language (yt-dlp `--write-subs`)                                                                                                                                                                                                                                                                                                                                     |
-| `{stem}.NNN.{ext}`         | Gallery kind only | Gallery image #NNN (1-based 3-digit zero-padded index, sorted-by-name for deterministic ordering). Original extension preserved (`.jpg`/`.png`/`.webp`/`.gif`/`.mp4` for animated formats from Pixiv ugoira / DeviantArt clips). Each indexed under role `gallery_NNN`. (v6) |
-| `{stem}.NNN.json`          | Gallery kind only | gallery-dl's per-image `--write-metadata` JSON sidecar (renamed to share the stem). Indexed under role `gallery_NNN_meta`. (v6) |
-| `{stem}.gallery_info.json` | Gallery kind only | Gallery-level metadata from gallery-dl's `--write-info-json` (extractor `category`, source URL, gallery title, etc.). Indexed under role `gallery_info`. (v6) |
-| `{stem}.user-browser.tab-context.json`    | Extension live capture | Investigator's UA / viewport / scroll / timezone / referrer / color-scheme. The backend canonical capture mirrors these fields. (v2)                                                                                                                                                                                                          |
-| `{stem}.user-browser.session-state.json`  | Extension live capture | Per-origin localStorage and sessionStorage. Some sites carry session JWTs in localStorage; without this the backend re-fetch may render as logged-out even with valid cookies. (v2)                                                                                                                                                            |
-| `{stem}.user-browser.dom-snapshot.html`   | Extension live capture | Click-time `document.documentElement.outerHTML` from the user's authenticated browser. Distinct from the Playwright MHTML — locks in exactly what the investigator was looking at. (v2)                                                                                                                                                       |
-| `{stem}.user-browser.dom-snapshot.json`   | Extension live capture | Structural counts that go with the DOM HTML (node count, iframe count, video count, image total + visible). (v2)                                                                                                                                                                                                                              |
+| `{stem}.manifest.pdf`             | Yes              | Locale-aware per-item evidence manifest (PDF, A4 landscape). Header with source URL, capture timestamp UTC, and signing-key fingerprint, then a table of every file in the item folder with **full** MD5 (32 hex) and **full** SHA-256 (64 hex) — verifier-ready, no truncation. Rendered in the UI locale active at submission time. Hash recorded in `meta.json` and `checksums.txt` and transitively signed via `meta.json.sig`. |
+| `{stem}.report.pdf`               | Yes              | Locale-aware per-item human-readable report (PDF). Provenance (URLs, redirects, capture timestamp UTC, uploader, title, upload date, duration, authenticated domains), full untruncated description (paginated), tools/versions table, and capture-side report (render-wait outcomes, blocked-request count, banner-hide flags, readiness, report locale). Companion to `{stem}.manifest.pdf`. Rendered in the UI locale active at submission time. Hash recorded in `meta.json` and `checksums.txt` and transitively signed via `meta.json.sig`. |
+| `Metadata/{stem}.meta.json`       | Yes              | **Our** structured metadata. Includes capture_kind, filenames, original/final URLs, redirect chain, response headers, platform, uploader, title (sanitized + original), description, upload_date, capture_date (UTC), duration, format details, file sizes, MD5/SHA-256 of every artifact, app/yt-dlp/browsertrix/Chromium versions, signing key fingerprint, audit-log entry id, list of authenticated domains (no cookie values) |
+| `Metadata/{stem}.meta.json.sig`   | Yes              | Detached Ed25519 signature of `meta.json`                                                                                                                                                                                                                                                                                                                                          |
+| `Metadata/{stem}.checksums.txt`   | Yes              | Lines of `MD5  <hash>  <relpath>` and `SHA256  <hash>  <relpath>` for every artifact (compatible with `md5sum -c` / `sha256sum -c`)                                                                                                                                                                                                                                              |
+| `Captures/{stem}.page.mhtml`      | Yes              | Single-file MHTML snapshot of the source page at capture time (Playwright)                                                                                                                                                                                                                                                                                                         |
+| `Captures/{stem}.page.png`        | Yes              | Full-page screenshot at capture time (Playwright)                                                                                                                                                                                                                                                                                                                                  |
+| `Captures/{stem}.page.warc.gz`    | Yes              | WARC archive of source page + every sub-resource (browsertrix scope=`page+resources`)                                                                                                                                                                                                                                                                                              |
+| `Metadata/{stem}.info.json`       | Media kind only  | yt-dlp's full `--write-info-json` output, untouched                                                                                                                                                                                                                                                                                                                                |
+| `Metadata/{stem}.description.txt` | Media kind only  | Video description, plain text, LF line endings (yt-dlp `--write-description`)                                                                                                                                                                                                                                                                                                      |
+| `Media/{stem}.thumbnail.{ext}`    | Media kind only  | Best available thumbnail (yt-dlp `--write-thumbnail`)                                                                                                                                                                                                                                                                                                                              |
+| `Media/{stem}.{lang}.vtt`         | When requested   | Subtitles per language (yt-dlp `--write-subs`)                                                                                                                                                                                                                                                                                                                                     |
+| `Media/{stem}.NNN.{ext}`          | Gallery kind only | Gallery image #NNN (1-based 3-digit zero-padded index, sorted-by-name for deterministic ordering). Original extension preserved (`.jpg`/`.png`/`.webp`/`.gif`/`.mp4` for animated formats from Pixiv ugoira / DeviantArt clips). Each indexed under role `gallery_NNN`. (v6) |
+| `Metadata/{stem}.NNN.json`        | Gallery kind only | gallery-dl's per-image `--write-metadata` JSON sidecar (renamed to share the stem). Indexed under role `gallery_NNN_meta`. (v6) |
+| `Metadata/{stem}.gallery_info.json` | Gallery kind only | Gallery-level metadata from gallery-dl's `--write-info-json` (extractor `category`, source URL, gallery title, etc.). Indexed under role `gallery_info`. (v6) |
+| `Captures/{stem}.user-browser.tab-context.json`    | Extension live capture | Investigator's UA / viewport / scroll / timezone / referrer / color-scheme. The backend canonical capture mirrors these fields. (v2)                                                                                                                                                                                             |
+| `Captures/{stem}.user-browser.session-state.json`  | Extension live capture | Per-origin localStorage and sessionStorage. Some sites carry session JWTs in localStorage; without this the backend re-fetch may render as logged-out even with valid cookies. (v2)                                                                                                                                              |
+| `Captures/{stem}.user-browser.dom-snapshot.html`   | Extension live capture | Click-time `document.documentElement.outerHTML` from the user's authenticated browser. Distinct from the Playwright MHTML — locks in exactly what the investigator was looking at. (v2)                                                                                                                                          |
+| `Captures/{stem}.user-browser.dom-snapshot.json`   | Extension live capture | Structural counts that go with the DOM HTML (node count, iframe count, video count, image total + visible). (v2)                                                                                                                                                                                                                  |
 
 `{stem}.meta.json` is the canonical record. Schema lives at `/app/schemas/meta.schema.json` and is versioned (`"schema_version": 6`). When the schema changes, write a migration. v2 (hardening pass) adds:
 
@@ -461,18 +475,22 @@ Per-case export bundle:
 ├── verify.py                         ← standalone verifier (only `cryptography` dependency)
 ├── README.txt                        ← short instructions for the recipient
 └── downloads/
-    └── {stem}/                                 ← per-item folder
-        ├── {stem}.{ext}                        ← media file (present for media kind)
-        ├── {stem}.meta.json
-        ├── {stem}.meta.json.sig
-        ├── {stem}.checksums.txt
-        ├── {stem}.page.mhtml
-        ├── {stem}.page.png
-        ├── {stem}.page.warc.gz
-        ├── reports/
-        │   ├── {stem}.manifest.pdf             ← per-item manifest PDF
-        │   └── {stem}.report.pdf               ← per-item human-readable report PDF
-        └── ...                                 ← media-only sidecars (info.json, description.txt, thumbnail) per §6
+    └── {stem}/                                 ← per-item folder (v0.8 layout)
+        ├── {stem}.report.pdf                   ← per-item human-readable report PDF
+        ├── {stem}.manifest.pdf                 ← per-item manifest PDF
+        ├── Captures/
+        │   ├── {stem}.page.mhtml
+        │   ├── {stem}.page.png
+        │   ├── {stem}.page.warc.gz
+        │   └── ...                             ← page.har, page.console.json, user-browser.* (when present)
+        ├── Media/
+        │   ├── {stem}.{ext}                    ← media file (present for media kind)
+        │   └── ...                             ← thumbnail, subtitles, gallery images
+        └── Metadata/
+            ├── {stem}.meta.json
+            ├── {stem}.meta.json.sig
+            ├── {stem}.checksums.txt
+            └── ...                             ← info.json, description, gallery_info.json per §6
 ```
 
 ### PDF report
@@ -788,6 +806,18 @@ Closes two long-standing gaps in the v1 surface: (a) investigators had no way to
 - **Schema v8** — [`app/schemas/meta.schema.json`](app/schemas/meta.schema.json). Additive: new `download_options` block at the root (`audio_only`, `quality_cap`, `subtitle_langs`, `restart_count`) and `capture.stalled_count`. v2–v7 records validate without modification; v8 records emit the block always (defaults included) so absence-vs-default is unambiguous.
 - **Audit actions** — `download.options_applied` (per dispatch when any knob is non-default), `download.stalled` / `download.stall_cleared`, `job.restarted`. Existing `job.paused` / `job.resumed` / `job.cancelled` continue to fire from the orchestrator's pause/resume/cancel paths.
 - **Forensic note** — `audio_only=true` is a *download choice* (yt-dlp never fetches the video stream), not a *post-mutation*. The page snapshot (MHTML/PNG/WARC) still preserves the full video player from capture time. The `meta.json.download_options.audio_only` field plus the per-item PDF section make this unambiguous to a recipient — they're never left wondering why the on-disk media is `.mp3` while the screenshot shows a video.
+
+### Per-item folder reorganization (v0.8)
+
+The flat per-item folder from v0.2 — media, page snapshots, every textual sidecar, `meta.json` + signature, and a `reports/` subfolder for the two PDFs all jostling at the same level — read as a wall of `{stem}.*` files when an investigator opened it. The two human-readable PDFs (the only files a non-Capsule recipient reaches for first) were buried one level below everything else. v0.8 promotes the PDFs to the item root and groups the rest by role.
+
+- **Per-item layout** — two PDFs at the item root; everything else in three role-named subfolders. `Captures/` holds page snapshots (MHTML, screenshot, WARC, HAR, console events, media-context PNG, plus extension-supplied user-browser captures). `Media/` holds the media file(s), gallery images, thumbnail, and subtitles — anything a viewer plays or sees. `Metadata/` holds `meta.json` + detached signature + `checksums.txt` and the textual sidecars (yt-dlp `info.json`, video description, gallery-level + per-image JSON). The legacy `reports/` subfolder is gone.
+- **Routing** — [`app/postprocess.py`](app/postprocess.py) gains `SUBDIR_CAPTURES`/`SUBDIR_METADATA`/`SUBDIR_MEDIA` constants and `_subdir_for_sidecar(filename)` for yt-dlp sidecars whose subdir depends on the file extension (thumbnails + subtitles → `Media/`; everything else → `Metadata/`). Each `_move_into` callsite passes the subdir directly, so the relpath that flows into `meta.json.artifacts` already carries the prefix — `checksums.txt`, the manifest PDF's file table, and the evidence-export ZIP all pick it up without further wiring.
+- **PDFs at the item root** — [`postprocess.finalize`](app/postprocess.py) writes `{stem}.report.pdf` and `{stem}.manifest.pdf` directly under `item_dir` instead of `item_dir/reports/`. Both still ride the existing artifact-binding transitive signature path: each PDF is hashed before `meta.json` is signed, so a recipient who verifies `meta.json.sig` transitively verifies both PDFs.
+- **Schema** — additive only. `schema_version` stays at 8; existing fields are unchanged. The relpaths in `meta.json.artifacts` simply gain the `Captures/` / `Media/` / `Metadata/` prefix where appropriate. v2–v7 records on disk continue to validate as-is.
+- **Backwards compatibility on disk** — items captured under the pre-v0.8 layout are NOT rewritten. Their `meta.json` records the relpaths as they were at capture time (signed bytes are immutable per CLAUDE.md §13.13), so `verify` and the evidence-export bundle keep resolving them. The verify endpoint ([`app/main.py`](app/main.py)) and `evidence_export._iter_artifact_paths` ([`app/evidence_export.py`](app/evidence_export.py)) prefer the v0.8 `Metadata/{stem}.meta.json` location and fall back to the item root when the new path is missing — a mixed library exports cleanly. Bundled `verify.py.tmpl` does the same fallback so a single verifier copy works against both old and new bundles.
+- **`extend_capture`** — the role-to-name map gains a `(subdir, filename)` pair; new artifacts on legacy items still use the new subdirs (the old artifacts stay in place since their relpaths in `meta.json` remain the truth). When a legacy item's `meta.json` lives at the item root, `extend_capture` updates it in place rather than spawning a stranded sibling in `Metadata/`.
+- **Documentation** — CLAUDE.md §5 path layout, §6 item-folder contents table, §10 evidence-bundle layout updated in lockstep per CLAUDE.md §13.15. `docs/quickstart.{en,ja,ar,es}.md` and `docs/user-guide.{en,ja,ar,es}.md` updated with the new tree diagrams.
 
 ## 16. Still open
 

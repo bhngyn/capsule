@@ -18,12 +18,11 @@ Bundle layout::
     ├── README.txt
     └── downloads/
         └── {stem}/                     ← per-item folder (CLAUDE.md §5/§6)
-            ├── {media_filename}        ← present for media kind
-            ├── {stem}.manifest.pdf
-            ├── {stem}.meta.json
-            ├── {stem}.meta.json.sig
-            ├── {stem}.checksums.txt
-            └── {stem}.page.*           ← MHTML, screenshot, WARC, etc.
+            ├── {stem}.report.pdf       ← human-readable, locale-aware
+            ├── {stem}.manifest.pdf     ← full hashes, A4 landscape
+            ├── Captures/               ← MHTML, screenshot, WARC, HAR, ...
+            ├── Media/                  ← media file, gallery images, thumbnail, subtitles
+            └── Metadata/               ← meta.json + sig, checksums.txt, info.json, ...
 
 The manifest is a flat list of ``{path, role, size, md5, sha256}`` records
 covering every file in the bundle. We sign the manifest, not each file
@@ -103,10 +102,13 @@ def _iter_artifact_paths(plan: ExportPlan) -> Iterable[tuple[Path, str, str]]:
     """Yield ``(absolute, relative_in_zip, role)`` for every artifact.
 
     Each library item has a per-item folder ``/downloads/{case_slug}/{stem}/``
-    holding the media file (if any), every sidecar, the meta + signature +
-    checksums, and a ``reports/`` subfolder for the two human-readable PDFs.
-    The bundle mirrors this layout under ``downloads/{stem}/...`` so the
-    on-disk shape and the export shape never drift.
+    holding the two human-readable PDFs at the root, plus three subfolders
+    grouping the rest by role: ``Captures/`` (page snapshots), ``Media/``
+    (media file, gallery images, thumbnail, subtitles), and ``Metadata/``
+    (meta.json + signature, checksums.txt, yt-dlp info.json, …). The
+    bundle mirrors this layout under ``downloads/{stem}/...`` because each
+    artifact's relpath is recorded in ``meta.json.artifacts`` and ridden
+    through to the ZIP unchanged.
     """
     for row in plan.items:
         meta = json.loads(row["meta_json"])
@@ -114,11 +116,19 @@ def _iter_artifact_paths(plan: ExportPlan) -> Iterable[tuple[Path, str, str]]:
         item_abs = (config.DOWNLOADS_DIR / item_rel).resolve()
         stem = item_abs.name
 
-        # Media file (if any) lives directly in the per-item folder.
+        # Media file (if any) — its relpath in ``meta.json.artifacts['media']``
+        # already carries the ``Media/`` prefix in v0.8 captures, so reusing
+        # ``row['relative_path']`` (which the DB stores verbatim) puts the
+        # file at the matching subpath in the bundle.
         if row["relative_path"]:
+            media_rel = Path(row["relative_path"])
+            try:
+                rel_in_item = media_rel.relative_to(Path(item_rel))
+            except ValueError:
+                rel_in_item = Path(media_rel.name)
             yield (
                 config.DOWNLOADS_DIR / row["relative_path"],
-                f"downloads/{stem}/{Path(row['relative_path']).name}",
+                f"downloads/{stem}/{rel_in_item.as_posix()}",
                 "media",
             )
 
@@ -162,15 +172,26 @@ def _iter_artifact_paths(plan: ExportPlan) -> Iterable[tuple[Path, str, str]]:
                 role,
             )
 
-        # The meta.json + sig + checksums + manifest.pdf are not listed in
-        # meta["artifacts"] (the manifest PDF is — see Track A commit 3 —
-        # but meta.json + sig + checksums.txt are not). Emit explicitly.
+        # meta.json + sig + checksums.txt are not listed in
+        # meta["artifacts"] (they live outside the artifact set on
+        # purpose: meta.json's signature can't bind itself, and
+        # checksums.txt would itself be hashed twice). Emit explicitly,
+        # preferring the v0.8 ``Metadata/`` location and falling back to
+        # the item root for items captured under the pre-v0.8 layout so a
+        # mixed library still exports cleanly.
         for tail in (".meta.json", ".meta.json.sig", ".checksums.txt"):
-            p = item_abs / f"{stem}{tail}"
-            if p.is_file():
+            metadata_path = item_abs / "Metadata" / f"{stem}{tail}"
+            legacy_path = item_abs / f"{stem}{tail}"
+            if metadata_path.is_file():
                 yield (
-                    p,
-                    f"downloads/{stem}/{p.name}",
+                    metadata_path,
+                    f"downloads/{stem}/Metadata/{stem}{tail}",
+                    f"meta{tail}",
+                )
+            elif legacy_path.is_file():
+                yield (
+                    legacy_path,
+                    f"downloads/{stem}/{stem}{tail}",
                     f"meta{tail}",
                 )
 

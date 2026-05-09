@@ -127,10 +127,13 @@ def test_gallery_capture_full_happy_path(env):
 
     case_dir = env["downloads"] / env["case"].slug
     item_dir = case_dir / result.stem
+    media_dir = item_dir / "Media"
+    metadata_dir = item_dir / "Metadata"
 
-    # Per-item folder layout: 4 images + 4 per-image JSON + 1 gallery-info JSON
-    # plus the always-present ``reports/`` subfolder for the two PDFs.
-    image_files = sorted(p for p in item_dir.iterdir() if p.suffix in {".jpg", ".png", ".webp"})
+    # Per-item folder layout (v0.8): images live in Media/, per-image and
+    # gallery-level JSON sidecars live in Metadata/, the two PDFs sit at
+    # the item root.
+    image_files = sorted(p for p in media_dir.iterdir() if p.suffix in {".jpg", ".png", ".webp"})
     assert len(image_files) == 4
     # 1-based 3-digit zero-padded index, original extensions preserved.
     expected_image_names = [
@@ -139,15 +142,15 @@ def test_gallery_capture_full_happy_path(env):
     ]
     assert sorted(p.name for p in image_files) == sorted(expected_image_names)
 
-    # Per-image metadata sidecars renamed to share the stem.
+    # Per-image metadata sidecars renamed to share the stem; live in Metadata/.
     json_sidecars = sorted(
-        p for p in item_dir.iterdir()
+        p for p in metadata_dir.iterdir()
         if p.suffix == ".json" and p.name.startswith(result.stem) and ".gallery_info" not in p.name and ".meta" not in p.name
     )
     assert len(json_sidecars) == 4
 
-    # Gallery-level info.json has its own role.
-    gallery_info_path = item_dir / f"{result.stem}.gallery_info.json"
+    # Gallery-level info.json has its own role; lives in Metadata/.
+    gallery_info_path = metadata_dir / f"{result.stem}.gallery_info.json"
     assert gallery_info_path.exists()
 
     # Read meta.json — schema v8 (gallery fields from v6 stay; v7 added the
@@ -176,12 +179,13 @@ def test_gallery_capture_full_happy_path(env):
     assert "gallery_info" in meta["artifacts"]
     assert "gallery_info" in meta["checksums"]
 
-    # checksums.txt lists every gallery image (MD5 + SHA-256 lines).
-    cs_text = (item_dir / f"{result.stem}.checksums.txt").read_text()
+    # checksums.txt lists every gallery image (MD5 + SHA-256 lines); lives
+    # in Metadata/ alongside meta.json.
+    cs_text = (metadata_dir / f"{result.stem}.checksums.txt").read_text()
     for i in range(1, 5):
         ext = ["jpg", "png", "webp", "jpg"][i - 1]
         rel_name = f"{result.stem}.{i:03d}.{ext}"
-        assert f"  {env['case'].slug}/{result.stem}/{rel_name}" in cs_text or rel_name in cs_text
+        assert f"Media/{rel_name}" in cs_text or rel_name in cs_text
 
     # meta.json.sig verifies — covers every gallery image's hash through
     # the artifacts/checksums map.
@@ -281,7 +285,7 @@ def test_gallery_capture_preserves_image_extensions(env):
     result = pp.finalize(env["conn"], capture_input)
     case_dir = env["downloads"] / env["case"].slug
     item_dir = case_dir / result.stem
-    found = sorted(p.suffix for p in item_dir.iterdir() if p.is_file())
+    found = sorted(p.suffix for p in (item_dir / "Media").iterdir() if p.is_file())
     assert ".jpg" in found
     assert ".png" in found
     assert ".webp" in found
@@ -313,7 +317,7 @@ def test_gallery_report_pdf_includes_thumbnail_strip_and_version(env):
     )
     result = pp.finalize(env["conn"], capture_input)
     item_dir = (env["downloads"] / env["case"].slug / result.stem)
-    report_pdf = item_dir / "reports" / f"{result.stem}.report.pdf"
+    report_pdf = item_dir / f"{result.stem}.report.pdf"
     assert report_pdf.exists()
     pdf_bytes = report_pdf.read_bytes()
     # PDFs render images as embedded XObjects — direct text search of
