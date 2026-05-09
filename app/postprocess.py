@@ -767,7 +767,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         capture_block.setdefault("stalled_count", stalled_count)
 
         meta = {
-            "schema_version": 8,
+            "schema_version": 9,
             "job_uuid": capture_input.job_uuid,
             "capture_kind": capture_kind,
             "case": {"id": case.id, "slug": case.slug, "name": case.name},

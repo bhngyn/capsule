@@ -230,24 +230,41 @@ def _cleanup_bundle(bundle: UserBrowserBundle) -> None:
         pass
 
 
+# Allowed enums for the v0.9 container picker. Module-level so the argv
+# builder (build_container_argv, build_format_spec) and the JobBatchItem
+# validator share one source of truth — drift here would let an unknown
+# string slip into yt-dlp's argv. None ⇒ "let yt-dlp pick" (back-compat).
+VIDEO_CONTAINERS: tuple[str, ...] = ("mp4", "webm", "mkv")
+AUDIO_CONTAINERS: tuple[str, ...] = ("mp3", "m4a", "opus", "wav", "flac")
+
+
 @dataclass
 class DownloadOptions:
-    """Per-job download-modification + reliability counters (CLAUDE.md §15 v0.7).
+    """Per-job download-modification + reliability counters (CLAUDE.md §15 v0.7/v0.9).
 
-    ``audio_only``, ``quality_cap``, and ``subtitle_langs`` are the
-    investigator-facing knobs; ``restart_count`` and ``stalled_count`` are
-    forensic counters bumped by the orchestrator/runner so the per-item
-    PDF report can disclose them.
+    ``audio_only``, ``quality_cap``, ``subtitle_langs``, ``video_container``,
+    and ``audio_container`` are the investigator-facing knobs; ``restart_count``
+    and ``stalled_count`` are forensic counters bumped by the orchestrator/runner
+    so the per-item PDF report can disclose them.
 
     Persisted as JSON on ``jobs.download_options_json`` and as a block on
-    ``meta.json.download_options`` (schema v8) — the latter is signed
+    ``meta.json.download_options`` (schema v9) — the latter is signed
     transitively via ``meta.json.sig`` so a recipient can confirm what
     options were in effect.
+
+    The v0.9 container fields are mux-only (``--merge-output-format`` for
+    video; ``--audio-format`` for audio extraction). They never trigger
+    re-encoding of the video stream — see CLAUDE.md §15 v0.9 forensic note.
     """
     audio_only: bool = False
     # 'audio' | '480' | '720' | '1080' | 'best' | None
     quality_cap: str | None = None
     subtitle_langs: list[str] = field(default_factory=list)
+    # v0.9: 'mp4' | 'webm' | 'mkv' | None. None ⇒ yt-dlp default.
+    video_container: str | None = None
+    # v0.9: 'mp3' | 'm4a' | 'opus' | 'wav' | 'flac' | None. None ⇒ mp3
+    # (the v0.7 default, preserved for back-compat).
+    audio_container: str | None = None
     # Bumped by JobOrchestrator.restart(); persisted across the restart so
     # the meta.json block records it.
     restart_count: int = 0
@@ -260,6 +277,8 @@ class DownloadOptions:
             "audio_only": bool(self.audio_only),
             "quality_cap": self.quality_cap,
             "subtitle_langs": list(self.subtitle_langs or []),
+            "video_container": self.video_container,
+            "audio_container": self.audio_container,
             "restart_count": int(self.restart_count),
             "stalled_count": int(self.stalled_count),
         }
@@ -275,12 +294,29 @@ class DownloadOptions:
         if not isinstance(langs, list):
             langs = []
         # Coerce types defensively — older rows may have nullable ints.
+        # Container fields: only accept known enum values; unknown strings
+        # fall back to None so a stale localStorage entry or a future-version
+        # payload can't slip an arbitrary string into yt-dlp's argv.
+        vc_raw = raw.get("video_container")
+        ac_raw = raw.get("audio_container")
+        video_container = (
+            str(vc_raw)
+            if vc_raw is not None and str(vc_raw) in VIDEO_CONTAINERS
+            else None
+        )
+        audio_container = (
+            str(ac_raw)
+            if ac_raw is not None and str(ac_raw) in AUDIO_CONTAINERS
+            else None
+        )
         return cls(
             audio_only=bool(raw.get("audio_only", False)),
             quality_cap=(str(raw["quality_cap"])
                          if raw.get("quality_cap") not in (None, "")
                          else None),
             subtitle_langs=[str(s) for s in langs if s],
+            video_container=video_container,
+            audio_container=audio_container,
             restart_count=int(raw.get("restart_count") or 0),
             stalled_count=int(raw.get("stalled_count") or 0),
         )
@@ -302,6 +338,8 @@ class DownloadOptions:
             not self.audio_only
             and not self.quality_cap
             and not self.subtitle_langs
+            and not self.video_container
+            and not self.audio_container
         )
 
 
@@ -1457,6 +1495,8 @@ class JobOrchestrator:
                     audio_only=job.download_options.audio_only,
                     quality_cap=job.download_options.quality_cap,
                     subtitle_langs=job.download_options.subtitle_langs or None,
+                    video_container=job.download_options.video_container,
+                    audio_container=job.download_options.audio_container,
                     restart=restart_now,
                 )
             )

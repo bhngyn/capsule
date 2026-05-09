@@ -383,9 +383,70 @@ def test_download_options_is_default_only_for_blank_state():
     assert DownloadOptions(audio_only=True).is_default() is False
     assert DownloadOptions(quality_cap="720").is_default() is False
     assert DownloadOptions(subtitle_langs=["en"]).is_default() is False
+    # v0.9: container picks count as investigator-facing knobs too — even
+    # without any other option, they should fire the audit row.
+    assert DownloadOptions(video_container="mp4").is_default() is False
+    assert DownloadOptions(audio_container="m4a").is_default() is False
     # Counters alone are not "investigator-facing" knobs — they don't
     # trigger the audit row, hence is_default still returns True.
     assert DownloadOptions(restart_count=3).is_default() is True
+
+
+# --- CLAUDE.md §15 v0.9: container picker ----------------------------------
+
+
+def test_download_options_round_trip_with_containers():
+    from app.jobs import DownloadOptions
+    # Both fields can be set simultaneously (the dataclass doesn't enforce
+    # the audio_only/video_container split — that's the runner's job).
+    a = DownloadOptions(
+        audio_only=False, quality_cap="720",
+        video_container="mp4", audio_container="m4a",
+    )
+    b = DownloadOptions.from_json(a.to_json())
+    assert b.video_container == "mp4"
+    assert b.audio_container == "m4a"
+    # Round-trip preserves the v0.7 fields too.
+    assert b.audio_only is False
+    assert b.quality_cap == "720"
+
+
+def test_download_options_from_dict_rejects_invalid_container_enum():
+    # Defensive coerce: an unknown string in a stored row (e.g. someone
+    # hand-edited download_options_json) silently degrades to None instead
+    # of riding through to yt-dlp's argv.
+    from app.jobs import DownloadOptions
+    raw = {
+        "video_container": "mov",   # not in {mp4, webm, mkv}
+        "audio_container": "aiff",  # not in {mp3, m4a, opus, wav, flac}
+    }
+    opts = DownloadOptions.from_dict(raw)
+    assert opts.video_container is None
+    assert opts.audio_container is None
+
+
+def test_download_options_to_dict_emits_container_fields_always():
+    # to_dict() emits both fields unconditionally (even when None) so a
+    # downstream consumer (PDF report, audit details, meta.json) can
+    # distinguish "not set" from "missing" without a presence check.
+    from app.jobs import DownloadOptions
+    out = DownloadOptions().to_dict()
+    assert "video_container" in out and out["video_container"] is None
+    assert "audio_container" in out and out["audio_container"] is None
+
+
+def test_download_options_module_constants_exposed():
+    # Single source of truth — drift between the dataclass and the API
+    # validators / runner / frontend would let an unknown string slip in.
+    from app import jobs as jobs_mod
+    assert "mp4" in jobs_mod.VIDEO_CONTAINERS
+    assert "webm" in jobs_mod.VIDEO_CONTAINERS
+    assert "mkv" in jobs_mod.VIDEO_CONTAINERS
+    assert "mp3" in jobs_mod.AUDIO_CONTAINERS
+    assert "m4a" in jobs_mod.AUDIO_CONTAINERS
+    assert "opus" in jobs_mod.AUDIO_CONTAINERS
+    assert "wav" in jobs_mod.AUDIO_CONTAINERS
+    assert "flac" in jobs_mod.AUDIO_CONTAINERS
 
 
 @pytest.mark.asyncio
@@ -425,6 +486,58 @@ async def test_submit_persists_download_options(reload_modules, stub_pipeline):
     persisted = jobs_mod.DownloadOptions.from_json(row["download_options_json"])
     assert persisted.audio_only is True
     assert persisted.subtitle_langs == ["en"]
+
+
+@pytest.mark.asyncio
+async def test_submit_persists_video_and_audio_container(
+    reload_modules, stub_pipeline,
+):
+    """v0.9: container picks must round-trip through ``submit`` → DB → reload.
+
+    Without this, an investigator's mp4-or-m4a choice would be silently
+    dropped between the API layer and the runner — meta.json would still
+    record the on-disk extension but lose the *intent* (which is what the
+    PDF report and audit row surface to the recipient).
+    """
+    db_mod, jobs_mod = reload_modules
+    orch = jobs_mod.JobOrchestrator(max_concurrent=1)
+
+    conn = db_mod.connect()
+    try:
+        db_mod.migrate(conn)
+        from app import cases
+        case = cases.ensure_default_case(conn)
+    finally:
+        conn.close()
+
+    opts = jobs_mod.DownloadOptions(
+        audio_only=False,
+        quality_cap="720",
+        video_container="mp4",
+        audio_container="m4a",
+    )
+    job = await orch.submit(
+        case_id=case.id, url="https://example.com/x",
+        download_options=opts,
+    )
+    deadline = asyncio.get_event_loop().time() + 3.0
+    while asyncio.get_event_loop().time() < deadline:
+        live = orch.get(job.id)
+        if live and live.status in jobs_mod.TERMINAL_STATUSES:
+            break
+        await asyncio.sleep(0.05)
+
+    conn = db_mod.connect()
+    try:
+        row = conn.execute(
+            "SELECT download_options_json FROM jobs WHERE id = ?", (job.id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    persisted = jobs_mod.DownloadOptions.from_json(row["download_options_json"])
+    assert persisted.video_container == "mp4"
+    assert persisted.audio_container == "m4a"
+    assert persisted.quality_cap == "720"
 
 
 @pytest.mark.asyncio

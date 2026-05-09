@@ -149,15 +149,23 @@
       clearDialog: null,            // { open, count, case_name, freed_bytes_human } | null
       clearInProgress: false,
 
-      // CLAUDE.md §15 v0.7: per-submission download options (audio_only,
-      // quality cap, subtitle languages). Persisted in localStorage so
-      // sticky preferences survive reloads. Sent on every JobBatchItem in
-      // _postBatch().
+      // CLAUDE.md §15 v0.7/v0.9: per-submission download options. v0.9
+      // adds video_container + audio_container. Two separate fields so the
+      // user's pick survives toggling audio_only — they pick mp4, flip to
+      // audio-only and pick m4a, flip back, the mp4 selection is still
+      // there. Persisted in localStorage so preferences survive reloads.
       downloadOptions: {
         audio_only: false,
         quality_cap: null,          // 'audio'|'480'|'720'|'1080'|'best'|null
         subtitle_langs: [],
+        video_container: null,      // 'mp4'|'webm'|'mkv'|null
+        audio_container: null,      // 'mp3'|'m4a'|'opus'|'wav'|'flac'|null
       },
+      // Static enums mirrored from app/jobs.py — drift here would let an
+      // unknown string ride to the backend (which validates and rejects),
+      // so keep them in sync with VIDEO_CONTAINERS / AUDIO_CONTAINERS.
+      _VIDEO_CONTAINERS: ['mp4', 'webm', 'mkv'],
+      _AUDIO_CONTAINERS: ['mp3', 'm4a', 'opus', 'wav', 'flac'],
       // Cancel/Restart per-job confirmation dialog. Goes through the same
       // shape as clearDialog for the destructive-action discipline in §15.
       controlConfirm: null,         // { open, action, jobId, busy } | null
@@ -199,6 +207,15 @@
               ? parsed.subtitle_langs.filter(s => typeof s === 'string')
               : [];
             this.downloadOptions.subtitle_langs = langs;
+            // v0.9: only accept known enum values. A stale or future
+            // payload (e.g. 'mov' from a forked build) silently coerces
+            // to null so it can't slip through to the backend.
+            const vc = parsed.video_container;
+            this.downloadOptions.video_container =
+              this._VIDEO_CONTAINERS.includes(vc) ? vc : null;
+            const ac = parsed.audio_container;
+            this.downloadOptions.audio_container =
+              this._AUDIO_CONTAINERS.includes(ac) ? ac : null;
           }
         } catch (_) { /* corrupted localStorage — ignore, defaults stand */ }
       },
@@ -214,12 +231,35 @@
 
       hasNonDefaultDownloadOptions() {
         const o = this.downloadOptions;
-        return !!(o.audio_only || o.quality_cap || (o.subtitle_langs || []).length);
+        return !!(
+          o.audio_only
+          || o.quality_cap
+          || (o.subtitle_langs || []).length
+          || o.video_container
+          || o.audio_container
+        );
       },
 
       effectiveQualityCap() {
         if (this.downloadOptions.audio_only) return 'audio';
         return this.downloadOptions.quality_cap || 'best';
+      },
+
+      // v0.9: which container chip is "pressed" right now. The pill is
+      // context-aware — when audio-only is on we surface the audio set,
+      // otherwise the video set. Returns 'auto' when nothing's picked.
+      effectiveContainer() {
+        if (this.downloadOptions.audio_only) {
+          return this.downloadOptions.audio_container || 'auto';
+        }
+        return this.downloadOptions.video_container || 'auto';
+      },
+
+      // Which container set the chips render today (audio vs video).
+      activeContainerSet() {
+        return this.downloadOptions.audio_only
+          ? this._AUDIO_CONTAINERS
+          : this._VIDEO_CONTAINERS;
       },
 
       setAudioOnly(on) {
@@ -231,6 +271,9 @@
         if (on) {
           this.downloadOptions.quality_cap = null;
         }
+        // v0.9: leave both container fields untouched — they're remembered
+        // across mode toggles so flipping audio-only on doesn't blow away
+        // the user's mp4 pick (and vice versa).
         this._persistDownloadOptions();
       },
 
@@ -244,6 +287,27 @@
         } else {
           this.downloadOptions.audio_only = false;
           this.downloadOptions.quality_cap = cap;
+        }
+        this._persistDownloadOptions();
+      },
+
+      // v0.9: pick a container. ``cap === 'auto'`` clears the field. Routes
+      // to the audio or video field based on the audio_only state — the
+      // *opposite* field is preserved so flipping audio_only later restores
+      // the previous pick.
+      setContainer(cap) {
+        if (this.downloadOptions.audio_only) {
+          if (cap === 'auto') {
+            this.downloadOptions.audio_container = null;
+          } else if (this._AUDIO_CONTAINERS.includes(cap)) {
+            this.downloadOptions.audio_container = cap;
+          }
+        } else {
+          if (cap === 'auto') {
+            this.downloadOptions.video_container = null;
+          } else if (this._VIDEO_CONTAINERS.includes(cap)) {
+            this.downloadOptions.video_container = cap;
+          }
         }
         this._persistDownloadOptions();
       },
@@ -269,6 +333,8 @@
         this.downloadOptions.audio_only = false;
         this.downloadOptions.quality_cap = null;
         this.downloadOptions.subtitle_langs = [];
+        this.downloadOptions.video_container = null;
+        this.downloadOptions.audio_container = null;
         this._persistDownloadOptions();
       },
 
@@ -283,6 +349,12 @@
         }
         if ((this.downloadOptions.subtitle_langs || []).length) {
           out.subtitle_langs = this.downloadOptions.subtitle_langs.slice();
+        }
+        if (this.downloadOptions.video_container) {
+          out.video_container = this.downloadOptions.video_container;
+        }
+        if (this.downloadOptions.audio_container) {
+          out.audio_container = this.downloadOptions.audio_container;
         }
         return out;
       },

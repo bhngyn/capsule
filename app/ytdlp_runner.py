@@ -69,19 +69,37 @@ DEFAULT_STALL_THRESHOLD_S = 90
 DEFAULT_AUDIO_FORMAT = "mp3"
 DEFAULT_AUDIO_QUALITY = "0"
 
+# CLAUDE.md §15 v0.9 — preferred audio extension to pair with each video
+# container in the format selector. Conventional yt-dlp idiom: mp4/mkv pair
+# best with m4a (AAC); webm pairs with webm (Opus/Vorbis). Falls back to
+# any audio if no compatible stream is offered.
+_AUDIO_PAIR_FOR_VIDEO_CONTAINER: dict[str, str] = {
+    "mp4": "m4a",
+    "webm": "webm",
+    "mkv": "m4a",
+}
+
+_VIDEO_CONTAINERS = ("mp4", "webm", "mkv")
+_AUDIO_CONTAINERS = ("mp3", "m4a", "opus", "wav", "flac")
+
 
 def build_format_spec(
     *,
     audio_only: bool,
     quality_cap: str | None,
     fallback: str | None,
+    video_container: str | None = None,
 ) -> str | None:
-    """Resolve the yt-dlp ``--format`` argument from the v0.7 knobs.
+    """Resolve the yt-dlp ``--format`` argument from the v0.7/v0.9 knobs.
 
     Precedence:
 
     * ``audio_only=True`` (or ``quality_cap == "audio"``) ⇒ no ``--format``;
       ``-x --audio-format ...`` handles it. Returns None.
+    * ``video_container`` set ⇒ prefer streams matching the container's
+      extension first, then fall back to the height/quality selector, then
+      to ``best`` so a site that doesn't offer the preferred ext still
+      captures (CLAUDE.md §15 v0.9). Combines with ``quality_cap`` height.
     * ``quality_cap`` in ``{"480", "720", "1080"}`` ⇒
       ``bestvideo[height<=N]+bestaudio/best[height<=N]``.
     * ``quality_cap == "best"`` ⇒ ``best`` (overrides any profile fallback).
@@ -89,6 +107,25 @@ def build_format_spec(
     """
     if audio_only or quality_cap == "audio":
         return None
+    height_clause = (
+        f"[height<={quality_cap}]"
+        if quality_cap in ("480", "720", "1080")
+        else ""
+    )
+    if video_container in _VIDEO_CONTAINERS:
+        ext = video_container
+        audio_pair = _AUDIO_PAIR_FOR_VIDEO_CONTAINER.get(ext, "m4a")
+        # 1st: ext-matched video + matching-audio  (no remux at all)
+        # 2nd: ext-matched video + any audio       (yt-dlp will mux to ext)
+        # 3rd: best video + best audio at height   (yt-dlp picks muxer)
+        # 4th: best fallback at height             (single-stream sites)
+        return (
+            f"bestvideo{height_clause}[ext={ext}]+bestaudio[ext={audio_pair}]/"
+            f"bestvideo{height_clause}[ext={ext}]+bestaudio/"
+            f"bestvideo{height_clause}+bestaudio/"
+            f"best{height_clause}[ext={ext}]/"
+            f"best{height_clause}"
+        )
     if quality_cap in ("480", "720", "1080"):
         return (
             f"bestvideo[height<={quality_cap}]+bestaudio/"
@@ -97,6 +134,29 @@ def build_format_spec(
     if quality_cap == "best":
         return "best"
     return fallback
+
+
+def build_container_argv(
+    *,
+    audio_only: bool,
+    quality_cap: str | None,
+    video_container: str | None,
+) -> list[str]:
+    """Return ``--merge-output-format`` flags for the video path, or [].
+
+    CLAUDE.md §15 v0.9 forensic note — ``--merge-output-format`` only
+    chooses the muxer for yt-dlp's video+audio merge. It does NOT
+    re-encode the video stream (which would be a forbidden mutation per
+    CLAUDE.md §13 #13). The audio path uses ``--audio-format`` instead
+    (set in ``_build_argv``) which DOES transcode; that's been the
+    existing behavior since v0.7 and is consistent with the
+    "download choice, not post-mutation" framing.
+    """
+    if audio_only or quality_cap == "audio":
+        return []
+    if video_container in _VIDEO_CONTAINERS:
+        return ["--merge-output-format", video_container]
+    return []
 
 
 def build_subtitle_argv(subtitle_langs: list[str] | None) -> list[str]:
@@ -320,6 +380,8 @@ def _build_argv(
     audio_quality: str = DEFAULT_AUDIO_QUALITY,
     quality_cap: str | None = None,
     subtitle_langs: list[str] | None = None,
+    video_container: str | None = None,
+    audio_container: str | None = None,
     restart: bool = False,
 ) -> list[str]:
     """Build the yt-dlp command line. Visible separately for tests.
@@ -350,6 +412,15 @@ def _build_argv(
     * ``restart=True`` ⇒ ``--no-continue`` instead of ``--continue``; the
       caller is expected to have already wiped ``*.part`` / ``*.ytdl`` so
       yt-dlp doesn't re-incarnate them.
+
+    CLAUDE.md §15 v0.9 — container picker:
+
+    * ``video_container`` ∈ {"mp4", "webm", "mkv"} ⇒ extends ``--format``
+      to prefer ext-matching streams + emits ``--merge-output-format``
+      (mux-only, no re-encode). Ignored on the audio path.
+    * ``audio_container`` ∈ {"mp3", "m4a", "opus", "wav", "flac"} ⇒
+      overrides the default ``audio_format`` for the audio-extraction path.
+      Ignored on the video path.
     """
     argv: list[str] = [
         _ytdlp_executable(),
@@ -389,21 +460,38 @@ def _build_argv(
         argv += ["--cookies", str(cookies_file)]
 
     # Audio-only beats quality_cap height. Build the resolved format
-    # spec with the v0.7 helper so the precedence is identical at every
-    # call site.
+    # spec with the v0.7/v0.9 helper so the precedence is identical at
+    # every call site.
     resolved_format = build_format_spec(
         audio_only=audio_only,
         quality_cap=quality_cap,
         fallback=format_spec,
+        video_container=video_container,
+    )
+    # v0.9: user-picked audio container overrides the default mp3 on the
+    # audio-extraction path. Validated upstream (jobs.AUDIO_CONTAINERS),
+    # but defensively gate here too so a stray test caller can't slip an
+    # unknown string into yt-dlp's argv.
+    effective_audio_format = (
+        audio_container
+        if audio_container in _AUDIO_CONTAINERS
+        else audio_format
     )
     if audio_only or quality_cap == "audio":
         argv += [
             "-x",
-            "--audio-format", audio_format,
+            "--audio-format", effective_audio_format,
             "--audio-quality", audio_quality,
         ]
     if resolved_format:
         argv += ["--format", resolved_format]
+
+    # v0.9: --merge-output-format is mux-only (no re-encode).
+    argv += build_container_argv(
+        audio_only=audio_only,
+        quality_cap=quality_cap,
+        video_container=video_container,
+    )
 
     argv += build_subtitle_argv(subtitle_langs)
 
@@ -432,6 +520,8 @@ async def run(
     audio_quality: str = DEFAULT_AUDIO_QUALITY,
     quality_cap: str | None = None,
     subtitle_langs: list[str] | None = None,
+    video_container: str | None = None,
+    audio_container: str | None = None,
     restart: bool = False,
     stall_threshold_s: int = DEFAULT_STALL_THRESHOLD_S,
     monotonic: Callable[[], float] = time.monotonic,
@@ -478,6 +568,8 @@ async def run(
         audio_quality=audio_quality,
         quality_cap=quality_cap,
         subtitle_langs=subtitle_langs,
+        video_container=video_container,
+        audio_container=audio_container,
         restart=restart,
     )
     if executable:

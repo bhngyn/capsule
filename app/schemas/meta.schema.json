@@ -22,7 +22,7 @@
     "signing_key_fp"
   ],
   "properties": {
-    "schema_version": { "enum": [1, 2, 3, 4, 5, 6, 7, 8] },
+    "schema_version": { "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9] },
     "job_uuid": { "type": "string" },
     "capture_kind": { "enum": ["media", "page_only", "gallery"] },
     "case": {
@@ -237,7 +237,7 @@
     },
     "download_options": {
       "type": "object",
-      "description": "Investigator-facing download knobs (CLAUDE.md §15 v0.7). Always emitted on v8+ records so absence-vs-default is unambiguous; older records (v2–v7) omit this block. The signature on meta.json transitively binds these values.",
+      "description": "Investigator-facing download knobs (CLAUDE.md §15 v0.7/v0.9). Always emitted on v8+ records so absence-vs-default is unambiguous; older records (v2–v7) omit this block. The signature on meta.json transitively binds these values.",
       "properties": {
         "audio_only": {
           "type": "boolean",
@@ -254,6 +254,20 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "BCP-47-ish language tags requested via --write-subs --sub-langs. The literal ``all`` sentinel maps to ``all,-live_chat``. Empty ⇒ no subtitles requested. v8."
+        },
+        "video_container": {
+          "anyOf": [
+            { "type": "null" },
+            { "enum": ["mp4", "webm", "mkv"] }
+          ],
+          "description": "User-picked video container. Plumbs into yt-dlp's --merge-output-format (mux-only, no re-encode) plus a format selector that prefers ext-matching streams. ``null`` ⇒ yt-dlp's default container choice. Ignored on the audio-only path. v9."
+        },
+        "audio_container": {
+          "anyOf": [
+            { "type": "null" },
+            { "enum": ["mp3", "m4a", "opus", "wav", "flac"] }
+          ],
+          "description": "User-picked audio container for the extraction path (audio_only=true or quality_cap=audio). Maps to yt-dlp's --audio-format. ``null`` ⇒ mp3 (the v0.7 default, preserved for back-compat). Ignored on the video path. v9."
         },
         "restart_count": {
           "type": "integer",

@@ -237,12 +237,13 @@
         </div>
       </form>
 
-      <!-- Download options (Advanced disclosure) — CLAUDE.md §15 v0.7.
+      <!-- Download options (Advanced disclosure) — CLAUDE.md §15 v0.7/v0.9.
            Closed by default per §4.2 #4 progressive disclosure. Visual-first:
            every control gets a Lucide icon + translated aria-label. Settings
            are persisted in localStorage so an investigator gets sticky
            preferences across reloads, and ride on every JobBatchItem in
-           _postBatch(). -->
+           _postBatch(). v0.9 reorganized into an Output section that
+           groups audio_only + quality_cap + container_format together. -->
       <details class="mt-4 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/60 dark:bg-zinc-900/60"
                :open="hasNonDefaultDownloadOptions()">
         <summary class="cursor-pointer select-none px-4 py-3 flex items-center gap-2 text-sm">
@@ -254,6 +255,12 @@
           <i data-lucide="chevron-down" class="size-4 text-zinc-400" aria-hidden="true"></i>
         </summary>
         <div class="px-4 pb-4 pt-2 space-y-4">
+          <!-- Output section heading -->
+          <div class="flex items-center gap-2 -mb-1">
+            <i data-lucide="film" class="size-4 text-zinc-500" aria-hidden="true"></i>
+            <span class="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
+                  x-text="t('download.options.output.heading')"></span>
+          </div>
           <!-- Audio-only switch -->
           <label class="flex items-center gap-3 cursor-pointer">
             <i data-lucide="headphones" class="size-4 text-zinc-500" aria-hidden="true"></i>
@@ -265,8 +272,9 @@
                    :aria-label="t('download.options.audio_only.aria')"
                    class="size-4 accent-accent" />
           </label>
-          <!-- Quality segmented pill -->
-          <div>
+          <!-- Quality segmented pill (video path only — the v0.7 'audio'
+               chip is gone; audio mode is now the toggle above) -->
+          <div x-show="!downloadOptions.audio_only">
             <div class="flex items-center gap-2 mb-2">
               <i data-lucide="monitor" class="size-4 text-zinc-500" aria-hidden="true"></i>
               <span class="text-sm text-zinc-700 dark:text-zinc-300"
@@ -274,7 +282,7 @@
             </div>
             <div class="inline-flex rounded-full bg-zinc-100 dark:bg-zinc-800 p-0.5"
                  role="group">
-              <template x-for="opt in ['best','1080','720','480','audio']" :key="opt">
+              <template x-for="opt in ['best','1080','720','480']" :key="opt">
                 <button type="button" @click="setQualityCap(opt)"
                         :aria-pressed="effectiveQualityCap() === opt"
                         :class="effectiveQualityCap() === opt
@@ -282,6 +290,42 @@
                                 : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100'"
                         class="px-3 py-1 rounded-full text-xs font-medium transition">
                   <span x-text="t('download.options.quality.option.' + opt)"></span>
+                </button>
+              </template>
+            </div>
+          </div>
+          <!-- Format segmented pill (v0.9). Context-aware — surfaces the
+               video set when audio_only is off, the audio set when on. The
+               *opposite* field is preserved across the toggle so the user's
+               other-side pick isn't lost. -->
+          <div>
+            <div class="flex items-center gap-2 mb-2">
+              <i :data-lucide="downloadOptions.audio_only ? 'music' : 'file-video'"
+                 class="size-4 text-zinc-500" aria-hidden="true"></i>
+              <span class="text-sm text-zinc-700 dark:text-zinc-300"
+                    x-text="t('download.options.format.label')"></span>
+            </div>
+            <div class="inline-flex flex-wrap rounded-full bg-zinc-100 dark:bg-zinc-800 p-0.5"
+                 role="group"
+                 :aria-label="downloadOptions.audio_only
+                              ? t('download.options.format.aria.audio')
+                              : t('download.options.format.aria.video')">
+              <button type="button" @click="setContainer('auto')"
+                      :aria-pressed="effectiveContainer() === 'auto'"
+                      :class="effectiveContainer() === 'auto'
+                              ? 'bg-accent text-white shadow-sm'
+                              : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100'"
+                      class="px-3 py-1 rounded-full text-xs font-medium transition">
+                <span x-text="t('download.options.format.option.auto')"></span>
+              </button>
+              <template x-for="opt in activeContainerSet()" :key="opt">
+                <button type="button" @click="setContainer(opt)"
+                        :aria-pressed="effectiveContainer() === opt"
+                        :class="effectiveContainer() === opt
+                                ? 'bg-accent text-white shadow-sm'
+                                : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100'"
+                        class="px-3 py-1 rounded-full text-xs font-medium transition">
+                  <span x-text="t('download.options.format.option.' + opt)"></span>
                 </button>
               </template>
             </div>

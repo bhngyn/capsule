@@ -341,6 +341,9 @@ _KNOWN_SUB_LANGS = {
     "en", "ja", "ar", "es", "fr", "de", "zh", "pt",
     "all",
 }
+# CLAUDE.md §15 v0.9 — single source of truth lives on jobs_mod
+# (jobs_mod.VIDEO_CONTAINERS / AUDIO_CONTAINERS); referenced here by name
+# so the validator and the runner can't drift.
 
 
 class JobBatchItem(BaseModel):
@@ -355,6 +358,9 @@ class JobBatchItem(BaseModel):
     # 'audio' | '480' | '720' | '1080' | 'best' | None
     quality_cap: str | None = None
     subtitle_langs: list[str] | None = None
+    # CLAUDE.md §15 v0.9 — container picker. None ⇒ yt-dlp default.
+    video_container: str | None = None
+    audio_container: str | None = None
 
     @field_validator("quality_cap")
     @classmethod
@@ -364,6 +370,28 @@ class JobBatchItem(BaseModel):
         if v not in _QUALITY_CAP_VALUES:
             raise ValueError(
                 f"quality_cap must be one of {sorted(_QUALITY_CAP_VALUES)}"
+            )
+        return v
+
+    @field_validator("video_container")
+    @classmethod
+    def _validate_video_container(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        if v not in jobs_mod.VIDEO_CONTAINERS:
+            raise ValueError(
+                f"video_container must be one of {list(jobs_mod.VIDEO_CONTAINERS)}"
+            )
+        return v
+
+    @field_validator("audio_container")
+    @classmethod
+    def _validate_audio_container(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        if v not in jobs_mod.AUDIO_CONTAINERS:
+            raise ValueError(
+                f"audio_container must be one of {list(jobs_mod.AUDIO_CONTAINERS)}"
             )
         return v
 
@@ -443,6 +471,8 @@ def _normalize_batch_items(body: JobBatch) -> list[JobBatchItem]:
             audio_only=it.audio_only,
             quality_cap=it.quality_cap,
             subtitle_langs=it.subtitle_langs,
+            video_container=it.video_container,
+            audio_container=it.audio_container,
         ))
     if not out:
         raise HTTPException(status_code=400, detail="no URLs")
@@ -479,14 +509,22 @@ async def submit_jobs_batch(body: JobBatch) -> dict[str, Any]:
 
     submitted = []
     for it in items:
-        # Build DownloadOptions iff any v0.7 knob is set; otherwise pass
-        # None so the orchestrator uses the dataclass defaults.
+        # Build DownloadOptions iff any v0.7/v0.9 knob is set; otherwise
+        # pass None so the orchestrator uses the dataclass defaults.
         opts: jobs_mod.DownloadOptions | None = None
-        if it.audio_only or it.quality_cap or it.subtitle_langs:
+        if (
+            it.audio_only
+            or it.quality_cap
+            or it.subtitle_langs
+            or it.video_container
+            or it.audio_container
+        ):
             opts = jobs_mod.DownloadOptions(
                 audio_only=it.audio_only,
                 quality_cap=it.quality_cap,
                 subtitle_langs=list(it.subtitle_langs or []),
+                video_container=it.video_container,
+                audio_container=it.audio_container,
             )
         job = await jobs_mod.orchestrator().submit(
             case_id=case.id,

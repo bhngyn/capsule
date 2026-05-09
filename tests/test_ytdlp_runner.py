@@ -482,6 +482,162 @@ def test_build_argv_subtitles_emits_flags(tmp_path):
     assert argv[sub_idx + 1] == "en,ja"
 
 
+# --- CLAUDE.md §15 v0.9: container picker ----------------------------------
+
+
+def test_build_format_spec_video_container_mp4_prefers_ext():
+    # video_container=mp4 makes the format spec prefer ext-matched streams
+    # before falling back to the generic bestvideo+bestaudio selector. The
+    # m4a audio pair is the conventional yt-dlp idiom for mp4-friendly audio.
+    spec = ytdlp_runner.build_format_spec(
+        audio_only=False, quality_cap=None, fallback="best",
+        video_container="mp4",
+    )
+    assert spec is not None
+    assert "[ext=mp4]" in spec
+    assert "[ext=m4a]" in spec
+    # First branch is the cleanest "no remux at all" pair.
+    assert spec.startswith("bestvideo[ext=mp4]+bestaudio[ext=m4a]/")
+    # And it falls all the way to a generic ``best`` so a site that doesn't
+    # offer mp4 still captures rather than failing.
+    assert spec.endswith("/best")
+
+
+def test_build_format_spec_video_container_webm_uses_webm_audio_pair():
+    # WebM pairs with WebM audio (Opus / Vorbis), not m4a.
+    spec = ytdlp_runner.build_format_spec(
+        audio_only=False, quality_cap=None, fallback=None,
+        video_container="webm",
+    )
+    assert spec is not None
+    assert "bestvideo[ext=webm]+bestaudio[ext=webm]" in spec
+    assert "[ext=m4a]" not in spec
+
+
+def test_build_format_spec_video_container_with_height_cap_combines_clauses():
+    # When both clauses are set, the [height<=N] clause attaches inline to
+    # every bestvideo selector in the cascade.
+    spec = ytdlp_runner.build_format_spec(
+        audio_only=False, quality_cap="720", fallback=None,
+        video_container="mp4",
+    )
+    assert spec is not None
+    assert "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/" in spec
+    # Height clause survives the fall-through to the generic best at end.
+    assert "best[height<=720]" in spec
+
+
+def test_build_format_spec_audio_only_ignores_video_container():
+    # Orthogonality check — audio-only short-circuits before the container
+    # branch so a stale video_container in the payload never leaks.
+    assert ytdlp_runner.build_format_spec(
+        audio_only=True, quality_cap=None, fallback="best",
+        video_container="mp4",
+    ) is None
+    assert ytdlp_runner.build_format_spec(
+        audio_only=False, quality_cap="audio", fallback="best",
+        video_container="mp4",
+    ) is None
+
+
+def test_build_format_spec_unknown_container_falls_through_to_legacy():
+    # Defensive: an enum value that didn't match the allowed set must not
+    # leak ``[ext=<garbage>]`` into the spec — the legacy branch wins.
+    assert ytdlp_runner.build_format_spec(
+        audio_only=False, quality_cap=None, fallback="best",
+        video_container="mov",  # not in {mp4, webm, mkv}
+    ) == "best"
+
+
+def test_build_container_argv_emits_merge_output_format():
+    out = ytdlp_runner.build_container_argv(
+        audio_only=False, quality_cap=None, video_container="mp4",
+    )
+    assert out == ["--merge-output-format", "mp4"]
+    out = ytdlp_runner.build_container_argv(
+        audio_only=False, quality_cap=None, video_container="mkv",
+    )
+    assert out == ["--merge-output-format", "mkv"]
+
+
+def test_build_container_argv_returns_empty_on_audio_path():
+    # Audio-only path uses --audio-format instead — the muxer flag would
+    # be a no-op and clutter the argv. Same for the quality_cap='audio' alias.
+    assert ytdlp_runner.build_container_argv(
+        audio_only=True, quality_cap=None, video_container="mp4",
+    ) == []
+    assert ytdlp_runner.build_container_argv(
+        audio_only=False, quality_cap="audio", video_container="mp4",
+    ) == []
+
+
+def test_build_container_argv_empty_when_no_container_picked():
+    assert ytdlp_runner.build_container_argv(
+        audio_only=False, quality_cap=None, video_container=None,
+    ) == []
+
+
+def test_build_argv_video_container_emits_merge_output_format(tmp_path):
+    argv = ytdlp_runner._build_argv(
+        "https://example.com/x",
+        case_dir=tmp_path,
+        cookies_file=None, format_spec=None, extra_args=None,
+        video_container="mp4",
+    )
+    # --merge-output-format lands after --format, before subtitle flags.
+    assert "--merge-output-format" in argv
+    mof_idx = argv.index("--merge-output-format")
+    assert argv[mof_idx + 1] == "mp4"
+    fmt_idx = argv.index("--format")
+    assert fmt_idx < mof_idx
+    # The format spec carries the ext clause so yt-dlp prefers compatible
+    # streams in the first place — no transcode-fallback needed.
+    assert "[ext=mp4]" in argv[fmt_idx + 1]
+
+
+def test_build_argv_audio_container_overrides_default_mp3(tmp_path):
+    # Picking a non-default audio container swaps mp3 for m4a in the
+    # extraction args. The page snapshot still preserves the original video.
+    argv = ytdlp_runner._build_argv(
+        "https://example.com/x",
+        case_dir=tmp_path,
+        cookies_file=None, format_spec=None, extra_args=None,
+        audio_only=True,
+        audio_container="m4a",
+    )
+    fmt_idx = argv.index("--audio-format")
+    assert argv[fmt_idx + 1] == "m4a"
+    assert "mp3" not in argv  # mp3 default isn't accidentally appended too
+
+
+def test_build_argv_audio_container_unknown_falls_back_to_default(tmp_path):
+    # Defensive: an unknown audio_container must not leak as --audio-format
+    # — fall back to the mp3 default rather than passing garbage to yt-dlp.
+    argv = ytdlp_runner._build_argv(
+        "https://example.com/x",
+        case_dir=tmp_path,
+        cookies_file=None, format_spec=None, extra_args=None,
+        audio_only=True,
+        audio_container="aiff",  # not in AUDIO_CONTAINERS
+    )
+    fmt_idx = argv.index("--audio-format")
+    assert argv[fmt_idx + 1] == "mp3"
+
+
+def test_build_argv_video_container_skipped_on_audio_only_path(tmp_path):
+    # The audio-only path must never emit --merge-output-format, even when
+    # a video_container is set in the options (stale UI state, ephemeral
+    # toggling, etc.).
+    argv = ytdlp_runner._build_argv(
+        "https://example.com/x",
+        case_dir=tmp_path,
+        cookies_file=None, format_spec=None, extra_args=None,
+        audio_only=True,
+        video_container="mp4",
+    )
+    assert "--merge-output-format" not in argv
+
+
 def test_build_argv_restart_swaps_continue_for_no_continue(tmp_path):
     argv_resume = ytdlp_runner._build_argv(
         "https://example.com/x",

@@ -239,6 +239,17 @@ def test_translated_bundles_actually_translated():
         "download.options.subs.lang.pt",
         # "Audio" is the natural Spanish word for audio — same spelling.
         "download.options.quality.option.audio",
+        # CLAUDE.md §15 v0.9: container option labels (MP4 / WebM / MKV /
+        # MP3 / M4A / Opus / WAV / FLAC) are file-extension brands, not
+        # translatable prose — they read identically across every locale.
+        "download.options.format.option.mp4",
+        "download.options.format.option.webm",
+        "download.options.format.option.mkv",
+        "download.options.format.option.mp3",
+        "download.options.format.option.m4a",
+        "download.options.format.option.opus",
+        "download.options.format.option.wav",
+        "download.options.format.option.flac",
     }
     for lang in ("ja", "ar", "es"):
         bundle = json.loads(

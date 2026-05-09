@@ -622,10 +622,11 @@ def test_manifest_pdf_hash_present_in_meta_and_checksums(env):
     assert ".manifest.pdf" in cs_text
     # Schema v8 (CLAUDE.md §15 v0.7): adds the ``download_options`` block
     # at the root and ``capture.stalled_count`` for the per-job download
-    # knobs + reliability counters. Per CLAUDE.md §13.15, schema and
-    # producer move in lockstep. Manifest + report PDFs continue to ride
-    # the same artifact-binding transitive signature path.
-    assert meta["schema_version"] == 8
+    # knobs + reliability counters; v9 (CLAUDE.md §15 v0.9) adds the
+    # container picker (video_container, audio_container). Per CLAUDE.md
+    # §13.15, schema and producer move in lockstep. Manifest + report PDFs
+    # continue to ride the same artifact-binding transitive signature path.
+    assert meta["schema_version"] == 9
     assert meta["url_canonical"]
     assert meta["force_recapture_index"] is None
     # CLAUDE.md §15 v0.7: download_options block always emitted on v8+.

@@ -531,18 +531,29 @@ def _format_download_options_section(
     Returns an empty string when every knob is at its default — the
     section then disappears from the PDF entirely so the layout stays
     tight for plain captures. Forensically meaningful values (audio_only,
-    quality cap, subtitles, restart count, stall count) get one row each.
-    CLAUDE.md §15 v0.7.
+    quality cap, format/container, subtitles, restart count, stall count)
+    get one row each.
+    CLAUDE.md §15 v0.7/v0.9.
     """
     opts = dict(download_options or {})
     cap = dict(capture or {})
     audio_only = bool(opts.get("audio_only"))
     quality_cap = opts.get("quality_cap")
     subs = list(opts.get("subtitle_langs") or [])
+    video_container = opts.get("video_container") or None
+    audio_container = opts.get("audio_container") or None
     restart_count = int(opts.get("restart_count") or 0)
     stalled_count = int(cap.get("stalled_count") or 0)
 
-    if not (audio_only or quality_cap or subs or restart_count or stalled_count):
+    if not (
+        audio_only
+        or quality_cap
+        or subs
+        or video_container
+        or audio_container
+        or restart_count
+        or stalled_count
+    ):
         return ""
 
     rows: list[tuple[str, str]] = []
@@ -562,6 +573,25 @@ def _format_download_options_section(
         rows.append((
             labels["pdf.report.field.download_options.quality_cap.label"],
             html.escape(value),
+        ))
+
+    # v0.9: container picker. Mux-only on the video path (no re-encode);
+    # extraction-format choice on the audio path. Render whichever side
+    # the user actually picked, gated by the audio_only state so a stale
+    # opposite-side value doesn't appear on the wrong report. The
+    # container choice is part of meta.json.download_options and
+    # transitively bound by meta.json.sig.
+    if not audio_only and video_container in {"mp4", "webm", "mkv"}:
+        template = labels["pdf.report.field.download_options.format.video"]
+        rows.append((
+            labels["pdf.report.field.download_options.format.label"],
+            html.escape(template.replace("{fmt}", video_container.upper())),
+        ))
+    elif audio_only and audio_container in {"mp3", "m4a", "opus", "wav", "flac"}:
+        template = labels["pdf.report.field.download_options.format.audio"]
+        rows.append((
+            labels["pdf.report.field.download_options.format.label"],
+            html.escape(template.replace("{fmt}", audio_container.upper())),
         ))
 
     if subs:
