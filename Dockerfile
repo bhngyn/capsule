@@ -100,7 +100,6 @@ RUN set -eux; \
         "cryptography>=44" \
         "httpx>=0.28" \
         "weasyprint>=63" \
-        "babel>=2.16" \
         "yt-dlp>=2025.1.1" \
         "gallery-dl>=1.30"; \
     playwright install chromium --only-shell; \

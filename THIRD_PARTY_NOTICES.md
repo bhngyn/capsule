@@ -21,7 +21,6 @@ substantially-equivalent notice.
 | Playwright (Python)| Apache-2.0                    | Headless Chromium driver for the canonical page snapshot           |
 | cryptography       | Apache-2.0 OR BSD-3-Clause    | Ed25519 keygen + sign/verify for the integrity record              |
 | WeasyPrint         | BSD-3-Clause                  | HTML→PDF for the case report in evidence exports                   |
-| Babel              | BSD-3-Clause                  | Backend-side i18n (error messages, PDF report)                     |
 | yt-dlp             | Unlicense (public domain)     | Media downloader (subprocess invocation)                           |
 
 All licenses listed above are compatible with Capsule's MIT license under

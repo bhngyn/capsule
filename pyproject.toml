@@ -1,6 +1,6 @@
 [project]
 name = "capsule"
-version = "0.1.0"
+version = "1.0.0"
 description = "Capsule — capture the web, with proof. A web-evidence capture tool for investigators."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -28,10 +28,6 @@ capture = [
 evidence = [
   "cryptography>=44",
   "weasyprint>=63",
-]
-# i18n backend (added when error responses or PDF need plurals)
-i18n = [
-  "babel>=2.16",
 ]
 # Dev / test
 dev = [

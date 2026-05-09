@@ -141,15 +141,17 @@ fi
 # 6. Start or resume the container using the explicit per-arch tag.
 #    Never capsule:latest — using the per-arch tag ensures two side-by-side
 #    installations (arm64 + amd64) can coexist without shadowing each other.
+#
+#    A long-running container can end up with no actual host-port binding
+#    even though Docker says it is "Up": Docker Desktop's port-forward layer
+#    sometimes drops the binding silently after a sleep/wake cycle or a
+#    daemon restart. From then on, http://localhost:8080 is unreachable
+#    until the container is recreated. We detect that here with `docker
+#    port` and self-heal by recreating the container.
 # ---------------------------------------------------------------------------
 mkdir -p "$DOWNLOADS" "$CONFIG"
 
-if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
-  echo "Capsule is already running."
-elif docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
-  docker start "$CONTAINER" >/dev/null
-  echo "Capsule restarted."
-else
+start_fresh() {
   docker run -d \
     --name "$CONTAINER" \
     --restart no \
@@ -158,6 +160,27 @@ else
     -v "$CONFIG:/config" \
     -e "CAPSULE_HOST_DOWNLOADS_DIR=$DOWNLOADS" \
     "$IMAGE_TAG" >/dev/null
+}
+
+# 0 iff the named container has a host-port binding for $PORT/tcp.
+port_is_bound() {
+  docker port "$CONTAINER" "${PORT}/tcp" >/dev/null 2>&1
+}
+
+if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+  if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+    docker start "$CONTAINER" >/dev/null
+  fi
+  if port_is_bound; then
+    echo "Capsule is already running."
+  else
+    echo "Repairing Capsule's network binding..."
+    docker rm -f "$CONTAINER" >/dev/null
+    start_fresh
+    echo "Capsule started."
+  fi
+else
+  start_fresh
   echo "Capsule started."
 fi
 
@@ -180,5 +203,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
-echo "App did not respond at $URL. Open Docker Desktop to see container logs."
+echo "App did not respond at $URL."
+echo "If this keeps happening, run:  docker rm -f capsule"
+echo "...then double-click this launcher again."
 read -n 1 -s -r -p "Press any key to close..."; echo; exit 1

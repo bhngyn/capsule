@@ -53,7 +53,6 @@ from . import (
     gallery_dl_runner,
     i18n,
     jobs as jobs_mod,
-    paths,
     postprocess,
     profiles as profiles_mod,
     signing,

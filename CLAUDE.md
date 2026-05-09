@@ -186,7 +186,7 @@ The interface must be trivial to translate. **First-tier languages: English (`en
 - **Bidi text is normal.** User-content fields (titles, uploaders, URLs) appear inside `<bdi>` elements so a Latin URL inside an Arabic UI stays readable.
 - **Date/number/filesize formatting** uses `Intl.DateTimeFormat` / `Intl.NumberFormat` — never hand-rolled. Arabic locales default to Arabic-Indic digits; do not override.
 - **Translation bundle is fetched once on load** from `/api/i18n/{lang}` and cached. Language switch is instant (no reload).
-- **Frontend i18n runtime: [`@formatjs/intl-messageformat`](https://formatjs.github.io/)**. Backend (for error responses and PDF reports): [Babel](https://babel.pocoo.org/). Both speak the same ICU syntax; `en.json` is shared.
+- **Frontend i18n runtime: [`@formatjs/intl-messageformat`](https://formatjs.github.io/)**. Backend serves the raw ICU bundles via `/api/i18n/{lang}` and renders translated strings into PDFs via [`app/pdf_report.py`](app/pdf_report.py) by direct lookup against the same bundles — there is no separate Python ICU runtime. Error responses carry an `i18n_key` plus structured technical details; the frontend resolves the key against the active bundle, so the backend never assembles user-facing prose. `en.json` is the canonical bundle.
 - **Arabic font: Noto Sans Arabic**, bundled as a webfont alongside Inter for Latin. **Japanese font: Noto Sans JP**, bundled as a webfont alongside Inter for Latin and Noto Sans Arabic.
 - **CI check:** a grep step fails the build if any visible HTML text or Python error string is hardcoded English instead of going through the translation layer.
 - Document the translation workflow in `/docs/TRANSLATING.md`.

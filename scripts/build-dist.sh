@@ -64,7 +64,12 @@ if [ -z "$CURRENT_BUILDER" ] || [ "$CURRENT_BUILDER" = "default" ]; then
 fi
 
 # 3. Template files exist
-for tmpl in dist-templates/Capsule.command.in dist-templates/Capsule.bat.in; do
+for tmpl in \
+    dist-templates/Capsule.command.in \
+    dist-templates/Capsule.bat.in \
+    dist-templates/Capsule-source.command.in \
+    dist-templates/Capsule-source.ar.command.in \
+    dist-templates/Capsule-source.bat.in; do
   if [ ! -f "$REPO_ROOT/$tmpl" ]; then
     echo "ERROR: missing template: $tmpl" >&2
     exit 1
@@ -376,6 +381,52 @@ fi
 collect_pdfs "$FOLDER"
 zip_folder "$FOLDER"
 
+# ---- 5. Capsule-source (no prebuilt image; built on the user's machine) ----
+# Ships only the build context (Dockerfile, pyproject.toml, app/, .dockerignore)
+# plus three launchers (English macOS, Arabic macOS, English Windows). The
+# launcher runs `docker build` on the user's host the first time, with
+# slow-connection-friendly progress output. Subsequent launches skip the build
+# because Docker keeps the image cached locally.
+echo "==> Assembling Capsule-source ..."
+FOLDER="$OUT_DIR/Capsule-source"
+rm -rf "$FOLDER"
+mkdir -p "$FOLDER/source"
+
+# Copy the minimal build context. Everything outside this list is irrelevant
+# to the Docker build (and most of it is also excluded by .dockerignore, but we
+# don't ship things we don't need).
+cp "$REPO_ROOT/Dockerfile"     "$FOLDER/source/"
+cp "$REPO_ROOT/pyproject.toml" "$FOLDER/source/"
+if [ -f "$REPO_ROOT/.dockerignore" ]; then
+  cp "$REPO_ROOT/.dockerignore" "$FOLDER/source/"
+fi
+if [ -f "$REPO_ROOT/docker-compose.yml" ]; then
+  cp "$REPO_ROOT/docker-compose.yml" "$FOLDER/source/"
+fi
+# rsync (BSD on macOS, GNU elsewhere) is universally available; cp -R also
+# works but rsync's --exclude is cleaner for trimming __pycache__.
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a \
+    --exclude '__pycache__' \
+    --exclude '*.pyc' \
+    --exclude '.pytest_cache' \
+    "$REPO_ROOT/app/" "$FOLDER/source/app/"
+else
+  cp -R "$REPO_ROOT/app" "$FOLDER/source/app"
+  find "$FOLDER/source/app" -depth -type d -name __pycache__ -exec rm -rf '{}' + 2>/dev/null || true
+  find "$FOLDER/source/app" -depth -type f -name '*.pyc' -delete 2>/dev/null || true
+fi
+
+# Source-build launchers don't take any per-arch placeholders (the user's
+# host arch is detected at runtime), so we just copy them verbatim.
+cp "$REPO_ROOT/dist-templates/Capsule-source.command.in"    "$FOLDER/Capsule.command"
+cp "$REPO_ROOT/dist-templates/Capsule-source.ar.command.in" "$FOLDER/Capsule-عربي.command"
+cp "$REPO_ROOT/dist-templates/Capsule-source.bat.in"        "$FOLDER/Capsule.bat"
+chmod +x "$FOLDER/Capsule.command" "$FOLDER/Capsule-عربي.command"
+
+collect_pdfs "$FOLDER"
+zip_folder "$FOLDER"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
@@ -383,7 +434,7 @@ echo
 echo "============================================================"
 echo "  Capsule dist build complete"
 echo "============================================================"
-for name in Capsule Capsule-mac-applesilicon Capsule-mac-intel Capsule-windows; do
+for name in Capsule Capsule-mac-applesilicon Capsule-mac-intel Capsule-windows Capsule-source; do
   zip_path="$OUT_DIR/${name}.zip"
   if [ -f "$zip_path" ]; then
     size="$(du -sh "$zip_path" | cut -f1)"

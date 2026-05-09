@@ -39,3 +39,9 @@ _dev/
 build/
 dist/
 *.whl
+
+# Case-study local-only artifacts (rendered HTML previews + extracted indexes)
+docs/case-study/*.rendered.html
+docs/case-study/_pdf-rendered.html
+scripts/_session-index.csv
+scripts/_session-excerpts.json

@@ -119,23 +119,37 @@ if "!NEEDS_LOAD!"=="1" (
 rem ---------------------------------------------------------------------------
 rem 4. Start or resume the container using the explicit per-arch tag.
 rem    Never capsule:latest.
+rem
+rem    A long-running container can end up with no actual host-port binding
+rem    even though Docker says it is "Up": Docker Desktop's port-forward
+rem    layer sometimes drops the binding silently after a sleep/wake cycle
+rem    or a daemon restart. From then on, http://localhost:8080 is
+rem    unreachable until the container is recreated. We detect that here
+rem    with `docker port` and self-heal by recreating the container.
 rem ---------------------------------------------------------------------------
 if not exist "%DOWNLOADS%" mkdir "%DOWNLOADS%"
 if not exist "%CONFIG%" mkdir "%CONFIG%"
 
-set RUNNING=
-for /f "delims=" %%i in ('docker ps --format "{{.Names}}" 2^>nul ^| findstr /x "%CONTAINER%"') do set RUNNING=%%i
-if defined RUNNING (
-  echo Capsule is already running.
-  goto wait_app
-)
-
 set EXISTS=
 for /f "delims=" %%i in ('docker ps -a --format "{{.Names}}" 2^>nul ^| findstr /x "%CONTAINER%"') do set EXISTS=%%i
+
+set NEED_RUN=1
 if defined EXISTS (
-  docker start %CONTAINER% >nul
-  echo Capsule restarted.
-) else (
+  set RUNNING=
+  for /f "delims=" %%i in ('docker ps --format "{{.Names}}" 2^>nul ^| findstr /x "%CONTAINER%"') do set RUNNING=%%i
+  if not defined RUNNING docker start %CONTAINER% >nul
+  rem Validate the host-port binding actually took.
+  docker port %CONTAINER% %PORT%/tcp >nul 2>&1
+  if errorlevel 1 (
+    echo Repairing Capsule's network binding...
+    docker rm -f %CONTAINER% >nul
+  ) else (
+    echo Capsule is already running.
+    set NEED_RUN=0
+  )
+)
+
+if "!NEED_RUN!"=="1" (
   docker run -d --name %CONTAINER% --restart no ^
     -p %PORT%:8080 ^
     -v "%DOWNLOADS%:/downloads" ^
@@ -163,7 +177,9 @@ if not errorlevel 1 goto app_ok
 timeout /t 1 /nobreak >nul
 set /a tries+=1
 if !tries! lss 30 goto poll
-echo App did not respond at %URL%. Open Docker Desktop to see container logs.
+echo App did not respond at %URL%.
+echo If this keeps happening, run:  docker rm -f capsule
+echo ...then double-click this launcher again.
 pause
 exit /b 1
 
