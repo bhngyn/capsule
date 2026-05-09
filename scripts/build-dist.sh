@@ -22,6 +22,13 @@ set -euo pipefail
 ARCHES="arm64,amd64"
 OUT_DIR="dist"
 SKIP_PDFS=0
+# CLAUDE.md §15 v0.9: --source-only emits ONLY dist/Capsule-source.zip
+# (the build-context-only bundle). Skips multi-arch image builds, the
+# multi-arch dist folders, and the universal bundle. Useful for spinning
+# a release asset that depends only on the user running ``docker build``
+# on their host — no internet needed for image download, no buildx
+# multi-arch dance, no docker daemon required at build time.
+SOURCE_ONLY=0
 
 # ---------------------------------------------------------------------------
 # Argument parsing (POSIX-compatible, no associative arrays)
@@ -31,6 +38,7 @@ while [ $# -gt 0 ]; do
     --arch)   ARCHES="$2";   shift 2 ;;
     --out)    OUT_DIR="$2";  shift 2 ;;
     --skip-pdfs) SKIP_PDFS=1; shift ;;
+    --source-only) SOURCE_ONLY=1; shift ;;
     --) shift; break ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
@@ -48,28 +56,34 @@ cd "$REPO_ROOT"
 # Pre-flight checks
 # ---------------------------------------------------------------------------
 
-# 1. docker buildx
-if ! docker buildx version >/dev/null 2>&1; then
-  echo "ERROR: docker buildx is not available." >&2
-  echo "       Upgrade Docker Desktop or install the buildx plugin." >&2
-  exit 1
+# 1. docker buildx (skipped on --source-only — the source bundle ships
+#    just the build context; the user runs ``docker build`` on their host,
+#    so we don't need buildx, multi-arch builders, or even Docker available
+#    on this machine).
+if [ "$SOURCE_ONLY" = 0 ]; then
+  if ! docker buildx version >/dev/null 2>&1; then
+    echo "ERROR: docker buildx is not available." >&2
+    echo "       Upgrade Docker Desktop or install the buildx plugin." >&2
+    echo "       (Use --source-only to skip image builds.)" >&2
+    exit 1
+  fi
+
+  # 2. Ensure a builder is available; create one named capsule-builder if none selected.
+  CURRENT_BUILDER="$(docker buildx inspect 2>/dev/null | grep '^Name:' | awk '{print $2}' || true)"
+  if [ -z "$CURRENT_BUILDER" ] || [ "$CURRENT_BUILDER" = "default" ]; then
+    echo "No non-default buildx builder active; creating 'capsule-builder'..."
+    docker buildx create --name capsule-builder --use --bootstrap >/dev/null 2>&1 || \
+      docker buildx use capsule-builder
+  fi
 fi
 
-# 2. Ensure a builder is available; create one named capsule-builder if none selected.
-CURRENT_BUILDER="$(docker buildx inspect 2>/dev/null | grep '^Name:' | awk '{print $2}' || true)"
-if [ -z "$CURRENT_BUILDER" ] || [ "$CURRENT_BUILDER" = "default" ]; then
-  echo "No non-default buildx builder active; creating 'capsule-builder'..."
-  docker buildx create --name capsule-builder --use --bootstrap >/dev/null 2>&1 || \
-    docker buildx use capsule-builder
+# 3. Template files exist (only the source-bundle launchers in --source-only mode).
+if [ "$SOURCE_ONLY" = 1 ]; then
+  REQUIRED_TEMPLATES="dist-templates/Capsule-source.command.in dist-templates/Capsule-source.ar.command.in dist-templates/Capsule-source.bat.in"
+else
+  REQUIRED_TEMPLATES="dist-templates/Capsule.command.in dist-templates/Capsule.bat.in dist-templates/Capsule-source.command.in dist-templates/Capsule-source.ar.command.in dist-templates/Capsule-source.bat.in"
 fi
-
-# 3. Template files exist
-for tmpl in \
-    dist-templates/Capsule.command.in \
-    dist-templates/Capsule.bat.in \
-    dist-templates/Capsule-source.command.in \
-    dist-templates/Capsule-source.ar.command.in \
-    dist-templates/Capsule-source.bat.in; do
+for tmpl in $REQUIRED_TEMPLATES; do
   if [ ! -f "$REPO_ROOT/$tmpl" ]; then
     echo "ERROR: missing template: $tmpl" >&2
     exit 1
@@ -94,28 +108,32 @@ for arch in $(echo "$ARCHES" | tr ',' ' '); do
 done
 arch_list="${arch_list# }"   # trim leading space
 
-for arch in $arch_list; do
-  echo "==> Building linux/$arch ..."
-  docker buildx build \
-    --platform "linux/$arch" \
-    -t "capsule:$arch" \
-    --load \
-    .
+if [ "$SOURCE_ONLY" = 0 ]; then
+  for arch in $arch_list; do
+    echo "==> Building linux/$arch ..."
+    docker buildx build \
+      --platform "linux/$arch" \
+      -t "capsule:$arch" \
+      --load \
+      .
 
-  echo "==> Saving + gzipping linux/$arch image ..."
-  mkdir -p "$TMP/images-$arch"
-  # gzip -9 cuts the bundled tar by ~50% with negligible decompression cost
-  # at first launch. Gzip is universally available on macOS (gunzip) and on
-  # Windows 10+ (tar.exe via libarchive auto-detects gzip), so the launcher
-  # decompression path needs no extra binaries shipped.
-  docker save "capsule:$arch" | gzip -9 > "$TMP/images-$arch/capsule-image-$arch.tar.gz"
+    echo "==> Saving + gzipping linux/$arch image ..."
+    mkdir -p "$TMP/images-$arch"
+    # gzip -9 cuts the bundled tar by ~50% with negligible decompression cost
+    # at first launch. Gzip is universally available on macOS (gunzip) and on
+    # Windows 10+ (tar.exe via libarchive auto-detects gzip), so the launcher
+    # decompression path needs no extra binaries shipped.
+    docker save "capsule:$arch" | gzip -9 > "$TMP/images-$arch/capsule-image-$arch.tar.gz"
 
-  echo "==> Capturing digest for linux/$arch ..."
-  docker image inspect "capsule:$arch" --format '{{.Id}}' \
-    > "$TMP/images-$arch/capsule-image-$arch.digest"
+    echo "==> Capturing digest for linux/$arch ..."
+    docker image inspect "capsule:$arch" --format '{{.Id}}' \
+      > "$TMP/images-$arch/capsule-image-$arch.digest"
 
-  echo "    digest: $(cat "$TMP/images-$arch/capsule-image-$arch.digest")"
-done
+    echo "    digest: $(cat "$TMP/images-$arch/capsule-image-$arch.digest")"
+  done
+else
+  echo "==> --source-only: skipping multi-arch image builds (the source bundle ships only the build context)."
+fi
 
 # ---------------------------------------------------------------------------
 # Render docs PDFs
@@ -272,8 +290,12 @@ AMD64_DIGEST="$(read_digest amd64)"
 
 mkdir -p "$OUT_DIR"
 
+if [ "$SOURCE_ONLY" = 1 ]; then
+  echo "==> --source-only: skipping multi-arch dist folders + universal bundle."
+fi
+
 # ---- 1. Capsule-mac-applesilicon (arm64 only) ----
-if [ "$has_arm64" = 1 ]; then
+if [ "$SOURCE_ONLY" = 0 ] && [ "$has_arm64" = 1 ]; then
   echo "==> Assembling Capsule-mac-applesilicon ..."
   FOLDER="$OUT_DIR/Capsule-mac-applesilicon"
   rm -rf "$FOLDER"
@@ -296,7 +318,7 @@ if [ "$has_arm64" = 1 ]; then
 fi
 
 # ---- 2. Capsule-mac-intel (amd64 only) ----
-if [ "$has_amd64" = 1 ]; then
+if [ "$SOURCE_ONLY" = 0 ] && [ "$has_amd64" = 1 ]; then
   echo "==> Assembling Capsule-mac-intel ..."
   FOLDER="$OUT_DIR/Capsule-mac-intel"
   rm -rf "$FOLDER"
@@ -319,7 +341,7 @@ if [ "$has_amd64" = 1 ]; then
 fi
 
 # ---- 3. Capsule-windows (amd64 only) ----
-if [ "$has_amd64" = 1 ]; then
+if [ "$SOURCE_ONLY" = 0 ] && [ "$has_amd64" = 1 ]; then
   echo "==> Assembling Capsule-windows ..."
   FOLDER="$OUT_DIR/Capsule-windows"
   rm -rf "$FOLDER"
@@ -343,6 +365,7 @@ fi
 # ---- 4. Capsule (universal) ----
 # Universal macOS launcher: placeholders left empty so runtime resolves them.
 # Windows launcher: amd64 stamped (Windows is amd64-only for now).
+if [ "$SOURCE_ONLY" = 0 ]; then
 echo "==> Assembling Capsule (universal) ..."
 FOLDER="$OUT_DIR/Capsule"
 rm -rf "$FOLDER"
@@ -380,6 +403,7 @@ fi
 
 collect_pdfs "$FOLDER"
 zip_folder "$FOLDER"
+fi  # end --source-only guard around the universal bundle
 
 # ---- 5. Capsule-source (no prebuilt image; built on the user's machine) ----
 # Ships only the build context (Dockerfile, pyproject.toml, app/, .dockerignore)
