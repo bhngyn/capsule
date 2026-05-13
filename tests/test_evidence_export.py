@@ -144,6 +144,52 @@ def test_verifier_script_runs_and_passes(env, tmp_path):
     assert "PASS" in proc.stdout
 
 
+def test_verifier_passes_when_first_case_row_is_not_audit_row_1(env, tmp_path):
+    """Regression: the bundled verifier walks the audit chain forward
+    from the all-zeros sentinel. If we exported a per-case slice, the
+    second case's first row's prev_hash would point at a row outside
+    the slice, and the verifier would print FAIL.
+
+    Pre-fix this test fails with ``chain broken at id=N`` for case 2.
+    """
+    # Burn through several audit rows in case 1 so case 2's rows
+    # definitely start mid-chain.
+    _seed_capture(env, "abc")
+    _seed_capture(env, "def")
+    case2 = env["cases"].create(env["conn"], name="Operation Twilight")
+    saved_case = env["case"]
+    env["case"] = case2
+    try:
+        _seed_capture(env, "ghi")
+    finally:
+        env["case"] = saved_case
+
+    result = env["ee"].build_bundle(env["conn"], case_id=case2.id)
+    extract_dir = tmp_path / "ex2"
+    extract_dir.mkdir()
+    with zipfile.ZipFile(result.zip_path) as zf:
+        zf.extractall(extract_dir)
+
+    # Sanity: the shipped audit_log.json must contain rows from BOTH
+    # cases (the fix exports the full chain, not a per-case slice).
+    audit_entries = json.loads(
+        (extract_dir / "audit_log.json").read_text(encoding="utf-8")
+    )
+    case_ids_in_export = {e.get("case_id") for e in audit_entries}
+    assert env["case"].id in case_ids_in_export
+    assert case2.id in case_ids_in_export
+    # The chain starts at the genesis sentinel (the recipient verifier
+    # demands this).
+    assert audit_entries[0]["prev_hash"] == "0" * 64
+
+    proc = subprocess.run(
+        [sys.executable, str(extract_dir / "verify.py"), str(extract_dir)],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "PASS" in proc.stdout
+
+
 def test_verifier_detects_tampered_artifact(env, tmp_path):
     _seed_capture(env, "abc")
     result = env["ee"].build_bundle(env["conn"], case_id=env["case"].id)

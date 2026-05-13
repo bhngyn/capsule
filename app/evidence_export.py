@@ -235,8 +235,15 @@ def build_bundle(
             }
         )
 
-    # Audit log JSON (per-case slice).
-    audit_entries = list(audit.iter_entries(conn, case_id=case_id))
+    # Audit log JSON — full chain, not a per-case slice. The bundled
+    # verifier walks the prev_hash/row_hash chain forward starting from
+    # the all-zeros sentinel; a per-case slice begins mid-chain (its
+    # first row's prev_hash points at whatever row preceded it in the
+    # global log, never at the sentinel) and the verifier rejects it.
+    # Shipping the full log preserves the unbroken chain back to row 1
+    # and is forensically stronger — a recipient sees every operation
+    # the signing key ever signed, not just the case-scoped slice.
+    audit_entries = list(audit.iter_entries(conn))
     for e in audit_entries:
         # The verifier re-derives row_hash from the same canonical encoding
         # used in audit.canonical_encode (sort_keys, compact separators,
