@@ -123,8 +123,23 @@
       _aggTickHandle: null,
 
       // --- UI state ---
-      updating: false,
-      updateResult: null,
+      updating: false,        // legacy single-button update state (kept for any
+      updateResult: null,     //   stale references; superseded by ``updates``)
+
+      // --- Update management (CLAUDE.md §15 v0.10) ---
+      // Auto-check default ON; disabled via the Settings toggle. The cache
+      // is the only source of truth — the GET endpoint never makes a
+      // network call, so this state is hot on every page load.
+      updates: {
+        components: [],
+        auto_check: true,
+        last_checked_at: null,
+        updates_available: 0,
+        banner_dismissed: false,
+        loading_check: false,
+        loading_components: {},  // per-key install state
+        results: {},             // per-key install result {ok, message}
+      },
 
       // --- Downloader ---
       simpleTab: 'single',          // 'single' | 'list'
@@ -160,12 +175,18 @@
         subtitle_langs: [],
         video_container: null,      // 'mp4'|'webm'|'mkv'|null
         audio_container: null,      // 'mp3'|'m4a'|'opus'|'wav'|'flac'|null
+        // When true, gallery-dl runs alongside yt-dlp regardless of
+        // whether yt-dlp produced media. Useful for blog posts with both
+        // an embedded video and a separate photo set.
+        force_gallery_run: false,
+        capture_mode: null,         // 'webpage'|'media'|'gallery'|null
       },
       // Static enums mirrored from app/jobs.py — drift here would let an
       // unknown string ride to the backend (which validates and rejects),
       // so keep them in sync with VIDEO_CONTAINERS / AUDIO_CONTAINERS.
       _VIDEO_CONTAINERS: ['mp4', 'webm', 'mkv'],
       _AUDIO_CONTAINERS: ['mp3', 'm4a', 'opus', 'wav', 'flac'],
+      _CAPTURE_MODES: ['webpage', 'media', 'gallery'],
       // Cancel/Restart per-job confirmation dialog. Goes through the same
       // shape as clearDialog for the destructive-action discipline in §15.
       controlConfirm: null,         // { open, action, jobId, busy } | null
@@ -189,6 +210,9 @@
         await this.refreshAll();
         await this.refreshProfile();
         await this.refreshRecentCaptures();
+        // Update cache is cheap (no network call); load it on every boot so
+        // the cog dot + home banner reflect the launch-time auto-check.
+        this.loadUpdates();
         this.renderAll();
         this.refreshIcons();
       },
@@ -216,6 +240,9 @@
             const ac = parsed.audio_container;
             this.downloadOptions.audio_container =
               this._AUDIO_CONTAINERS.includes(ac) ? ac : null;
+            this.downloadOptions.force_gallery_run = !!parsed.force_gallery_run;
+            const cm = parsed.capture_mode;
+            this.downloadOptions.capture_mode = (typeof cm === 'string' && this._CAPTURE_MODES.includes(cm)) ? cm : null;
           }
         } catch (_) { /* corrupted localStorage — ignore, defaults stand */ }
       },
@@ -237,6 +264,8 @@
           || (o.subtitle_langs || []).length
           || o.video_container
           || o.audio_container
+          || o.force_gallery_run
+          || o.capture_mode
         );
       },
 
@@ -329,12 +358,25 @@
         this._persistDownloadOptions();
       },
 
+      setForceGalleryRun(on) {
+        this.downloadOptions.force_gallery_run = !!on;
+        this._persistDownloadOptions();
+      },
+
+      setCaptureMode(mode) {
+        this.downloadOptions.capture_mode =
+          mode === this.downloadOptions.capture_mode ? null : mode;
+        this._persistDownloadOptions();
+      },
+
       resetDownloadOptions() {
         this.downloadOptions.audio_only = false;
         this.downloadOptions.quality_cap = null;
         this.downloadOptions.subtitle_langs = [];
         this.downloadOptions.video_container = null;
         this.downloadOptions.audio_container = null;
+        this.downloadOptions.force_gallery_run = false;
+        this.downloadOptions.capture_mode = null;
         this._persistDownloadOptions();
       },
 
@@ -355,6 +397,12 @@
         }
         if (this.downloadOptions.audio_container) {
           out.audio_container = this.downloadOptions.audio_container;
+        }
+        if (this.downloadOptions.force_gallery_run) {
+          out.force_gallery_run = true;
+        }
+        if (this.downloadOptions.capture_mode) {
+          out.capture_mode = this.downloadOptions.capture_mode;
         }
         return out;
       },
@@ -485,6 +533,7 @@
         if (this.route === 'settings') {
           this.refreshSystemVersion();
           this.refreshExtensionTokens();
+          this.loadUpdates();
         }
       },
 
@@ -1347,6 +1396,8 @@
       },
 
       async checkForUpdates() {
+        // Legacy entrypoint kept for back-compat with any stale Settings markup
+        // that still calls it; new flow lives in checkUpdatesNow().
         this.updating = true; this.updateResult = null;
         try {
           const res = await fetch('/api/system/update', { method: 'POST' });
@@ -1358,6 +1409,180 @@
         } finally {
           this.updating = false;
         }
+      },
+
+      // --- Update management (CLAUDE.md §15 v0.10) ---
+
+      _applyUpdatesPayload(payload) {
+        if (!payload) return;
+        this.updates.components = Array.isArray(payload.components) ? payload.components : [];
+        this.updates.auto_check = !!payload.auto_check;
+        this.updates.last_checked_at = payload.last_checked_at || null;
+        this.updates.updates_available = payload.updates_available || 0;
+        // Re-translate ``data-t`` placeholders + hydrate Lucide icons in the
+        // freshly-rendered ``<template x-for>`` rows. Without this, the
+        // status badges and "Installed/Latest" labels show empty text on
+        // first paint because ``renderAll()`` ran before the rows existed.
+        this.$nextTick(() => {
+          this.renderAll();
+          this.refreshIcons();
+        });
+      },
+
+      async loadUpdates() {
+        // No network call on the backend — this just reads the cache file
+        // (and the auto-check setting). Safe to call on every navigation.
+        try {
+          const res = await fetch('/api/system/updates');
+          if (res.ok) this._applyUpdatesPayload(await res.json());
+        } catch (_) { /* non-fatal — cache stays empty */ }
+      },
+
+      async checkUpdatesNow() {
+        this.updates.loading_check = true;
+        try {
+          const res = await fetch('/api/system/updates/check', { method: 'POST' });
+          if (!res.ok) throw new Error(`check failed: ${res.status}`);
+          const payload = await res.json();
+          this._applyUpdatesPayload(payload);
+          // Reset banner dismissal so a freshly-discovered update surfaces.
+          this.updates.banner_dismissed = false;
+        } catch (e) {
+          this.showToast(this.t('errors.update.network_unreachable'));
+        } finally {
+          this.updates.loading_check = false;
+        }
+      },
+
+      async toggleAutoCheck(enabled) {
+        const prev = this.updates.auto_check;
+        this.updates.auto_check = !!enabled;  // optimistic
+        try {
+          const res = await fetch('/api/system/updates/auto_check', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ enabled: !!enabled }),
+          });
+          if (!res.ok) throw new Error(`toggle failed: ${res.status}`);
+          this._applyUpdatesPayload(await res.json());
+        } catch (e) {
+          this.updates.auto_check = prev;
+          this.showToast(String(e));
+        }
+      },
+
+      async updateComponent(key) {
+        if (this.updates.loading_components[key]) return;
+        this.updates.loading_components = { ...this.updates.loading_components, [key]: true };
+        this.updates.results = { ...this.updates.results, [key]: null };
+        try {
+          const res = await fetch(`/api/system/update?component=${encodeURIComponent(key)}`, {
+            method: 'POST',
+          });
+          const body = await res.json().catch(() => ({}));
+          if (res.ok && body.ok) {
+            this.updates.results = {
+              ...this.updates.results,
+              [key]: { ok: true, message: this.t('settings.update.result.ok', { version: body.new_version || '—' }) },
+            };
+            // Refresh the cache so the card flips amber → green without a
+            // second click. perform_check on the backend re-probes installed
+            // and re-fetches latest, so the row is coherent.
+            await this.checkUpdatesNow();
+            await this.refreshSystemVersion();
+          } else {
+            const detail = body && body.detail;
+            const msgKey = (detail && detail.i18n_key) || null;
+            const message = msgKey
+              ? this.t(msgKey)
+              : this.t('settings.update.result.failed', { code: body.returncode != null ? body.returncode : '?' });
+            this.updates.results = {
+              ...this.updates.results,
+              [key]: { ok: false, message },
+            };
+          }
+        } catch (e) {
+          this.updates.results = {
+            ...this.updates.results,
+            [key]: { ok: false, message: String(e) },
+          };
+        } finally {
+          const next = { ...this.updates.loading_components };
+          delete next[key];
+          this.updates.loading_components = next;
+        }
+      },
+
+      async dismissUpdateBanner() {
+        const keys = (this.updates.components || [])
+          .filter(c => c.available)
+          .map(c => c.key);
+        this.updates.banner_dismissed = true;
+        try {
+          await fetch('/api/system/updates/dismiss_banner', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ components: keys }),
+          });
+        } catch (_) { /* audit-only; non-fatal */ }
+      },
+
+      // --- Helpers used by Settings → Updates markup ---
+
+      updateComponentIcon(key) {
+        // Lucide icon name per component. yt-dlp/gallery-dl share a download
+        // glyph (their job is to fetch); Capsule itself uses ``box`` to evoke
+        // the Docker image.
+        if (key === 'capsule') return 'box';
+        if (key === 'gallery-dl') return 'images';
+        return 'download';  // yt-dlp + future tier-1 entries
+      },
+
+      _capsuleArchTag() {
+        // The launcher in dist-templates/Capsule.{command,bat}.in writes
+        // out per-arch tags. We can't reliably detect host arch from inside
+        // the container, so default to ``arm64`` (Apple Silicon launcher
+        // is the noisier failure mode per CLAUDE.md §3) and let the user
+        // edit the suffix. The full command is annotated with both options.
+        return 'arm64';
+      },
+
+      _capsuleComponent() {
+        return (this.updates.components || []).find(c => c.key === 'capsule');
+      },
+
+      dockerPullCommand() {
+        const c = this._capsuleComponent();
+        if (!c || !c.latest) return '';
+        // Two-line snippet so the user can pick the right arch without
+        // editing in their head.
+        return `docker pull capsule:${this._capsuleArchTag()}    # Apple Silicon\n# docker pull capsule:amd64    # Intel / Windows\n# Then re-run the Capsule launcher.`;
+      },
+
+      async copyDockerPull() {
+        const cmd = this.dockerPullCommand();
+        if (!cmd) return;
+        try {
+          await navigator.clipboard.writeText(cmd);
+          this.showToast(this.t('settings.update.tier2.copied'));
+        } catch (e) {
+          this.showToast(String(e));
+        }
+      },
+
+      releaseNotesUrl() {
+        const c = this._capsuleComponent();
+        if (!c || !c.latest) return null;
+        // Best-effort: the Capsule registry uses GitHub for the source. The
+        // backend does not surface the repo string to the client (it's a
+        // server-side env var), so the release-notes link goes to the
+        // generic releases page. The user can navigate to the specific tag
+        // from there.
+        return `https://github.com/search?q=capsule+release+v${encodeURIComponent(c.latest)}&type=code`;
+      },
+
+      relTime(iso) {
+        return relTime(iso, this.locale);
       },
 
       // --- Browser extension pairing ---

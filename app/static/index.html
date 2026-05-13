@@ -98,10 +98,15 @@
       </button>
 
       <button @click="goto('settings')"
-              class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
+              class="relative inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
               :aria-label="t('header.settings.aria')">
         <i data-lucide="settings" class="size-4"></i>
         <span class="hidden md:inline" data-t="header.settings.label"></span>
+        <!-- Update-available dot. Persists until the update is applied — even
+             after the user dismisses the home banner (chain-of-custody). -->
+        <span x-show="updates.updates_available > 0"
+              class="absolute top-1 end-1 size-2 rounded-full bg-amber-500 ring-2 ring-white dark:ring-zinc-900"
+              :aria-label="t('header.settings.updates_available_aria', {count: updates.updates_available})"></span>
       </button>
     </div>
   </header>
@@ -116,6 +121,37 @@
       so the visual layout is identical across languages and scripts.
     -->
     <section x-show="route!=='settings'" x-cloak class="max-w-2xl mx-auto">
+
+      <!-- Update-available banner (CLAUDE.md §15 v0.10).
+           Shown when ``updates.updates_available > 0`` and the user hasn't
+           dismissed it this session. Dismissing audits
+           ``system.update_dismissed`` and hides the banner only — the cog
+           dot persists until the update is actually applied so a future
+           reviewer can see the user knew an update was available. -->
+      <div x-show="updates.updates_available > 0 && !updates.banner_dismissed" x-cloak
+           class="mb-5 rounded-xl border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 flex items-start gap-3"
+           role="status">
+        <div class="size-8 rounded-full grid place-items-center bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300 shrink-0">
+          <i data-lucide="bell" class="size-4" aria-hidden="true"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium text-amber-900 dark:text-amber-200"
+               x-text="t('home.banner.updates_available', {count: updates.updates_available})"></div>
+          <div class="text-xs text-amber-800/80 dark:text-amber-300/70 mt-0.5"
+               data-t="home.banner.subtitle"></div>
+        </div>
+        <button @click="goto('settings')"
+                class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-amber-400 dark:border-amber-700 bg-white dark:bg-zinc-900 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-950 transition">
+          <span data-t="home.banner.review_button"></span>
+          <i data-lucide="arrow-right" class="size-3.5 rtl:hidden" aria-hidden="true"></i>
+          <i data-lucide="arrow-left" class="size-3.5 ltr:hidden" aria-hidden="true"></i>
+        </button>
+        <button @click="dismissUpdateBanner()"
+                class="shrink-0 size-7 inline-flex items-center justify-center rounded-md text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition"
+                :aria-label="t('home.banner.dismiss')">
+          <i data-lucide="x" class="size-4" aria-hidden="true"></i>
+        </button>
+      </div>
 
       <!-- Hero illustration carries the headline visually: a live webpage on
            the left flows into the bell jar on the right where it's preserved
@@ -255,6 +291,29 @@
           <i data-lucide="chevron-down" class="size-4 text-zinc-400" aria-hidden="true"></i>
         </summary>
         <div class="px-4 pb-4 pt-2 space-y-4">
+          <!-- Capture mode (v0.10) -->
+          <div>
+            <div class="flex items-center gap-2 mb-2">
+              <i data-lucide="layers" class="size-4 text-zinc-500" aria-hidden="true"></i>
+              <span class="text-sm font-medium text-zinc-700 dark:text-zinc-300"
+                    x-text="t('download.options.capture_mode.label')"></span>
+            </div>
+            <div class="inline-flex rounded-full bg-zinc-100 dark:bg-zinc-800 p-0.5 gap-0.5" role="group"
+                 :aria-label="t('download.options.capture_mode.aria')">
+              <template x-for="mode in _CAPTURE_MODES" :key="mode">
+                <button type="button"
+                        @click="setCaptureMode(mode)"
+                        :aria-pressed="downloadOptions.capture_mode === mode"
+                        :class="downloadOptions.capture_mode === mode
+                                ? 'bg-teal-600 text-white shadow-sm'
+                                : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100'"
+                        class="px-3 py-1 rounded-full text-xs font-medium transition-all"
+                        :aria-label="t('download.options.capture_mode.option.' + mode)">
+                  <span x-text="t('download.options.capture_mode.option.' + mode)"></span>
+                </button>
+              </template>
+            </div>
+          </div>
           <!-- Output section heading -->
           <div class="flex items-center gap-2 -mb-1">
             <i data-lucide="film" class="size-4 text-zinc-500" aria-hidden="true"></i>
@@ -318,7 +377,9 @@
                       class="px-3 py-1 rounded-full text-xs font-medium transition">
                 <span x-text="t('download.options.format.option.auto')"></span>
               </button>
-              <template x-for="opt in activeContainerSet()" :key="opt">
+              <template x-for="opt in (downloadOptions.audio_only
+                                       ? ['mp3','m4a','opus','wav','flac']
+                                       : ['mp4','webm','mkv'])" :key="opt">
                 <button type="button" @click="setContainer(opt)"
                         :aria-pressed="effectiveContainer() === opt"
                         :class="effectiveContainer() === opt
@@ -330,6 +391,19 @@
               </template>
             </div>
           </div>
+          <!-- Always run gallery-dl switch — opts gallery-dl in alongside
+               yt-dlp so blog/article pages with embedded video AND a photo
+               set come back with both. CLAUDE.md §15 v0.7. -->
+          <label class="flex items-center gap-3 cursor-pointer">
+            <i data-lucide="images" class="size-4 text-zinc-500" aria-hidden="true"></i>
+            <span class="flex-1 text-sm text-zinc-700 dark:text-zinc-300"
+                  x-text="t('download.options.force_gallery_run.label')"></span>
+            <input type="checkbox"
+                   :checked="downloadOptions.force_gallery_run"
+                   @change="setForceGalleryRun($event.target.checked)"
+                   :aria-label="t('download.options.force_gallery_run.aria')"
+                   class="size-4 accent-accent" />
+          </label>
           <!-- Subtitles multi-select chips -->
           <div>
             <div class="flex items-center gap-2 mb-2">
@@ -799,15 +873,145 @@
           </ul>
         </div>
 
-        <!-- Updates -->
+        <!-- Updates (CLAUDE.md §15 v0.10) -->
         <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6">
-          <h2 class="text-base font-medium mb-4" data-t="settings.update.heading"></h2>
-          <div class="text-sm text-zinc-500 mb-4">yt-dlp <span class="font-mono" x-text="systemVersion?.yt_dlp || '—'"></span></div>
-          <button @click="checkForUpdates()" :disabled="updating" class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800 transition disabled:opacity-50">
-            <i data-lucide="refresh-cw" class="size-4" :class="updating ? 'animate-spin' : ''"></i>
-            <span x-text="updating ? t('settings.update.installing') : t('settings.update.button')"></span>
-          </button>
-          <div x-show="updateResult" class="mt-3 text-sm" x-text="updateResult"></div>
+          <div class="flex items-start justify-between gap-4 mb-4">
+            <div class="min-w-0">
+              <h2 class="text-base font-medium" data-t="settings.update.heading"></h2>
+              <p class="text-xs text-zinc-500 mt-1" data-t="settings.update.subtitle"></p>
+            </div>
+          </div>
+
+          <!-- Auto-check toggle. Default ON. The single setting that flips
+               the launch-time check on/off (CLAUDE.md §13 #7 carve-out). -->
+          <div class="flex items-start gap-3 py-3 border-y border-zinc-200 dark:border-zinc-800">
+            <button type="button" role="switch"
+                    :aria-checked="updates.auto_check ? 'true' : 'false'"
+                    @click="toggleAutoCheck(!updates.auto_check)"
+                    :class="updates.auto_check ? 'bg-accent' : 'bg-zinc-300 dark:bg-zinc-700'"
+                    class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition">
+              <span :class="updates.auto_check ? 'translate-x-4 rtl:-translate-x-4' : 'translate-x-0.5 rtl:-translate-x-0.5'"
+                    class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition"></span>
+            </button>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium" data-t="settings.update.auto_check.label"></div>
+              <div class="text-xs text-zinc-500 mt-0.5" data-t="settings.update.auto_check.subtitle"></div>
+            </div>
+          </div>
+
+          <!-- "Last checked … · Check now" row -->
+          <div class="flex items-center justify-between gap-3 mt-4">
+            <div class="text-xs text-zinc-500">
+              <template x-if="updates.last_checked_at">
+                <span x-text="t('settings.update.last_checked.relative', {when: relTime(updates.last_checked_at)})"></span>
+              </template>
+              <template x-if="!updates.last_checked_at">
+                <span data-t="settings.update.last_checked.never"></span>
+              </template>
+            </div>
+            <button @click="checkUpdatesNow()" :disabled="updates.loading_check"
+                    class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800 transition disabled:opacity-50">
+              <i data-lucide="refresh-cw" class="size-4" :class="updates.loading_check ? 'animate-spin' : ''" aria-hidden="true"></i>
+              <span x-text="updates.loading_check ? t('settings.update.check_now.checking') : t('settings.update.check_now.button')"></span>
+            </button>
+          </div>
+
+          <!-- Per-component cards -->
+          <div class="mt-4 space-y-3">
+            <template x-for="comp in updates.components" :key="comp.key">
+              <div class="rounded-lg border border-zinc-200 dark:border-zinc-800 p-4">
+                <div class="flex items-start gap-3">
+                  <div class="size-9 rounded-lg grid place-items-center bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 shrink-0">
+                    <i :data-lucide="updateComponentIcon(comp.key)" class="size-4" aria-hidden="true"></i>
+                  </div>
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-baseline gap-2 flex-wrap">
+                      <div class="text-sm font-medium font-mono" x-text="comp.key"></div>
+                      <div class="text-xs text-zinc-500" x-text="t('settings.update.component.' + comp.key + '.role')"></div>
+                    </div>
+                    <div class="mt-2 grid grid-cols-2 gap-3 text-xs">
+                      <div>
+                        <div class="text-zinc-500" data-t="settings.update.field.installed"></div>
+                        <div class="font-mono mt-0.5" x-text="comp.installed || '—'"></div>
+                      </div>
+                      <div>
+                        <div class="text-zinc-500" data-t="settings.update.field.latest"></div>
+                        <div class="font-mono mt-0.5" x-text="comp.latest || '—'"></div>
+                      </div>
+                    </div>
+                    <!-- Status chip + (Tier 1) Update button / (Tier 2) docker pull -->
+                    <div class="mt-3 flex items-center gap-2 flex-wrap">
+                      <!-- Up-to-date -->
+                      <span x-show="comp.installed && comp.latest && !comp.available && !comp.error"
+                            class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                        <i data-lucide="check-circle-2" class="size-3" aria-hidden="true"></i>
+                        <span data-t="settings.update.status.up_to_date"></span>
+                      </span>
+                      <!-- Update available -->
+                      <span x-show="comp.available"
+                            class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+                        <i data-lucide="alert-circle" class="size-3" aria-hidden="true"></i>
+                        <span data-t="settings.update.status.available"></span>
+                      </span>
+                      <!-- Network error -->
+                      <span x-show="comp.error === 'network'"
+                            class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800">
+                        <i data-lucide="wifi-off" class="size-3" aria-hidden="true"></i>
+                        <span data-t="settings.update.status.network_error"></span>
+                      </span>
+                      <!-- Unknown -->
+                      <span x-show="!comp.installed || (!comp.latest && !comp.error)"
+                            class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700">
+                        <i data-lucide="minus" class="size-3" aria-hidden="true"></i>
+                        <span data-t="settings.update.status.unknown"></span>
+                      </span>
+
+                      <!-- Tier 1 (yt-dlp / gallery-dl): Update button -->
+                      <template x-if="comp.tier === 1 && comp.available">
+                        <button @click="updateComponent(comp.key)"
+                                :disabled="!!updates.loading_components[comp.key]"
+                                class="ms-auto inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium bg-accent text-white hover:bg-accent/90 transition disabled:opacity-50">
+                          <i data-lucide="download" class="size-3.5" :class="updates.loading_components[comp.key] ? 'animate-pulse' : ''" aria-hidden="true"></i>
+                          <span x-text="updates.loading_components[comp.key] ? t('settings.update.cta.installing') : t('settings.update.cta.update')"></span>
+                        </button>
+                      </template>
+                    </div>
+
+                    <!-- Tier 1 forensic note: in-container update is reverted on next image rebuild -->
+                    <p x-show="comp.tier === 1" class="text-[11px] text-zinc-500 mt-2"
+                       data-t="settings.update.tier1.note"></p>
+
+                    <!-- Tier 2 (Capsule itself): docker pull copy-paste -->
+                    <div x-show="comp.tier === 2 && comp.available" class="mt-3 rounded-md bg-zinc-50 dark:bg-zinc-950/40 border border-zinc-200 dark:border-zinc-800 p-3">
+                      <p class="text-xs text-zinc-700 dark:text-zinc-300 mb-2" data-t="settings.update.tier2.intro"></p>
+                      <code class="block px-2 py-1.5 rounded bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-xs font-mono select-all" x-text="dockerPullCommand()"></code>
+                      <div class="flex items-center gap-2 mt-2 flex-wrap">
+                        <button @click="copyDockerPull()"
+                                class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-zinc-200 dark:border-zinc-800 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800 transition">
+                          <i data-lucide="copy" class="size-3.5" aria-hidden="true"></i>
+                          <span data-t="settings.update.tier2.copy_command"></span>
+                        </button>
+                        <a x-show="releaseNotesUrl()" :href="releaseNotesUrl()" target="_blank" rel="noopener noreferrer"
+                           class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-zinc-200 dark:border-zinc-800 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800 transition">
+                          <i data-lucide="external-link" class="size-3.5" aria-hidden="true"></i>
+                          <span data-t="settings.update.tier2.release_notes"></span>
+                        </a>
+                      </div>
+                    </div>
+
+                    <!-- Inline result message after a Tier 1 update -->
+                    <div x-show="updates.results[comp.key]" class="mt-2 text-xs"
+                         :class="updates.results[comp.key]?.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'"
+                         x-text="updates.results[comp.key]?.message"></div>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <!-- Empty state — no components yet probed -->
+            <div x-show="updates.components.length === 0" class="text-sm text-zinc-500 py-4 text-center"
+                 data-t="settings.update.empty"></div>
+          </div>
         </div>
       </div>
     </section>
