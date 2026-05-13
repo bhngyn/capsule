@@ -142,6 +142,62 @@ async def test_i18n_endpoint_still_works(client):
     assert "errors.unknown" in body["messages"]
 
 
+@pytest.mark.asyncio
+async def test_i18n_endpoint_rejects_path_traversal(client):
+    """Regression for HIGH-1 (CODE_REVIEW 2026-05-13).
+
+    Without lang validation, ``GET /api/i18n/..%2Fsome%2Fother`` would
+    let an attacker read any JSON file the process can open (and pin
+    the result in i18n.load's lru_cache forever).
+    """
+    # Reachable malformed values that exercise the route handler.
+    # (Inputs containing ``/`` aren't sent through this single-segment
+    # path param — FastAPI's routing already prevents them — so we
+    # test the segments the regex actually sees.)
+    bad = [
+        "1234",
+        "verylonglocale",
+        "en_US",  # underscore not in BCP-47 subset we accept
+        "EN..",
+        "a",  # under the 2-char floor
+    ]
+    for code in bad:
+        resp = await client.get(f"/api/i18n/{code}")
+        # 400 is the validation rejection from our handler; 404 means
+        # FastAPI's routing layer already rejected (e.g. for pure
+        # ``..`` which is normalised away before reaching the handler).
+        # Both outcomes refuse to serve a bundle.
+        assert resp.status_code in (400, 404), (
+            f"expected 400/404 for malformed lang {code!r}, got "
+            f"{resp.status_code}"
+        )
+    # And the valid shapes still 200.
+    for code in ("en", "ar", "ja", "es", "zh-Hant"):
+        resp = await client.get(f"/api/i18n/{code}")
+        assert resp.status_code in (200, 404), (
+            f"valid shape {code!r} should not 400; got {resp.status_code}"
+        )
+
+
+def test_i18n_is_valid_lang_unit():
+    """Unit-test the regex directly so failures point at i18n.py."""
+    from app import i18n
+    assert i18n.is_valid_lang("en")
+    assert i18n.is_valid_lang("ar")
+    assert i18n.is_valid_lang("en-US")
+    assert i18n.is_valid_lang("zh-Hant")
+    assert not i18n.is_valid_lang("")
+    assert not i18n.is_valid_lang("..")
+    assert not i18n.is_valid_lang("../etc/passwd")
+    assert not i18n.is_valid_lang("en/../../etc/passwd")
+    assert not i18n.is_valid_lang("en\\foo")
+    assert not i18n.is_valid_lang("en;a")
+    assert not i18n.is_valid_lang("en%00")
+    assert not i18n.is_valid_lang("verylonglocale")  # too long
+    assert not i18n.is_valid_lang("1234")
+    assert not i18n.is_valid_lang("a")  # under the 2-char floor
+
+
 # --- Jobs (mocked pipeline) -------------------------------------------------
 
 

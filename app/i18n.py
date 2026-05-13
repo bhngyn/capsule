@@ -12,10 +12,28 @@ translations) and never change at runtime.
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from typing import Mapping
 
 from . import config
+
+
+# BCP-47-shaped: 2-3 ASCII letters, optionally followed by ``-`` and a
+# 2-4 letter region/script tag. The split-on-``-`` below keeps us safe
+# against ``en-US`` / ``zh-Hant`` callers while ruling out path
+# traversal (``../``) and filesystem-special chars (``/``, ``\``, ``\0``).
+_LANG_CODE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z]{2,4})?$")
+
+
+def is_valid_lang(lang: str) -> bool:
+    """Return True if ``lang`` matches the BCP-47 shape we accept.
+
+    Use this at every entry point that takes a user-supplied locale —
+    HTTP routes, job-submit payloads, extension-capture payloads. The
+    backend's lookup (``load``) re-validates as defence in depth.
+    """
+    return bool(lang) and bool(_LANG_CODE_RE.match(lang))
 
 
 @lru_cache(maxsize=None)
@@ -24,6 +42,12 @@ def load(lang: str) -> Mapping[str, str]:
 
     Returns a flat dict of ICU MessageFormat strings.
     """
+    # Defence in depth: even though every documented caller validates
+    # ``lang`` at the route boundary, ``load`` is cached forever — a
+    # single ``..``-bearing request that slipped past would pin a
+    # poisoned bundle in the LRU. Reject unknown shapes here too.
+    if not is_valid_lang(lang):
+        raise FileNotFoundError(f"Invalid i18n language code: {lang!r}")
     primary = lang.split("-", 1)[0]
     candidates = (primary, config.DEFAULT_LANG)
     for code in candidates:

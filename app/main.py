@@ -291,6 +291,13 @@ async def healthz() -> dict[str, str]:
 
 @app.get("/api/i18n/{lang}")
 async def get_i18n(lang: str) -> JSONResponse:
+    # Reject malformed locale codes at the boundary. Without this, a
+    # value like ``../../some/other.json`` would resolve via
+    # ``I18N_DIR / f"{lang}.json"`` and read any JSON file the process
+    # can open — and ``i18n.load``'s ``lru_cache`` would pin the
+    # result indefinitely.
+    if not i18n.is_valid_lang(lang):
+        raise HTTPException(status_code=400, detail="invalid lang code")
     try:
         bundle = i18n.merged_with_fallback(lang)
     except FileNotFoundError as exc:
