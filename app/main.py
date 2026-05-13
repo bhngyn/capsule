@@ -56,6 +56,7 @@ from . import (
     postprocess,
     profiles as profiles_mod,
     signing,
+    updates as updates_mod,
     url_canonical,
     ytdlp_runner,
 )
@@ -116,6 +117,38 @@ def _probe_runtime_deps() -> None:
         sys.exit(1)
 
 
+def _record_update_check_audit(snapshot: updates_mod.CheckResult) -> None:
+    """Audit-callback for ``updates.auto_check_on_launch`` and the manual
+    check route. Lives here (not in ``updates.py``) so the updates module
+    stays DB-free.
+    """
+    conn = _conn()
+    try:
+        audit.append(
+            conn,
+            "system.update_check",
+            actor="system" if snapshot.triggered_by != "manual" else "user",
+            details={
+                "triggered_by": snapshot.triggered_by,
+                "components": [
+                    {
+                        "key": c["key"],
+                        "tier": c["tier"],
+                        "source": c["source"],
+                        "installed": c["installed"],
+                        "latest": c["latest"],
+                        "available": c["available"],
+                        "error": c["error"],
+                    }
+                    for c in snapshot.components
+                ],
+                "updates_available": snapshot.updates_available,
+            },
+        )
+    finally:
+        conn.close()
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     _probe_runtime_deps()
@@ -133,7 +166,28 @@ async def _lifespan(app: FastAPI):
         # The ``jobs`` table is durable so the queue can be inspected and
         # re-resumed manually if a startup hiccup ever stops us here.
         pass
+    # CLAUDE.md §15 v0.10: opt-out auto-check on launch. Fire-and-forget so
+    # network latency on a slow link never delays uvicorn readiness. The
+    # task is tracked so tests can await it deterministically; production
+    # runs simply detach and let the asyncio loop drive it to completion.
+    auto_check_task: asyncio.Task | None = None
+    if updates_mod.auto_check_enabled():
+        auto_check_task = asyncio.create_task(
+            updates_mod.auto_check_on_launch(
+                audit_callback=_record_update_check_audit,
+            ),
+            name="capsule.updates.auto_check_on_launch",
+        )
+    app.state.auto_check_task = auto_check_task
     yield
+    # Best-effort cancellation on shutdown so the test client's lifespan
+    # exit doesn't trip "Task was destroyed but it is pending!".
+    if auto_check_task is not None and not auto_check_task.done():
+        auto_check_task.cancel()
+        try:
+            await auto_check_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 app = FastAPI(
@@ -197,7 +251,23 @@ def _bearer_token(
     return record
 
 
-app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
+# Static files default to heuristic caching, which leaves a freshly
+# hot-swapped container serving stale UI bytes to users with the tab
+# already open. ``no-cache`` forces a conditional GET on every request
+# but the browser still gets a 304 when the file hasn't changed — so the
+# wire cost is one HEAD-equivalent round trip, not a re-download.
+class _NoCacheStaticFiles(StaticFiles):
+    def is_not_modified(self, response_headers, request_headers) -> bool:
+        response_headers["Cache-Control"] = "no-cache"
+        return super().is_not_modified(response_headers, request_headers)
+
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", _NoCacheStaticFiles(directory=config.STATIC_DIR), name="static")
 
 
 # --- Static UI ---------------------------------------------------------------
@@ -205,7 +275,10 @@ app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
 
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
-    return FileResponse(config.STATIC_DIR / "index.html")
+    return FileResponse(
+        config.STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/healthz", include_in_schema=False)
@@ -361,6 +434,15 @@ class JobBatchItem(BaseModel):
     # CLAUDE.md §15 v0.9 — container picker. None ⇒ yt-dlp default.
     video_container: str | None = None
     audio_container: str | None = None
+    # When True, gallery-dl runs even if yt-dlp produced media. The captured
+    # images attach as additional ``gallery_NNN`` artifacts on the same item;
+    # capture_kind stays ``media`` (yt-dlp's primary) when both paths produce
+    # output. Useful for blog/article pages where yt-dlp may only grab an
+    # embedded video while gallery-dl finds the surrounding photo set.
+    force_gallery_run: bool = False
+    # CLAUDE.md §15 v0.10 — capture mode routing.
+    # "webpage" | "media" | "gallery" | None (None ⇒ current default behaviour).
+    capture_mode: str | None = None
 
     @field_validator("quality_cap")
     @classmethod
@@ -392,6 +474,17 @@ class JobBatchItem(BaseModel):
         if v not in jobs_mod.AUDIO_CONTAINERS:
             raise ValueError(
                 f"audio_container must be one of {list(jobs_mod.AUDIO_CONTAINERS)}"
+            )
+        return v
+
+    @field_validator("capture_mode")
+    @classmethod
+    def _validate_capture_mode(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        if v not in jobs_mod._CAPTURE_MODE_VALUES:
+            raise ValueError(
+                f"capture_mode must be one of {sorted(jobs_mod._CAPTURE_MODE_VALUES)}"
             )
         return v
 
@@ -473,6 +566,8 @@ def _normalize_batch_items(body: JobBatch) -> list[JobBatchItem]:
             subtitle_langs=it.subtitle_langs,
             video_container=it.video_container,
             audio_container=it.audio_container,
+            force_gallery_run=it.force_gallery_run,
+            capture_mode=it.capture_mode,
         ))
     if not out:
         raise HTTPException(status_code=400, detail="no URLs")
@@ -518,6 +613,8 @@ async def submit_jobs_batch(body: JobBatch) -> dict[str, Any]:
             or it.subtitle_langs
             or it.video_container
             or it.audio_container
+            or it.force_gallery_run
+            or it.capture_mode
         ):
             opts = jobs_mod.DownloadOptions(
                 audio_only=it.audio_only,
@@ -525,6 +622,8 @@ async def submit_jobs_batch(body: JobBatch) -> dict[str, Any]:
                 subtitle_langs=list(it.subtitle_langs or []),
                 video_container=it.video_container,
                 audio_container=it.audio_container,
+                force_gallery_run=it.force_gallery_run,
+                capture_mode=it.capture_mode,
             )
         job = await jobs_mod.orchestrator().submit(
             case_id=case.id,
@@ -948,6 +1047,25 @@ async def verify_library(download_id: int | None = None) -> dict[str, Any]:
                 if actual["sha256"] != expected.get("sha256"):
                     issues.append(f"hash_mismatch:{role}")
                     artifacts_ok = False
+            audit.append(
+                conn,
+                "item.verified",
+                case_id=int(r["case_id"]),
+                download_id=int(r["id"]),
+                actor="user",
+                details={
+                    "stem": stem,
+                    "sig_ok": sig_ok,
+                    "artifacts_ok": artifacts_ok,
+                    "issues": issues,
+                },
+            )
+            audit.write_item_sidecar(
+                conn,
+                download_id=int(r["id"]),
+                item_dir=item_dir,
+                stem=stem,
+            )
             report.append(
                 {
                     "download_id": r["id"],
@@ -1207,8 +1325,8 @@ async def reveal(body: RevealRequest) -> dict[str, Any]:
 
 # Components updatable via /api/system/update. Each entry is the user-facing
 # component name → (pip package, version-fetcher coroutine). Adding a new
-# updatable runtime is one entry here plus the ``Settings.update_*`` button in
-# the UI.
+# updatable runtime is one entry in ``app.updates.COMPONENTS`` (registry) +
+# one entry here (pip install path).
 _UPDATABLE_COMPONENTS: dict[str, tuple[str, Callable[[], Awaitable[str]]]] = {
     "yt-dlp": ("yt-dlp", ytdlp_runner.version),
     "gallery-dl": ("gallery-dl", gallery_dl_runner.version),
@@ -1223,11 +1341,33 @@ async def system_update(component: str = "yt-dlp") -> dict[str, Any]:
     back-compat) or ``gallery-dl``. Both run the same ``pip install
     --upgrade <pkg>`` flow, fetch the new version, and audit-log the result
     with the component label.
+
+    Tier 2 components (e.g. Capsule itself) are documented in the registry
+    but cannot be installed in-container — the UI surfaces a copy-paste
+    ``docker pull`` command instead. Posting one of those keys here returns
+    a 400 with ``i18n_key`` so the frontend can render a localized message.
     """
+    # Distinguish "tier 2 component, must rebuild image" from "no such
+    # component" so the UI can show the right error copy.
     if component not in _UPDATABLE_COMPONENTS:
+        registered = next(
+            (c for c in updates_mod.COMPONENTS if c.key == component),
+            None,
+        )
+        if registered is not None and registered.tier == updates_mod.TIER_IMAGE_REBUILD:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "i18n_key": "errors.update.requires_image_rebuild",
+                    "component": component,
+                },
+            )
         raise HTTPException(
             status_code=400,
-            detail=f"unknown component: {component}",
+            detail={
+                "i18n_key": "errors.update.unknown_component",
+                "component": component,
+            },
         )
     pkg_name, version_fn = _UPDATABLE_COMPONENTS[component]
 
@@ -1271,6 +1411,106 @@ async def system_update(component: str = "yt-dlp") -> dict[str, Any]:
         "stdout_tail": out.decode(errors="replace")[-2000:],
         "stderr_tail": err.decode(errors="replace")[-2000:],
     }
+
+
+# --- Update management (CLAUDE.md §15 v0.10) --------------------------------
+#
+# /api/system/updates       — read cache (no network; cheap; called on every
+#                             page load + after every navigation)
+# /api/system/updates/check — refresh cache (one HTTP call per source; audited
+#                             as system.update_check; manual or launch-fired)
+# /api/system/updates/auto_check — read/write the opt-out toggle (audited as
+#                                  system.auto_check_changed)
+
+
+def _updates_response(snapshot: updates_mod.CheckResult | None) -> dict[str, Any]:
+    """Shape the cache (or a fresh snapshot) into the wire format the UI
+    expects. Always includes ``auto_check`` so the toggle reflects the
+    current setting on every read.
+    """
+    auto = updates_mod.auto_check_enabled()
+    if snapshot is not None:
+        payload = snapshot.to_dict()
+        payload["auto_check"] = auto
+        return payload
+    cache = updates_mod.read_cache()
+    return {
+        "auto_check": auto,
+        "last_checked_at": cache.get("last_checked_at"),
+        "components": list(cache.get("components") or []),
+        "updates_available": int(cache.get("updates_available") or 0),
+        "triggered_by": cache.get("triggered_by"),
+    }
+
+
+@app.get("/api/system/updates")
+async def updates_status() -> dict[str, Any]:
+    """Return the cached update view + the live auto-check setting.
+
+    Never makes a network call. The cache is populated by
+    ``POST /api/system/updates/check`` (manual) or the lifespan auto-check.
+    """
+    return _updates_response(None)
+
+
+@app.post("/api/system/updates/check")
+async def updates_check_now() -> dict[str, Any]:
+    """Force a fresh round of installed + latest probes.
+
+    Audits one ``system.update_check`` row with ``triggered_by: "manual"``.
+    Returns the same shape as the GET endpoint.
+    """
+    snapshot = await updates_mod.perform_check(triggered_by="manual")
+    _record_update_check_audit(snapshot)
+    return _updates_response(snapshot)
+
+
+class AutoCheckUpdate(BaseModel):
+    enabled: bool
+
+
+@app.put("/api/system/updates/auto_check")
+async def updates_set_auto_check(body: AutoCheckUpdate) -> dict[str, Any]:
+    """Toggle the opt-out auto-check setting. Audited."""
+    previous = updates_mod.auto_check_enabled()
+    updates_mod.set_auto_check(body.enabled)
+    if previous != bool(body.enabled):
+        conn = _conn()
+        try:
+            audit.append(
+                conn,
+                "system.auto_check_changed",
+                actor="user",
+                details={"enabled": bool(body.enabled), "previous": previous},
+            )
+        finally:
+            conn.close()
+    return _updates_response(None)
+
+
+class DismissUpdateBanner(BaseModel):
+    components: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/system/updates/dismiss_banner")
+async def updates_dismiss_banner(body: DismissUpdateBanner) -> dict[str, Any]:
+    """Audit-only endpoint: the user clicked Dismiss on the home banner.
+
+    The setting cog dot stays lit (chain-of-custody — the dot tracks
+    "update available", not "user has seen this"). Returns the cache view
+    so the frontend can re-sync after dismissal.
+    """
+    conn = _conn()
+    try:
+        audit.append(
+            conn,
+            "system.update_dismissed",
+            actor="user",
+            details={"components": list(body.components)},
+        )
+    finally:
+        conn.close()
+    return _updates_response(None)
 
 
 # --- Browser-extension surface ----------------------------------------------
@@ -1522,6 +1762,10 @@ class ExtensionCaptureBody(BaseModel):
     # UI locale at submission time (Track A). Threads through to the
     # per-item manifest PDF; falls back to ``config.DEFAULT_LANG``.
     lang: str | None = None
+    # Capture mode override from the extension popup ("webpage" | "media" |
+    # "gallery" | None). Applied uniformly to all URLs in this submission.
+    # Mirrors the ``download_options.capture_mode`` field in DownloadOptions.
+    capture_mode: str | None = None
 
 
 def _decode_b64(blob: str | None, *, label: str) -> bytes | None:
@@ -1706,8 +1950,12 @@ async def extension_capture(
         raise HTTPException(status_code=400, detail="no URLs")
     submitted = []
     for u in urls:
+        opts: jobs_mod.DownloadOptions | None = None
+        if body.capture_mode:
+            opts = jobs_mod.DownloadOptions(capture_mode=body.capture_mode)
         job = await jobs_mod.orchestrator().submit(
             case_id=case.id, url=u, lang=body.lang,
+            download_options=opts,
         )
         submitted.append(job.to_dict())
 
@@ -1718,7 +1966,8 @@ async def extension_capture(
     # cookie file.
     live_by_url: dict[str, list[LiveCapturePayload]] = {}
     for payload in body.live_captures:
-        live_by_url.setdefault(payload.url.strip(), []).append(payload)
+        canonical_key = url_canonical.canonicalize(payload.url.strip())
+        live_by_url.setdefault(canonical_key, []).append(payload)
     for job_dict, raw_url in zip(submitted, urls):
         ephemeral_path: Path | None = None
         if body.cookie_persistence == "ephemeral" and cookies_dicts:
@@ -1730,7 +1979,7 @@ async def extension_capture(
                 raise HTTPException(
                     status_code=400, detail=f"malformed cookie: {exc}",
                 ) from exc
-        payloads = live_by_url.get(raw_url) or []
+        payloads = live_by_url.get(url_canonical.canonicalize(raw_url)) or []
         # Always stash if either (a) live capture artifacts present or
         # (b) ephemeral cookies need to ride to the orchestrator.
         if payloads or ephemeral_path is not None:
