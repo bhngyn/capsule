@@ -896,11 +896,26 @@ async def stream_job_events(job_id: str, request: Request) -> StreamingResponse:
         raise HTTPException(status_code=404, detail="job not found")
 
     async def event_source():
-        async for evt in jobs_mod.orchestrator().events(job_id):
+        # Poll the orchestrator channel via a short-deadline timeout so
+        # an idle subscriber (paused / stalled job) can still detect
+        # client disconnect promptly. Without this poll, the iterator
+        # would block on the next event forever; a client that closed
+        # its EventSource would leave a coroutine + channel queue
+        # pending until the job ended.
+        orchestrator = jobs_mod.orchestrator()
+        channel = orchestrator._channels.get(job_id)
+        if channel is None:
+            return
+        while True:
             if await request.is_disconnected():
                 return
-            payload = {"event": evt["event"], "data": evt["data"]}
-            yield f"event: {evt['event']}\ndata: {json.dumps(payload['data'])}\n\n"
+            try:
+                evt = await asyncio.wait_for(channel.get(), timeout=5.0)
+            except asyncio.TimeoutError:
+                continue
+            if evt is None:
+                return
+            yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
 
     return StreamingResponse(event_source(), media_type="text/event-stream")
 
@@ -1937,15 +1952,24 @@ async def extension_capture(
                 raise HTTPException(status_code=400, detail=f"malformed cookie: {exc}") from exc
             domains = [d.domain for d in summary.domains]
 
-    # Step 3: deduplicate + submit jobs. Mirrors /api/jobs/batch's logic so
-    # the popup's "send list" form behaves identically to the in-app batch.
-    seen: set[str] = set()
+    # Step 3: deduplicate + submit jobs. Mirrors /api/jobs/batch's logic
+    # so the popup's "send list" form behaves identically to the in-app
+    # batch — including canonical-URL dedup so ``?utm_source=tweet`` and
+    # ``?utm_source=email`` variants of the same URL collapse to one
+    # job. (The orchestrator's own dedup also fires on the canonical
+    # hash; this just keeps the response payload honest about how many
+    # distinct captures we kicked off.)
+    seen_canon: set[str] = set()
     urls: list[str] = []
     for raw in body.urls:
         u = raw.strip()
-        if u and u not in seen:
-            seen.add(u)
-            urls.append(u)
+        if not u:
+            continue
+        canon = url_canonical.canonicalize(u)
+        if canon in seen_canon:
+            continue
+        seen_canon.add(canon)
+        urls.append(u)
     if not urls:
         raise HTTPException(status_code=400, detail="no URLs")
     submitted = []

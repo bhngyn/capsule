@@ -796,6 +796,36 @@ class JobOrchestrator:
 
     # -- pause / resume / cancel (plan §U4) -----------------------------
 
+    @staticmethod
+    def _terminate_with_kill_escalation(proc: Any, *, sigkill_after_s: float = 10.0) -> None:
+        """Send SIGTERM, then escalate to SIGKILL after a deadline.
+
+        yt-dlp / gallery-dl normally honour SIGTERM (and leave .part
+        files for ``--continue``), but a wedged or hostile subprocess
+        can ignore it. Without escalation, the orchestrator's
+        ``await run_task`` hangs forever. Scheduled as a fire-and-
+        forget asyncio task so the caller (pause/cancel) returns
+        immediately.
+        """
+        try:
+            proc.terminate()
+        except (ProcessLookupError, OSError):
+            return
+
+        async def _watchdog():
+            try:
+                await asyncio.sleep(sigkill_after_s)
+                if proc.returncode is None:
+                    with contextlib.suppress(ProcessLookupError, OSError):
+                        proc.kill()
+            except asyncio.CancelledError:
+                pass
+
+        # Fire-and-forget — the watchdog only matters if the subprocess
+        # ignores SIGTERM, in which case the orchestrator's normal
+        # cleanup path is already stalled.
+        asyncio.create_task(_watchdog())
+
     async def pause(self, job_id: str) -> bool:
         """Mark a job paused. SIGTERM any live subprocess, cancel any pending
         retry. Returns True if the job is now paused, False if it was already
@@ -812,13 +842,11 @@ class JobOrchestrator:
         rt = self._retry_tasks.pop(job_id, None)
         if rt and not rt.done():
             rt.cancel()
-        # SIGTERM the live subprocess if any.
+        # SIGTERM the live subprocess if any, escalating to SIGKILL
+        # after 10s so a wedged child can't hang the orchestrator.
         proc = self._procs.get(job_id)
         if proc is not None:
-            try:
-                proc.terminate()
-            except ProcessLookupError:
-                pass
+            self._terminate_with_kill_escalation(proc)
         # If the job hadn't actually started yet (queued / retrying with no
         # in-flight proc), flip status directly so the UI updates without
         # waiting for a non-existent run to complete.
@@ -851,10 +879,7 @@ class JobOrchestrator:
             rt.cancel()
         proc = self._procs.get(job_id)
         if proc is not None:
-            try:
-                proc.terminate()
-            except ProcessLookupError:
-                pass
+            self._terminate_with_kill_escalation(proc)
         if proc is None and job.status in (STATUS_QUEUED, STATUS_RETRYING, STATUS_PAUSED):
             conn = db_mod.connect(self._db_path)
             try:
@@ -938,10 +963,7 @@ class JobOrchestrator:
             rt.cancel()
         proc = self._procs.get(job_id)
         if proc is not None:
-            try:
-                proc.terminate()
-            except ProcessLookupError:
-                pass
+            self._terminate_with_kill_escalation(proc)
         # Cancel any in-flight run task too — we'll re-dispatch a fresh one.
         run_task = self._run_tasks.pop(job_id, None)
         if run_task and not run_task.done():

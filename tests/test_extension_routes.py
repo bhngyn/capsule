@@ -295,6 +295,39 @@ async def test_extension_capture_submits_jobs_and_writes_cookies(client, capsule
 
 
 @pytest.mark.asyncio
+async def test_extension_capture_canonicalizes_url_dedup(client, capsule_dirs):
+    """Regression for MED-1 (CODE_REVIEW 2026-05-13).
+
+    /api/jobs/batch already collapses ``?utm_source=tweet`` and
+    ``?utm_source=email`` variants of the same URL via the canonical
+    form; the extension endpoint must behave the same so the popup
+    "send list" UX matches the in-app batch.
+    """
+    pair = (await client.post("/api/extension/pair", json={"label": "A"})).json()
+    case = (await client.post("/api/cases", json={"name": "Op"})).json()
+    resp = await client.post(
+        "/api/extension/capture",
+        json={
+            "case_id": case["id"],
+            "urls": [
+                "https://example.com/post?utm_source=tweet",
+                "https://example.com/post?utm_source=email",
+                "https://example.com/other",
+            ],
+        },
+        headers={"Authorization": f"Bearer {pair['token']}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # Two canonical-distinct URLs: ``example.com/post`` (utm_* stripped)
+    # and ``example.com/other``.
+    assert len(body["jobs"]) == 2, (
+        f"expected 2 jobs after canonical dedup, got "
+        f"{[j['url'] for j in body['jobs']]}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_extension_capture_caps_at_25_urls(client):
     pair = (await client.post("/api/extension/pair", json={"label": "A"})).json()
     case = (await client.post("/api/cases", json={"name": "Op"})).json()

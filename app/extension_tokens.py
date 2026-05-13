@@ -103,10 +103,16 @@ def _load() -> list[dict]:
 def _save(rows: list[dict]) -> None:
     path = tokens_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(rows, indent=2, sort_keys=True, ensure_ascii=False)
-    path.write_text(payload, encoding="utf-8")
+    payload = json.dumps(rows, indent=2, sort_keys=True, ensure_ascii=False).encode(
+        "utf-8"
+    )
+    # Atomic write — match cookies._atomic_write_bytes so the file is
+    # never world-readable for any window between create and chmod.
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(payload)
     if os.name != "nt":
-        os.chmod(path, 0o600)
+        os.chmod(tmp, 0o600)
+    tmp.replace(path)
 
 
 def _row_to_token(row: dict) -> Token:

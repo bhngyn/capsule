@@ -758,3 +758,35 @@ sys.exit(0)
     stalled_idx = statuses.index("stalled")
     assert any(s == "downloading" for s in statuses[:stalled_idx])
     assert any(s == "downloading" for s in statuses[stalled_idx + 1:])
+
+
+@pytest.mark.asyncio
+async def test_stderr_ring_buffer_caps_memory(tmp_path):
+    """Regression for MED-4 (CODE_REVIEW 2026-05-13).
+
+    Drive the runner against a fake yt-dlp that prints ~256 KB of
+    repetitive stderr. The runner should retain only the tail in
+    ``result.stderr`` (cap is ~16 KB) so a hostile site can't OOM
+    the container.
+    """
+    script = tmp_path / "noisy-ytdlp"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "# ~256 KB of repetitive stderr.\n"
+        "for i in range(8192):\n"
+        "    sys.stderr.write(f'ERROR {i:06d} -- {\"x\" * 24}\\n')\n"
+        "sys.stderr.write('FINAL-TAIL-MARKER\\n')\n"
+        "sys.exit(0)\n"
+    )
+    os.chmod(script, stat.S_IRWXU)
+    result = await ytdlp_runner.run(
+        url="https://example.test/x",
+        case_dir=tmp_path / "case",
+        executable=str(script),
+    )
+    # Tail marker survives — the cap keeps the most recent bytes.
+    assert "FINAL-TAIL-MARKER" in result.stderr
+    # And the buffer is bounded — the raw stream was ~256 KB; we keep
+    # at most ~80 KB (16 KB target + the 64 KB pre-trim slack window).
+    assert len(result.stderr) <= 100_000

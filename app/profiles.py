@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import os
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -179,19 +180,24 @@ def load_app_default() -> dict[str, Any]:
 
 
 def save_app_default(settings: dict[str, Any]) -> None:
-    """Write ``/config/settings.json`` atomically.
+    """Write ``/config/settings.json`` atomically with mode 0600.
 
     Adds an ``updated_at`` timestamp so a future audit-trail review can
-    confirm when the choice was made.
+    confirm when the choice was made. Matches the
+    ``cookies._atomic_write_bytes`` pattern: write a sibling tmp file,
+    chmod 0600 before the rename so the final file is never
+    world-readable for any window.
     """
     path = _settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {**settings, "updated_at": _utcnow()}
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(
-        json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    data = json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False).encode(
+        "utf-8"
     )
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_bytes(data)
+    if os.name != "nt":
+        os.chmod(tmp, 0o600)
     tmp.replace(path)
 
 

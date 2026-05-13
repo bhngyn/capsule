@@ -637,3 +637,64 @@ async def test_restart_failed_job_increments_count_and_audits(
     assert details.get("job_id") == job_id
     assert details.get("restart_count") == 1
     assert details.get("from") == jobs_mod.STATUS_FAILED_PERMANENT
+
+
+@pytest.mark.asyncio
+async def test_terminate_with_kill_escalation_fires_sigkill(reload_modules):
+    """Regression for MED-2 (CODE_REVIEW 2026-05-13).
+
+    A wedged subprocess that ignores SIGTERM should get SIGKILL after
+    the watchdog deadline. Without escalation the orchestrator's
+    ``await run_task`` would hang forever.
+    """
+    _, jobs_mod = reload_modules
+
+    class WedgedProc:
+        def __init__(self):
+            self.terminate_calls = 0
+            self.kill_calls = 0
+            self.returncode = None  # never exits on its own
+
+        def terminate(self):
+            self.terminate_calls += 1
+            # Crucially, do NOT set returncode — simulate ignored SIGTERM.
+
+        def kill(self):
+            self.kill_calls += 1
+            self.returncode = -9
+
+    proc = WedgedProc()
+    jobs_mod.JobOrchestrator._terminate_with_kill_escalation(
+        proc, sigkill_after_s=0.1,
+    )
+    assert proc.terminate_calls == 1
+    # Watchdog hasn't fired yet.
+    assert proc.kill_calls == 0
+    # Give the watchdog enough time to escalate.
+    await asyncio.sleep(0.3)
+    assert proc.kill_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_terminate_with_kill_escalation_skips_kill_if_proc_exited(reload_modules):
+    """If the proc honoured SIGTERM and exited before the watchdog
+    deadline, SIGKILL must NOT fire — we'd be killing the wrong PID."""
+    _, jobs_mod = reload_modules
+
+    class WellBehavedProc:
+        def __init__(self):
+            self.kill_calls = 0
+            self.returncode = None
+
+        def terminate(self):
+            self.returncode = -15  # exited on SIGTERM
+
+        def kill(self):
+            self.kill_calls += 1
+
+    proc = WellBehavedProc()
+    jobs_mod.JobOrchestrator._terminate_with_kill_escalation(
+        proc, sigkill_after_s=0.1,
+    )
+    await asyncio.sleep(0.3)
+    assert proc.kill_calls == 0

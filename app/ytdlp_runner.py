@@ -637,12 +637,32 @@ async def run(
                 )
 
     async def _drain_stderr() -> None:
+        """Drain stderr with a ring-buffer cap.
+
+        A hostile site can pump tens of MB of repetitive errors; the
+        caller only cares about the *last* few KB for diagnostics
+        (the audit row already truncates to 2000 chars). Without a
+        cap, the runner would hold the entire stream resident in
+        ``stderr_chunks`` until the subprocess exited.
+        """
         assert proc.stderr is not None
+        # ~16 KB total. Re-trimmed every ~64 KB written so we don't
+        # pay the join + slice cost on every line.
+        max_chars = 16_384
+        trim_at = max_chars + 65_536
+        running_len = 0
         while True:
             raw = await proc.stderr.readline()
             if not raw:
                 return
-            stderr_chunks.append(raw.decode(errors="replace"))
+            chunk = raw.decode(errors="replace")
+            stderr_chunks.append(chunk)
+            running_len += len(chunk)
+            if running_len > trim_at:
+                merged = "".join(stderr_chunks)[-max_chars:]
+                stderr_chunks.clear()
+                stderr_chunks.append(merged)
+                running_len = len(merged)
 
     async def _stall_watchdog() -> None:
         """Emit one ``stalled`` ProgressUpdate per stall episode.

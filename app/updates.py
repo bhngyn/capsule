@@ -37,13 +37,17 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import json
+import logging
 import urllib.error
 import urllib.request
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from . import __version__, config, profiles
+
+_log = logging.getLogger(__name__)
 
 __all__ = [
     "Component",
@@ -453,8 +457,29 @@ async def auto_check_on_launch(
         snapshot = await perform_check(
             triggered_by="launch", timeout=timeout
         )
-    except Exception:
-        # Swallow — a network blip on launch must never crash uvicorn.
+    except Exception as exc:
+        # Swallow — a network blip on launch must never crash uvicorn —
+        # but log it AND fire the audit callback with a synthetic
+        # failure snapshot. The launch update-check is the only
+        # documented exception to "no silent network calls"
+        # (CLAUDE.md §13 #7); a silent failure would let the audit log
+        # disagree with reality about whether the check ran. Exception
+        # class name only — the message could carry an outbound URL or
+        # token from a misconfigured proxy.
+        _log.warning(
+            "auto_check_on_launch: network probe failed (%s)",
+            type(exc).__name__,
+        )
+        if audit_callback is not None:
+            with suppress(Exception):
+                fail_snapshot = {
+                    "triggered_by": "launch",
+                    "error": "network_probe_failed",
+                    "exception_class": type(exc).__name__,
+                }
+                result = audit_callback(fail_snapshot)
+                if asyncio.iscoroutine(result):
+                    await result
         return
     if audit_callback is None:
         return
@@ -462,6 +487,11 @@ async def auto_check_on_launch(
         result = audit_callback(snapshot)
         if asyncio.iscoroutine(result):
             await result
-    except Exception:
-        # Audit-write failure also non-fatal — the cache is still on disk.
+    except Exception as exc:
+        # Audit-write failure also non-fatal — the cache is still on
+        # disk — but log loudly enough that a developer notices.
+        _log.warning(
+            "auto_check_on_launch: audit-write failed (%s)",
+            type(exc).__name__,
+        )
         return
