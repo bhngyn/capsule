@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://capsule.example/schemas/meta.schema.json",
   "title": "Capsule capture metadata (meta.json)",
-  "description": "Per-capture forensic record. Source of truth for the integrity story; signed by the case keypair. Schema v2 (hardening pass) adds tab_context, capture-side mutations (blocking + banner hide), render-wait outcomes, and cookie-set provenance hash. Schema v3 (Track A) adds the per-item manifest PDF artifact role + checksum, plus capture.report_lang for the locale the manifest PDF was rendered in. Schema v4 adds the per-item report PDF (``report_pdf`` artifact role) — a human-readable companion to the manifest PDF carrying provenance, full description, tools, and the capture report; its hash is bound to meta.json by the same signature. Schema v5 adds ``url_canonical`` (canonical form of url_final used for dedup hashing) and ``force_recapture_index`` (set when the row was an intentional re-capture per CLAUDE.md §15; null otherwise). Schema v6 adds the ``gallery`` capture_kind for image-gallery captures (gallery-dl producer): ``gallery_count`` and ``gallery_extractor`` at the root, ``gallery_dl_version`` under tools, ``gallery_NNN`` / ``gallery_NNN_meta`` / ``gallery_info`` artifact roles, and ``capture.gallery_attempted`` / ``capture.gallery_outcome`` for the capture report. Schema v7 (page-preservation hardening pass) adds in-session WARC provenance (``capture.warc.*``), animation-freeze and video-pause counters, console + HAR sidecars (``page_console`` and ``page_har`` artifact roles), the navigation response block (``capture.response``), the media-context viewport screenshot (``page_context_screenshot`` role), and ``warcio_version`` / ``browsertrix_version: null`` for in-session captures.",
+  "description": "Per-capture forensic record. Source of truth for the integrity story; signed by the case keypair. Schema v2 (hardening pass) adds tab_context, capture-side mutations (blocking + banner hide), render-wait outcomes, and cookie-set provenance hash. Schema v3 (Track A) adds the per-item manifest PDF artifact role + checksum, plus capture.report_lang for the locale the manifest PDF was rendered in. Schema v4 adds the per-item report PDF (``report_pdf`` artifact role) — a human-readable companion to the manifest PDF carrying provenance, full description, tools, and the capture report; its hash is bound to meta.json by the same signature. Schema v5 adds ``url_canonical`` (canonical form of url_final used for dedup hashing) and ``force_recapture_index`` (set when the row was an intentional re-capture per CLAUDE.md §15; null otherwise). Schema v6 adds the ``gallery`` capture_kind for image-gallery captures (gallery-dl producer): ``gallery_count`` and ``gallery_extractor`` at the root, ``gallery_dl_version`` under tools, ``gallery_NNN`` / ``gallery_NNN_meta`` / ``gallery_info`` artifact roles, and ``capture.gallery_attempted`` / ``capture.gallery_outcome`` for the capture report. Schema v7 (page-preservation hardening pass) adds in-session WARC provenance (``capture.warc.*``), animation-freeze and video-pause counters, console + HAR sidecars (``page_console`` and ``page_har`` artifact roles), the navigation response block (``capture.response``), the media-context viewport screenshot (``page_context_screenshot`` role), and ``warcio_version`` / ``browsertrix_version: null`` for in-session captures. Schema v8 (Download options + reliability hardening v0.7) adds the ``download_options`` block and ``capture.stalled_count``. Schema v9 (Format choice v0.9) adds ``download_options.video_container`` and ``download_options.audio_container``. Schema v10 (Capture mode v0.10) adds ``download_options.capture_mode``.",
   "type": "object",
   "required": [
     "schema_version",
@@ -22,7 +22,7 @@
     "signing_key_fp"
   ],
   "properties": {
-    "schema_version": { "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9] },
+    "schema_version": { "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] },
     "job_uuid": { "type": "string" },
     "capture_kind": { "enum": ["media", "page_only", "gallery"] },
     "case": {
@@ -268,6 +268,17 @@
             { "enum": ["mp3", "m4a", "opus", "wav", "flac"] }
           ],
           "description": "User-picked audio container for the extraction path (audio_only=true or quality_cap=audio). Maps to yt-dlp's --audio-format. ``null`` ⇒ mp3 (the v0.7 default, preserved for back-compat). Ignored on the video path. v9."
+        },
+        "force_gallery_run": {
+          "type": "boolean",
+          "description": "True iff the investigator opted gallery-dl in for this job so it runs alongside yt-dlp regardless of yt-dlp's outcome. Captured images attach as additional gallery_NNN artifacts on the same item; capture_kind stays ``media`` (yt-dlp's primary) when both paths produce output."
+        },
+        "capture_mode": {
+          "anyOf": [
+            { "type": "null" },
+            { "type": "string", "enum": ["webpage", "media", "gallery"] }
+          ],
+          "description": "Investigator-selected capture mode. ``webpage`` prioritises page context and always runs gallery-dl; ``media`` emphasises video download (yt-dlp primary, gallery-dl fallback only); ``gallery`` skips yt-dlp entirely and forces gallery-dl. ``null`` ⇒ default (current fallback behaviour, back-compat). v10."
         },
         "restart_count": {
           "type": "integer",

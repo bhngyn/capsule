@@ -464,7 +464,11 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         # We sort the image list before indexing so that NNN order is
         # deterministic across capture / re-verify, regardless of
         # filesystem walk order.
-        if capture_kind == "gallery":
+        #
+        # v0.7 force_gallery_run: gallery files are also processed when
+        # capture_kind == "media" so the investigator-opted images attach
+        # alongside the primary yt-dlp media.
+        if capture_input.gallery_files:
             sorted_galleries = sorted(
                 (p for p in capture_input.gallery_files if p.exists()),
                 key=lambda p: (p.name, str(p)),
@@ -607,18 +611,17 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         # Gallery thumbnail strip — the report PDF renders an <img>-strip
         # of the first N images so a court reviewer can see the gallery's
         # contents at a glance. We pass the relative paths only; the
-        # template resolves them against ``DOWNLOADS_DIR``.
-        gallery_thumbnails = (
-            [
-                artifacts[k]
-                for k in sorted(artifacts)
-                if len(k) == 11 and k.startswith("gallery_") and k[8:11].isdigit()
-            ]
-            if capture_kind == "gallery"
-            else []
-        )
+        # template resolves them against ``DOWNLOADS_DIR``. v0.7
+        # force_gallery_run: thumbnails render whenever images are present,
+        # not just on capture_kind=="gallery".
+        gallery_thumbnails = [
+            artifacts[k]
+            for k in sorted(artifacts)
+            if len(k) == 11 and k.startswith("gallery_") and k[8:11].isdigit()
+        ]
 
         report_view = {
+            "stem": stem,
             "title": title_sanitized_for_pdf,
             "source_url": capture_input.url_submitted,
             "final_url": capture_input.url_final,
@@ -740,15 +743,15 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         # per-image ``gallery_NNN_meta`` siblings nor ``gallery_info`` /
         # ``gallery_extra_*``. The role pattern is exactly
         # ``gallery_<3-digit>``: 11 chars, last 3 are digits.
-        gallery_count = (
-            sum(
-                1
-                for k in artifacts
-                if len(k) == 11 and k.startswith("gallery_") and k[8:11].isdigit()
-            )
-            if capture_kind == "gallery"
-            else None
+        # v0.7 force_gallery_run: gallery files may attach to a ``media``
+        # capture too, so we count whenever the artifacts map carries any
+        # gallery_NNN role rather than gating on capture_kind.
+        gallery_image_role_count = sum(
+            1
+            for k in artifacts
+            if len(k) == 11 and k.startswith("gallery_") and k[8:11].isdigit()
         )
+        gallery_count = gallery_image_role_count if gallery_image_role_count else None
 
         # CLAUDE.md §15 v0.7: surface investigator-facing download knobs
         # so a recipient can see what was in effect (audio_only, quality_cap,
@@ -758,6 +761,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         download_options_block.setdefault("audio_only", False)
         download_options_block.setdefault("quality_cap", None)
         download_options_block.setdefault("subtitle_langs", [])
+        download_options_block.setdefault("force_gallery_run", False)
         download_options_block.setdefault("restart_count", 0)
         # capture.stalled_count: pull from the same dict so the audit
         # trail matches what was on the orchestrator's Job at sign time.
@@ -767,7 +771,7 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         capture_block.setdefault("stalled_count", stalled_count)
 
         meta = {
-            "schema_version": 9,
+            "schema_version": 10,
             "job_uuid": capture_input.job_uuid,
             "capture_kind": capture_kind,
             "case": {"id": case.id, "slug": case.slug, "name": case.name},
@@ -820,7 +824,11 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             # so callers can discriminate without parsing artifact keys.
             # ``null`` for non-gallery kinds.
             "gallery_count": gallery_count,
-            "gallery_extractor": capture_input.gallery_extractor if capture_kind == "gallery" else None,
+            # v0.7 force_gallery_run: extractor is populated whenever
+            # gallery-dl produced images, even on a ``media`` capture.
+            "gallery_extractor": (
+                capture_input.gallery_extractor if gallery_count else None
+            ),
             # CLAUDE.md §15 v0.7: per-job download knobs + reliability
             # counters. Always emitted (defaults included) so absence-vs-
             # default is never ambiguous for downstream verifiers.
@@ -902,11 +910,12 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             "platform": meta["platform"],
             "authenticated_domains": list(capture_input.authenticated_domains),
         }
-        if capture_kind == "gallery":
+        if gallery_count:
             # Pinning the count + extractor on the audit row gives an
             # evidence reviewer a quick "what does this row preserve?"
             # answer without having to read the meta.json — the same role
-            # that ``video_id`` plays for media kinds.
+            # that ``video_id`` plays for media kinds. v0.7 force_gallery_run:
+            # also fires on a ``media`` capture when gallery-dl ran alongside.
             download_details["gallery_count"] = gallery_count
             download_details["gallery_extractor"] = capture_input.gallery_extractor
         audit_id = audit.append(
@@ -1032,6 +1041,18 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 actor="user",
                 details=details,
             )
+
+        # Per-item audit-log sidecar (CLAUDE.md §6, §8). Writes the slice
+        # of audit rows tied to this download_id so a recipient can review
+        # chain-of-custody for just this capture without unzipping the
+        # full case bundle. Mutable — rewritten by extend_capture, the
+        # verify endpoint, and the recapture flow.
+        audit.write_item_sidecar(
+            conn,
+            download_id=download_id,
+            item_dir=item_dir,
+            stem=stem,
+        )
 
         return CaptureResult(
             download_id=download_id,
@@ -1219,6 +1240,15 @@ def extend_capture(
             "sha256": new_hashes["sha256"],
             "meta_sha256": hashlib.sha256(new_meta_bytes).hexdigest(),
         },
+    )
+
+    # Refresh the per-item audit sidecar so the new meta.updated.{role}
+    # row is visible alongside the capture's other forensic records.
+    audit.write_item_sidecar(
+        conn,
+        download_id=download_id,
+        item_dir=item_dir,
+        stem=stem,
     )
 
     return {

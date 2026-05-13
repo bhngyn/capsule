@@ -236,6 +236,7 @@ def _cleanup_bundle(bundle: UserBrowserBundle) -> None:
 # string slip into yt-dlp's argv. None ⇒ "let yt-dlp pick" (back-compat).
 VIDEO_CONTAINERS: tuple[str, ...] = ("mp4", "webm", "mkv")
 AUDIO_CONTAINERS: tuple[str, ...] = ("mp3", "m4a", "opus", "wav", "flac")
+_CAPTURE_MODE_VALUES: frozenset[str] = frozenset({"webpage", "media", "gallery"})
 
 
 @dataclass
@@ -265,6 +266,17 @@ class DownloadOptions:
     # v0.9: 'mp3' | 'm4a' | 'opus' | 'wav' | 'flac' | None. None ⇒ mp3
     # (the v0.7 default, preserved for back-compat).
     audio_container: str | None = None
+    # When True, gallery-dl runs even if yt-dlp produced media. The
+    # captured images attach to the same item as additional ``gallery_NNN``
+    # artifacts; capture_kind stays ``media`` (yt-dlp's primary) when both
+    # paths produce output. Useful for blog/article pages where yt-dlp may
+    # only grab an embedded video while gallery-dl finds the surrounding
+    # photo set.
+    force_gallery_run: bool = False
+    # v0.10: "webpage" | "media" | "gallery" | None.
+    # Controls orchestrator routing — which tools run and in what order.
+    # See CLAUDE.md §15 v0.10 capture mode semantics.
+    capture_mode: str | None = None
     # Bumped by JobOrchestrator.restart(); persisted across the restart so
     # the meta.json block records it.
     restart_count: int = 0
@@ -279,6 +291,8 @@ class DownloadOptions:
             "subtitle_langs": list(self.subtitle_langs or []),
             "video_container": self.video_container,
             "audio_container": self.audio_container,
+            "force_gallery_run": bool(self.force_gallery_run),
+            "capture_mode": self.capture_mode,
             "restart_count": int(self.restart_count),
             "stalled_count": int(self.stalled_count),
         }
@@ -309,6 +323,12 @@ class DownloadOptions:
             if ac_raw is not None and str(ac_raw) in AUDIO_CONTAINERS
             else None
         )
+        cm_raw = raw.get("capture_mode")
+        capture_mode = (
+            str(cm_raw)
+            if cm_raw is not None and str(cm_raw) in _CAPTURE_MODE_VALUES
+            else None
+        )
         return cls(
             audio_only=bool(raw.get("audio_only", False)),
             quality_cap=(str(raw["quality_cap"])
@@ -317,6 +337,8 @@ class DownloadOptions:
             subtitle_langs=[str(s) for s in langs if s],
             video_container=video_container,
             audio_container=audio_container,
+            force_gallery_run=bool(raw.get("force_gallery_run", False)),
+            capture_mode=capture_mode,
             restart_count=int(raw.get("restart_count") or 0),
             stalled_count=int(raw.get("stalled_count") or 0),
         )
@@ -340,6 +362,8 @@ class DownloadOptions:
             and not self.subtitle_langs
             and not self.video_container
             and not self.audio_container
+            and not self.force_gallery_run
+            and not self.capture_mode
         )
 
 
@@ -1480,115 +1504,131 @@ class JobOrchestrator:
             restart_now = job.restart_pending
             job.restart_pending = False
 
-            proc_holder: list = []
-            run_task = asyncio.create_task(
-                ytdlp_runner.run(
-                    url=classification.url_final,
-                    case_dir=cases.downloads_dir_for(case.slug),
-                    cookies_file=cookies_path,
-                    progress_queue=progress_q,
-                    proxy_url=proxy_url,
-                    proc_holder=proc_holder,
-                    socket_timeout_s=profile.socket_timeout_s,
-                    limit_rate_kbps=profile.limit_rate_kbps,
-                    format_spec=profile.default_format,
-                    audio_only=job.download_options.audio_only,
-                    quality_cap=job.download_options.quality_cap,
-                    subtitle_langs=job.download_options.subtitle_langs or None,
-                    video_container=job.download_options.video_container,
-                    audio_container=job.download_options.audio_container,
-                    restart=restart_now,
+            # capture_mode == "gallery": skip yt-dlp entirely; jump straight
+            # to gallery-dl. We manufacture an empty RunResult so the rest of
+            # the dispatch (media_files filtering, gallery fallback logic) reads
+            # naturally without a parallel code path.
+            mode = job.download_options.capture_mode
+            if mode == "gallery":
+                run_result = ytdlp_runner.RunResult(
+                    returncode=0, stdout="", stderr="", info=None
                 )
-            )
-            forward_task = asyncio.create_task(self._forward_progress(job, progress_q))
-
-            # Register the live subprocess as soon as it exists so pause()
-            # / cancel() can SIGTERM it. Poll until the subprocess starts or
-            # the runner finishes — under heavy load, spawn can take longer
-            # than a fixed deadline and a missed registration leaves the
-            # process unkillable until it exits naturally.
-            while not proc_holder and not run_task.done():
-                await asyncio.sleep(0.02)
-            if proc_holder:
-                self._procs[job.id] = proc_holder[0]
-
-            run_result = await run_task
-            await forward_task
-            self._procs.pop(job.id, None)
-
-            # Plan §U4: user pause/cancel requested mid-run. The subprocess
-            # was SIGTERM'd; route the post-run handling away from the
-            # failure path and into the paused/cancelled terminus.
-            intent = self._user_intent.pop(job.id, None)
-            if intent == "pause":
-                self._set_status(conn, job, STATUS_PAUSED)
-                audit.append(
-                    conn, "job.paused",
-                    case_id=case.id, actor="user",
-                    details={"job_id": job.id, "from": "running"},
+                ytdlp_version = await ytdlp_runner.version()
+            else:
+                proc_holder: list = []
+                run_task = asyncio.create_task(
+                    ytdlp_runner.run(
+                        url=classification.url_final,
+                        case_dir=cases.downloads_dir_for(case.slug),
+                        cookies_file=cookies_path,
+                        progress_queue=progress_q,
+                        proxy_url=proxy_url,
+                        proc_holder=proc_holder,
+                        socket_timeout_s=profile.socket_timeout_s,
+                        limit_rate_kbps=profile.limit_rate_kbps,
+                        format_spec=profile.default_format,
+                        audio_only=job.download_options.audio_only,
+                        quality_cap=job.download_options.quality_cap,
+                        subtitle_langs=job.download_options.subtitle_langs or None,
+                        video_container=job.download_options.video_container,
+                        audio_container=job.download_options.audio_container,
+                        restart=restart_now,
+                    )
                 )
-                return
-            if intent == "cancel":
-                # Best-effort cleanup of the .part file so a future re-capture
-                # of the same URL doesn't accidentally resume a corrupted blob.
-                for p in run_result.produced_files:
-                    try:
-                        p.unlink()
-                    except OSError:
-                        pass
-                self._set_status(conn, job, STATUS_CANCELLED)
-                audit.append(
-                    conn, "job.cancelled",
-                    case_id=case.id, actor="user",
-                    details={"job_id": job.id, "from": "running"},
-                )
-                self._close_channel(job)
-                return
+                forward_task = asyncio.create_task(self._forward_progress(job, progress_q))
 
-            # Step 3: postprocess
-            self._set_phase(conn, job, "finalizing")
+                # Register the live subprocess as soon as it exists so pause()
+                # / cancel() can SIGTERM it. Poll until the subprocess starts or
+                # the runner finishes — under heavy load, spawn can take longer
+                # than a fixed deadline and a missed registration leaves the
+                # process unkillable until it exits naturally.
+                while not proc_holder and not run_task.done():
+                    await asyncio.sleep(0.02)
+                if proc_holder:
+                    self._procs[job.id] = proc_holder[0]
 
-            if not run_result.ok and not run_result.produced_files:
-                err = errors_mod.classify(run_result.stderr)
-                # Transient → schedule retry; permanent / internal → surface.
-                if err.severity == "transient":
-                    # Plan §U7: feed the network monitor so a clustered
-                    # outage flips us offline.
-                    if err.i18n_key in ("errors.network", "errors.rate_limited"):
-                        await self._network.record_failure()
-                    await self._schedule_retry(
-                        conn, job,
-                        i18n_key=err.i18n_key,
-                        severity=err.severity,
-                        stderr_tail=run_result.stderr,
+                run_result = await run_task
+                await forward_task
+                self._procs.pop(job.id, None)
+
+                # Plan §U4: user pause/cancel requested mid-run. The subprocess
+                # was SIGTERM'd; route the post-run handling away from the
+                # failure path and into the paused/cancelled terminus.
+                intent = self._user_intent.pop(job.id, None)
+                if intent == "pause":
+                    self._set_status(conn, job, STATUS_PAUSED)
+                    audit.append(
+                        conn, "job.paused",
+                        case_id=case.id, actor="user",
+                        details={"job_id": job.id, "from": "running"},
                     )
                     return
-                job.error = {
-                    "i18n_key": err.i18n_key,
-                    "severity": err.severity,
-                    "suggested_action": err.suggested_action,
-                    "stderr_tail": run_result.stderr[-2000:],
-                    "returncode": run_result.returncode,
-                }
-                job.last_error_kind = err.i18n_key
-                job.last_error_severity = err.severity
-                audit.append(
-                    conn,
-                    "yt_dlp.failed",
-                    case_id=case.id,
-                    actor="system",
-                    details={
-                        "url_hash": classification.url_hash,
+                if intent == "cancel":
+                    # Best-effort cleanup of the .part file so a future re-capture
+                    # of the same URL doesn't accidentally resume a corrupted blob.
+                    for p in run_result.produced_files:
+                        try:
+                            p.unlink()
+                        except OSError:
+                            pass
+                    self._set_status(conn, job, STATUS_CANCELLED)
+                    audit.append(
+                        conn, "job.cancelled",
+                        case_id=case.id, actor="user",
+                        details={"job_id": job.id, "from": "running"},
+                    )
+                    self._close_channel(job)
+                    return
+
+                # Step 3: postprocess
+                self._set_phase(conn, job, "finalizing")
+
+                if not run_result.ok and not run_result.produced_files:
+                    err = errors_mod.classify(run_result.stderr)
+                    # Transient → schedule retry; permanent / internal → surface.
+                    if err.severity == "transient":
+                        # Plan §U7: feed the network monitor so a clustered
+                        # outage flips us offline.
+                        if err.i18n_key in ("errors.network", "errors.rate_limited"):
+                            await self._network.record_failure()
+                        await self._schedule_retry(
+                            conn, job,
+                            i18n_key=err.i18n_key,
+                            severity=err.severity,
+                            stderr_tail=run_result.stderr,
+                        )
+                        return
+                    job.error = {
                         "i18n_key": err.i18n_key,
                         "severity": err.severity,
+                        "suggested_action": err.suggested_action,
+                        "stderr_tail": run_result.stderr[-2000:],
                         "returncode": run_result.returncode,
-                    },
-                )
-                self._set_status(conn, job, STATUS_FAILED_PERMANENT)
-                self._emit(job, "error", job.error)
-                return
+                    }
+                    job.last_error_kind = err.i18n_key
+                    job.last_error_severity = err.severity
+                    audit.append(
+                        conn,
+                        "yt_dlp.failed",
+                        case_id=case.id,
+                        actor="system",
+                        details={
+                            "url_hash": classification.url_hash,
+                            "i18n_key": err.i18n_key,
+                            "severity": err.severity,
+                            "returncode": run_result.returncode,
+                        },
+                    )
+                    self._set_status(conn, job, STATUS_FAILED_PERMANENT)
+                    self._emit(job, "error", job.error)
+                    return
 
-            ytdlp_version = await ytdlp_runner.version()
+                ytdlp_version = await ytdlp_runner.version()
+
+            # Step 3: postprocess (reached by both the normal yt-dlp path
+            # and the gallery-mode path that skips yt-dlp entirely).
+            self._set_phase(conn, job, "finalizing")
+
             media_files = [
                 p for p in run_result.produced_files
                 if not p.name.endswith(
@@ -1615,7 +1655,27 @@ class JobOrchestrator:
             gallery_max_items = int(
                 case_settings.get("gallery_max_items", gallery_dl_runner.DEFAULT_MAX_ITEMS)
             )
-            if not media_files and gallery_enabled:
+            # Per-job opt-in: when set, gallery-dl runs even if yt-dlp produced
+            # media. The captured images attach as additional gallery_NNN
+            # artifacts on the same item; capture_kind stays ``media`` (yt-dlp
+            # wins as primary) when both paths produce output.
+            force_gallery_run = bool(job.download_options.force_gallery_run)
+            # capture_mode routing (v0.10):
+            #   "gallery"  → forced; yt-dlp was skipped entirely above
+            #   "webpage"  → always run gallery-dl (not just fallback)
+            #   "media"    → current fallback behaviour (only if yt-dlp found nothing)
+            #   None       → default (same as "media" + force_gallery_run opt-in)
+            if mode == "gallery":
+                gallery_should_run = True  # forced; yt-dlp was skipped
+            elif mode == "webpage":
+                gallery_should_run = gallery_enabled  # always run, not just fallback
+            elif mode == "media":
+                gallery_should_run = gallery_enabled and not media_files  # current fallback
+            else:
+                gallery_should_run = gallery_enabled and (
+                    not media_files or force_gallery_run
+                )
+            if gallery_should_run:
                 audit.append(
                     conn,
                     "gallery.started",
@@ -1749,9 +1809,7 @@ class JobOrchestrator:
             # ``CaptureReport`` is frozen for safety; we patch the
             # serialized dict directly rather than mutate the dataclass.
             capture_report_dict = report.to_dict()
-            capture_report_dict["gallery_attempted"] = bool(
-                not media_files and gallery_enabled
-            )
+            capture_report_dict["gallery_attempted"] = bool(gallery_should_run)
             capture_report_dict["gallery_outcome"] = gallery_outcome
 
             # Drain any extension-supplied bundle so postprocess can move
@@ -1879,6 +1937,15 @@ class JobOrchestrator:
                         "new_id": result.download_id,
                         "stem": result.stem,
                     },
+                )
+                # Refresh the new row's per-item audit sidecar so the
+                # duplicate.recaptured row appears alongside the capture's
+                # other forensic records.
+                audit.write_item_sidecar(
+                    conn,
+                    download_id=result.download_id,
+                    item_dir=config.DOWNLOADS_DIR / result.relative_item_dir,
+                    stem=result.stem,
                 )
             # Plan §U6 / Phase D: anchor the capture group to the library row
             # so future archive/media re-fetches know which item to extend.
