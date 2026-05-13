@@ -145,7 +145,11 @@ def test_gallery_capture_full_happy_path(env):
     # Per-image metadata sidecars renamed to share the stem; live in Metadata/.
     json_sidecars = sorted(
         p for p in metadata_dir.iterdir()
-        if p.suffix == ".json" and p.name.startswith(result.stem) and ".gallery_info" not in p.name and ".meta" not in p.name
+        if p.suffix == ".json"
+        and p.name.startswith(result.stem)
+        and ".gallery_info" not in p.name
+        and ".meta" not in p.name
+        and ".audit" not in p.name
     )
     assert len(json_sidecars) == 4
 
@@ -366,6 +370,85 @@ def test_gallery_report_pdf_includes_thumbnail_strip_and_version(env):
     assert "pixiv" in html_str
     # Three <img> tags inside the gallery-strip ul, with file:// URIs.
     assert html_str.count("<li><img src=\"file://") == 3
+
+
+def test_media_capture_with_force_gallery_run_attaches_gallery_images(env):
+    """v0.7 force_gallery_run: when an investigator opts gallery-dl in for a
+    job that ALSO produced media via yt-dlp, the gallery images attach to
+    the same per-item folder as additional ``gallery_NNN`` artifacts.
+    Capture kind stays ``media`` (yt-dlp wins as primary); gallery_count
+    and gallery_extractor are populated; and the meta.json signature
+    transitively binds every gallery image's hash through the artifacts /
+    checksums map.
+    """
+    pp = env["pp"]
+    images, metadata = _stage_gallery(env, n_images=3, extractor="generic")
+
+    # Stage a fake yt-dlp media output too so capture_kind resolves to
+    # ``media`` rather than ``gallery``.
+    work = env["downloads"] / "_yt_tmp"
+    work.mkdir(parents=True, exist_ok=True)
+    media_file = work / "video.mp4"
+    media_file.write_bytes(b"FAKEMP4DATA")
+
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://kal-akal.com/?p=436",
+        url_final="https://kal-akal.com/?p=436",
+        redirect_chain=["https://kal-akal.com/?p=436"],
+        capture_date=pp.utc_now(),
+        media_files=[media_file],
+        info_json={
+            "id": "p436",
+            "title": "Blog post with video and photos",
+            "ext": "mp4",
+            "extractor_key": "Generic",
+        },
+        extra_sidecars=[],
+        gallery_files=images,
+        gallery_metadata_files=metadata,
+        gallery_extractor="generic",
+        gallery_dl_version="1.30.fake",
+        ytdlp_version="2026.03.17",
+        download_options={"force_gallery_run": True},
+    )
+    result = pp.finalize(env["conn"], capture_input)
+
+    # yt-dlp wins as primary kind.
+    assert result.capture_kind == "media"
+    assert result.relative_media_path is not None
+
+    # The per-item folder's Media/ subdir holds both the primary media file
+    # and the gallery images.
+    case_dir = env["downloads"] / env["case"].slug
+    item_dir = case_dir / result.stem
+    media_dir = item_dir / "Media"
+    image_files = sorted(p for p in media_dir.iterdir() if p.suffix in {".jpg", ".png", ".webp"})
+    assert len(image_files) == 3
+
+    # meta.json carries gallery_count + gallery_extractor even on a media
+    # capture, so a recipient sees gallery-dl ran alongside yt-dlp.
+    meta = json.loads(result.meta_json_path.read_text())
+    assert meta["capture_kind"] == "media"
+    assert meta["gallery_count"] == 3
+    assert meta["gallery_extractor"] == "generic"
+    # download_options round-trips force_gallery_run=True.
+    assert meta["download_options"]["force_gallery_run"] is True
+    # Each gallery image has its own role + checksums entry.
+    for i in range(1, 4):
+        role = f"gallery_{i:03d}"
+        assert role in meta["artifacts"]
+        assert role in meta["checksums"]
+
+    # meta.json.sig verifies — covers every gallery image's hash through
+    # the artifacts/checksums map.
+    public = env["signing"].ensure_keypair().public
+    assert env["signing"].verify(
+        result.meta_json_path.read_bytes(),
+        result.signature_path.read_bytes(),
+        public,
+    )
 
 
 def test_gallery_capture_is_deduped_against_subsequent_attempt(env):

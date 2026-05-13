@@ -151,6 +151,79 @@ def test_page_only_capture(env):
     assert (case_dir / result.stem / "Metadata" / f"{result.stem}.meta.json").exists()
 
 
+def test_finalize_writes_per_item_audit_sidecar(env):
+    """The per-item audit sidecar is written at the end of finalize.
+
+    It must contain the ``download.created`` row at minimum, with row_hash
+    integrity preserved.
+    """
+    media, info, desc = _stage_media(env)
+    pp = env["pp"]
+    capture_input = pp.CaptureInput(
+        case=env["case"],
+        job_uuid=pp.new_job_uuid(),
+        url_submitted="https://www.youtube.com/watch?v=abc",
+        url_final="https://www.youtube.com/watch?v=abc",
+        redirect_chain=["https://www.youtube.com/watch?v=abc"],
+        capture_date=pp.utc_now(),
+        media_files=[media],
+        info_json=json.loads(info.read_text()),
+        extra_sidecars=[info, desc],
+        ytdlp_version="2026.03.17",
+    )
+    result = pp.finalize(env["conn"], capture_input)
+
+    case_dir = env["downloads"] / env["case"].slug
+    sidecar = case_dir / result.stem / "Metadata" / f"{result.stem}.audit.json"
+    assert sidecar.is_file(), "per-item audit sidecar missing"
+
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert payload["download_id"] == result.download_id
+    assert payload["stem"] == result.stem
+    assert "generated_at_utc" in payload
+
+    actions = [e["action"] for e in payload["entries"]]
+    assert "download.created" in actions
+
+    # Every row in the per-item file must satisfy row_hash integrity
+    # against canonical_encode — i.e. it's authentically a slice of the
+    # signed audit chain, not a hand-edited file.
+    audit = env["audit"]
+    for entry in payload["entries"]:
+        rebuilt = {
+            k: entry[k]
+            for k in (
+                "timestamp", "action", "case_id", "download_id",
+                "actor", "details_json", "prev_hash",
+            )
+        }
+        assert audit.row_hash_for(rebuilt) == entry["row_hash"]
+        assert entry["download_id"] == result.download_id
+
+
+def test_finalize_legacy_layout_falls_back_to_item_root(env):
+    """If the item dir already has a root-level meta.json (pre-v0.8 layout)
+    when a sidecar write happens, the audit.json must land at the root —
+    we never spawn a stranded ``Metadata/`` dir for a legacy item.
+    """
+    audit = env["audit"]
+    # Pre-create an item dir with a legacy meta.json at the root, then
+    # call write_item_sidecar directly; this exercises the legacy fallback
+    # without staging a full finalize run.
+    case_dir = env["downloads"] / env["case"].slug
+    case_dir.mkdir(parents=True, exist_ok=True)
+    legacy_dir = case_dir / "legacy_stem"
+    legacy_dir.mkdir()
+    (legacy_dir / "legacy_stem.meta.json").write_text("{}", encoding="utf-8")
+
+    audit.append(env["conn"], "download.created", case_id=env["case"].id, download_id=99, details={})
+    out = audit.write_item_sidecar(
+        env["conn"], download_id=99, item_dir=legacy_dir, stem="legacy_stem",
+    )
+    assert out == legacy_dir / "legacy_stem.audit.json"
+    assert not (legacy_dir / "Metadata").exists()
+
+
 def test_duplicate_raises(env):
     media, info, desc = _stage_media(env)
     pp = env["pp"]

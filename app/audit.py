@@ -24,8 +24,10 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import os
 import sqlite3
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 __all__ = [
@@ -37,6 +39,7 @@ __all__ = [
     "append",
     "verify_chain",
     "iter_entries",
+    "write_item_sidecar",
     "DetailLeakError",
 ]
 
@@ -214,10 +217,11 @@ def iter_entries(
     conn: sqlite3.Connection,
     *,
     case_id: int | None = None,
+    download_id: int | None = None,
     since: str | None = None,
     limit: int | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Stream rows for the API. Filters: case, since-timestamp, limit."""
+    """Stream rows for the API. Filters: case, download, since-timestamp, limit."""
     sql = (
         "SELECT id, timestamp, action, case_id, download_id, actor, "
         "details_json, prev_hash, row_hash FROM audit_log WHERE 1=1"
@@ -226,6 +230,9 @@ def iter_entries(
     if case_id is not None:
         sql += " AND case_id = ?"
         params.append(case_id)
+    if download_id is not None:
+        sql += " AND download_id = ?"
+        params.append(download_id)
     if since:
         sql += " AND timestamp >= ?"
         params.append(since)
@@ -237,3 +244,63 @@ def iter_entries(
         d = dict(row)
         d["details"] = json.loads(d.pop("details_json"))
         yield d
+
+
+def write_item_sidecar(
+    conn: sqlite3.Connection,
+    *,
+    download_id: int,
+    item_dir: Path,
+    stem: str,
+) -> Path:
+    """Write the per-item audit-log slice to ``Metadata/{stem}.audit.json``.
+
+    Mirrors the row shape used by :mod:`evidence_export` for the case-level
+    ``audit_log.json`` so a recipient can re-derive ``row_hash`` from
+    ``details_json`` byte-for-byte. The sidecar is **not** added to
+    ``meta.json.artifacts`` and is therefore not signed by ``meta.json.sig``
+    — tamper-evidence rides the audit chain itself; recipients cross-check
+    against the case-level ``audit_log.json`` in the export bundle.
+
+    Legacy fallback: items captured before v0.8 carry their meta.json at
+    the item root rather than under ``Metadata/``. When that is the case,
+    write the sidecar at the item root too so a single item never has a
+    stranded ``Metadata/`` dir.
+
+    The write is atomic (tmp → ``os.replace``) so a crashed Python never
+    leaves a half-written sidecar in place.
+    """
+    entries = list(iter_entries(conn, download_id=download_id))
+    for e in entries:
+        # Keep ``details_json`` byte-for-byte identical to the canonical form
+        # we hashed in :func:`canonical_encode`. The recipient's verifier
+        # uses the same encoding, so the ``row_hash`` round-trips.
+        e["details_json"] = json.dumps(
+            e.pop("details"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+
+    legacy_meta = item_dir / f"{stem}.meta.json"
+    if legacy_meta.is_file():
+        target_dir = item_dir
+    else:
+        target_dir = item_dir / "Metadata"
+        target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{stem}.audit.json"
+
+    payload = {
+        "download_id": download_id,
+        "stem": stem,
+        "generated_at_utc": _utcnow(),
+        "entries": entries,
+    }
+    body = json.dumps(
+        payload, indent=2, ensure_ascii=True, default=str,
+    ).encode("utf-8")
+
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_bytes(body)
+    os.replace(tmp, target)
+    return target

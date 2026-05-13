@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 380" font-family="Inter, system-ui, sans-serif">
+  <rect width="960" height="380" fill="#ffffff"/>
+
+  <text x="480" y="36" text-anchor="middle" font-size="18" font-weight="600" fill="#1f2937">v0.1 → v0.7 in 36 hours</text>
+  <text x="480" y="58" text-anchor="middle" font-size="12" fill="#64748b">Each version is a coherent chunk of work, a §15 entry in CLAUDE.md, and (usually) a schema bump.</text>
+
+  <!-- Timeline axis -->
+  <line x1="80" y1="200" x2="880" y2="200" stroke="#1f2937" stroke-width="1.5"/>
+  <text x="80" y="232" font-size="11" fill="#64748b" text-anchor="middle">May 6</text>
+  <text x="480" y="232" font-size="11" fill="#64748b" text-anchor="middle">May 7</text>
+  <text x="880" y="232" font-size="11" fill="#64748b" text-anchor="middle">May 8</text>
+
+  <!-- Tick marks at midnight -->
+  <line x1="80"  y1="195" x2="80"  y2="205" stroke="#1f2937" stroke-width="1.5"/>
+  <line x1="480" y1="195" x2="480" y2="205" stroke="#1f2937" stroke-width="1.5"/>
+  <line x1="880" y1="195" x2="880" y2="205" stroke="#1f2937" stroke-width="1.5"/>
+
+  <!-- Version markers. Time math: 36h total ⇒ 800px / 36h = 22.22 px/h.
+       v0.1 first commit ~14:30 May 6   -> 80 + 14.5*22.22 ≈ 402
+       v0.2 hardening ~17:30 May 6      -> 80 + 17.5*22.22 ≈ 469
+       v0.3 simple-view ~23:58 May 6    -> 80 + 24*22.22 ≈ 613
+       v0.4 dedup ~18:55 May 7          -> 80 + 19*22.22 + 22.22*5 ...
+       Recompute as offsets from May 6 00:00 UTC in hours:
+        v0.1 = 14.5h -> x = 80 + 14.5*(800/48) = 80 + 14.5*16.67 = 80+241.7 = 321.7
+        v0.2 = 17.5h -> x = 80 + 17.5*16.67 = 80+291.7 = 371.7
+        v0.3 = 24h   -> x = 80 + 24*16.67   = 80+400.0 = 480.0
+        v0.4 = 19+24=43h -> x = 80 + (24+18.93)*16.67 = 80 + 42.93*16.67 = 795.6 — too late
+       Wait: total span we showed is 48h (May 6 00 → May 8 00). Recompute:
+        v0.4 ~ 2026-05-07 18:55 ⇒ 24+18.93 = 42.93h ⇒ 80 + 42.93*16.67 = 795.6 ✗ That's near May 7 end.
+        Actually 80→880 spans May 6 → May 8 (48h), 800/48 = 16.67 px/h. ok.
+        v0.4 18:55 May 7 = 42.92h → x = 80 + 715.4 = 795.4 — yeah at the right edge.
+       That doesn't fit nicely with v0.5/v0.6/v0.7 which are also late May 7.
+       Easier: scale 36h actual range over the tick-marked area. Let's do offset based on actual hours from May 6 14:30 UTC to May 8 02:30 UTC = ~36h.
+       Use those actual offsets with x in [120,840]:
+        v0.1 May 6 14:30 (h0)    -> 120
+        v0.2 May 6 17:30 (h+3)   -> 120+(3/36)*720 = 120+60 = 180
+        v0.3 May 6 23:58 (h+9.5) -> 120+(9.5/36)*720 = 120+190 = 310
+        v0.4 May 7 18:55 (h+28.4)-> 120+(28.4/36)*720 = 120+568 = 688
+        v0.5 May 7 20:19 (h+29.8)-> 120+(29.8/36)*720 = 120+596 = 716
+        v0.6 May 8 00:25 (h+33.9)-> 120+(33.9/36)*720 = 120+678 = 798
+        v0.7 May 8 01:38 (h+35.1)-> 120+(35.1/36)*720 = 120+702 = 822
+       But that crowds the right end. Let me space them out logarithmically OR just space evenly along the line. Even spacing reads better for teaching purposes.
+       Even spacing: 7 markers across [140,820] = 113 step
+       v0.1=140 v0.2=253 v0.3=367 v0.4=480 v0.5=593 v0.6=707 v0.7=820
+  -->
+
+  <!-- v0.1 -->
+  <circle cx="140" cy="200" r="9" fill="#0d9488" stroke="#0d9488" stroke-width="2"/>
+  <line x1="140" y1="200" x2="140" y2="120" stroke="#0d9488" stroke-width="1"/>
+  <text x="140" y="110" text-anchor="middle" font-size="12" font-weight="700" fill="#0d9488">v0.1</text>
+  <text x="140" y="92" text-anchor="middle" font-size="10" fill="#1f2937">scaffolding</text>
+  <text x="140" y="252" text-anchor="middle" font-size="9.5" fill="#64748b">May 6 ~14:30</text>
+  <text x="140" y="266" text-anchor="middle" font-size="9.5" fill="#64748b">i18n + spec impl</text>
+
+  <!-- v0.2 -->
+  <circle cx="253" cy="200" r="9" fill="#0d9488" stroke="#0d9488" stroke-width="2"/>
+  <line x1="253" y1="200" x2="253" y2="120" stroke="#0d9488" stroke-width="1"/>
+  <text x="253" y="110" text-anchor="middle" font-size="12" font-weight="700" fill="#0d9488">v0.2</text>
+  <text x="253" y="92" text-anchor="middle" font-size="10" fill="#1f2937">hardening</text>
+  <text x="253" y="252" text-anchor="middle" font-size="9.5" fill="#64748b">redaction · cookies</text>
+  <text x="253" y="266" text-anchor="middle" font-size="9.5" fill="#64748b">extension · ad-block</text>
+
+  <!-- v0.3 -->
+  <circle cx="367" cy="200" r="9" fill="#94a3b8" stroke="#94a3b8" stroke-width="2"/>
+  <line x1="367" y1="200" x2="367" y2="120" stroke="#94a3b8" stroke-width="1"/>
+  <text x="367" y="110" text-anchor="middle" font-size="12" font-weight="700" fill="#475569">v0.3</text>
+  <text x="367" y="92" text-anchor="middle" font-size="10" fill="#1f2937">consolidation</text>
+  <text x="367" y="252" text-anchor="middle" font-size="9.5" fill="#64748b">prune court mode</text>
+  <text x="367" y="266" text-anchor="middle" font-size="9.5" fill="#64748b">prune unused routes</text>
+
+  <!-- v0.4 -->
+  <circle cx="480" cy="200" r="9" fill="#0d9488" stroke="#0d9488" stroke-width="2"/>
+  <line x1="480" y1="200" x2="480" y2="120" stroke="#0d9488" stroke-width="1"/>
+  <text x="480" y="110" text-anchor="middle" font-size="12" font-weight="700" fill="#0d9488">v0.4</text>
+  <text x="480" y="92" text-anchor="middle" font-size="10" fill="#1f2937">dedup pass</text>
+  <text x="480" y="252" text-anchor="middle" font-size="9.5" fill="#64748b">URL canonicalization</text>
+  <text x="480" y="266" text-anchor="middle" font-size="9.5" fill="#64748b">preflight + modal</text>
+
+  <!-- v0.5 -->
+  <circle cx="593" cy="200" r="9" fill="#0d9488" stroke="#0d9488" stroke-width="2"/>
+  <line x1="593" y1="200" x2="593" y2="120" stroke="#0d9488" stroke-width="1"/>
+  <text x="593" y="110" text-anchor="middle" font-size="12" font-weight="700" fill="#0d9488">v0.5</text>
+  <text x="593" y="92" text-anchor="middle" font-size="10" fill="#1f2937">gallery</text>
+  <text x="593" y="252" text-anchor="middle" font-size="9.5" fill="#64748b">gallery-dl fallback</text>
+  <text x="593" y="266" text-anchor="middle" font-size="9.5" fill="#64748b">image carousels</text>
+
+  <!-- v0.6 -->
+  <circle cx="707" cy="200" r="9" fill="#0d9488" stroke="#0d9488" stroke-width="2"/>
+  <line x1="707" y1="200" x2="707" y2="120" stroke="#0d9488" stroke-width="1"/>
+  <text x="707" y="110" text-anchor="middle" font-size="12" font-weight="700" fill="#0d9488">v0.6</text>
+  <text x="707" y="92" text-anchor="middle" font-size="10" fill="#1f2937">page-preserve</text>
+  <text x="707" y="252" text-anchor="middle" font-size="9.5" fill="#64748b">single-session WARC</text>
+  <text x="707" y="266" text-anchor="middle" font-size="9.5" fill="#64748b">animations frozen</text>
+
+  <!-- v0.7 -->
+  <circle cx="820" cy="200" r="9" fill="#0d9488" stroke="#0d9488" stroke-width="2"/>
+  <line x1="820" y1="200" x2="820" y2="120" stroke="#0d9488" stroke-width="1"/>
+  <text x="820" y="110" text-anchor="middle" font-size="12" font-weight="700" fill="#0d9488">v0.7</text>
+  <text x="820" y="92" text-anchor="middle" font-size="10" fill="#1f2937">download options</text>
+  <text x="820" y="252" text-anchor="middle" font-size="9.5" fill="#64748b">audio · quality · subs</text>
+  <text x="820" y="266" text-anchor="middle" font-size="9.5" fill="#64748b">pause · resume · restart</text>
+
+  <!-- Curved arc showing prune-then-restore -->
+  <path d="M 367 200 C 480 320, 700 320, 820 200" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text x="593" y="318" text-anchor="middle" font-size="10" fill="#94a3b8" font-style="italic">v0.3 pruned pause/resume routes — v0.7 brought them back</text>
+
+  <!-- Schema versions strip -->
+  <text x="60" y="358" font-size="10" fill="#64748b" font-weight="600">Schema:</text>
+  <text x="140" y="358" text-anchor="middle" font-size="10" fill="#64748b">v1</text>
+  <text x="253" y="358" text-anchor="middle" font-size="10" fill="#64748b">v2</text>
+  <text x="367" y="358" text-anchor="middle" font-size="10" fill="#64748b">v2</text>
+  <text x="480" y="358" text-anchor="middle" font-size="10" fill="#64748b">v5</text>
+  <text x="593" y="358" text-anchor="middle" font-size="10" fill="#64748b">v6</text>
+  <text x="707" y="358" text-anchor="middle" font-size="10" fill="#64748b">v7</text>
+  <text x="820" y="358" text-anchor="middle" font-size="10" fill="#64748b">v8</text>
+
+  <!-- Legend -->
+  <circle cx="80" cy="160" r="5" fill="#0d9488"/>
+  <text x="92" y="164" font-size="10" fill="#64748b">feature / hardening</text>
+  <circle cx="220" cy="160" r="5" fill="#94a3b8"/>
+  <text x="232" y="164" font-size="10" fill="#64748b">consolidation / pruning</text>
+</svg>

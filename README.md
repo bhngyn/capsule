@@ -92,6 +92,16 @@ Out of scope for this release:
 
 Click the language picker in the header, or visit `?lang=ja`, `?lang=es`, or `?lang=ar`. Japanese loads Noto Sans JP. Arabic switches the entire layout to RTL, swaps fonts to Noto Sans Arabic, and mirrors direction-implying icons.
 
+## Keeping Capsule current
+
+yt-dlp and gallery-dl ship updates several times a month — sites change, extractors break, fixes land fast. Capsule auto-checks once at launch (opt-out, default ON) and surfaces any updates in **Settings → Updates** with a per-component card showing installed and latest versions.
+
+- **yt-dlp / gallery-dl** update in-place via a button. Effective until your next image rebuild.
+- **Capsule itself** updates by `docker pull`-ing a new image. The Updates card shows the right per-arch command to copy.
+- **ffmpeg, Chromium, browsertrix-crawler** ship with the Capsule image; they update when you pull a new image.
+
+Auto-check fires once at startup, hits PyPI and (optionally) GitHub, and never installs anything by itself. Every check is recorded in the audit log. Investigators with strict threat-model concerns flip the toggle off in Settings. Full details in [`docs/UPDATING.md`](docs/UPDATING.md).
+
 ## Documentation
 
 End-user docs (also bundled inside every release zip):
@@ -100,6 +110,7 @@ End-user docs (also bundled inside every release zip):
 - [`docs/user-guide.en.md`](docs/user-guide.en.md) / [`.ar`](docs/user-guide.ar.md) — the full investigator-facing guide. (PDF versions ride along in the release bundles and in `docs/`.)
 - [`docs/COOKIES.md`](docs/COOKIES.md) — how to authenticate captures, including the recommended browser-extension path.
 - [`docs/EXTENSION.md`](docs/EXTENSION.md) — installing and pairing the browser extension.
+- [`docs/UPDATING.md`](docs/UPDATING.md) — how the auto-check works, the two update tiers, and how to apply a new Capsule image.
 
 For developers and reviewers:
 

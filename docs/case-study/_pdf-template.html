@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>__TITLE__</title>
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 22mm 22mm 24mm 22mm;
+      @top-left {
+        content: "__RUNNING_HEADER__";
+        font-family: "Inter", "Helvetica", sans-serif;
+        font-size: 8.5pt;
+        color: #94a3b8;
+        letter-spacing: 0.04em;
+      }
+      @top-right {
+        content: string(section);
+        font-family: "Inter", "Helvetica", sans-serif;
+        font-size: 8.5pt;
+        color: #94a3b8;
+      }
+      @bottom-right {
+        content: counter(page);
+        font-family: "Inter", "Helvetica", sans-serif;
+        font-size: 9pt;
+        color: #64748b;
+      }
+      @bottom-left {
+        content: "__FOOTER_PATH__";
+        font-family: "Inter", "Helvetica", sans-serif;
+        font-size: 8.5pt;
+        color: #94a3b8;
+      }
+    }
+
+    @page :first {
+      margin: 0;
+      @top-left { content: ""; }
+      @top-right { content: ""; }
+      @bottom-left { content: ""; }
+      @bottom-right { content: ""; }
+    }
+
+    body {
+      font-family: "Inter", "Helvetica", "Arial", sans-serif;
+      font-size: 10.5pt;
+      line-height: 1.55;
+      color: #1f2937;
+      hyphens: auto;
+    }
+
+    /* ---- Cover page ---- */
+    .cover {
+      page: cover;
+      width: 210mm;
+      height: 297mm;
+      box-sizing: border-box;
+      padding: 30mm 22mm;
+      background: linear-gradient(140deg, #ffffff 0%, #ffffff 55%, #ecfdf5 100%);
+      page-break-after: always;
+      position: relative;
+    }
+    .cover .eyebrow {
+      font-size: 10pt;
+      font-weight: 600;
+      letter-spacing: 0.18em;
+      color: #0d9488;
+      text-transform: uppercase;
+      margin: 0 0 12mm 0;
+    }
+    .cover h1 {
+      font-size: 36pt;
+      font-weight: 700;
+      line-height: 1.05;
+      letter-spacing: -0.01em;
+      margin: 0 0 8mm 0;
+      color: #0f172a;
+    }
+    .cover h1 small {
+      display: block;
+      font-size: 17pt;
+      font-weight: 400;
+      color: #475569;
+      letter-spacing: 0;
+      margin-top: 6mm;
+    }
+    .cover .subtitle {
+      font-size: 12.5pt;
+      color: #475569;
+      max-width: 145mm;
+      margin: 0 0 14mm 0;
+    }
+    .cover .byline {
+      font-size: 10pt;
+      color: #1f2937;
+      margin: 0 0 14mm 0;
+    }
+    .cover .byline strong {
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-size: 8.5pt;
+      color: #94a3b8;
+      font-weight: 600;
+      display: block;
+      margin-bottom: 1mm;
+    }
+    .cover .meta-grid {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 4mm 10mm;
+      font-size: 10pt;
+      color: #475569;
+      max-width: 130mm;
+    }
+    .cover .meta-grid dt {
+      font-weight: 600;
+      color: #1f2937;
+    }
+    .cover .meta-grid dd {
+      margin: 0;
+    }
+    .cover .cover-figure {
+      position: absolute;
+      bottom: 30mm;
+      right: 22mm;
+      width: 95mm;
+    }
+    .cover .footer {
+      position: absolute;
+      bottom: 18mm;
+      left: 22mm;
+      right: 22mm;
+      font-size: 8.5pt;
+      color: #94a3b8;
+      letter-spacing: 0.04em;
+    }
+
+    /* ---- Table of contents ---- */
+    .toc {
+      page-break-after: always;
+    }
+    .toc h2 {
+      font-size: 22pt;
+      margin: 0 0 8mm 0;
+      letter-spacing: -0.01em;
+    }
+    .toc ol {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      font-size: 11pt;
+      line-height: 1.9;
+    }
+    .toc ol li {
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px dotted #cbd5e1;
+      padding: 2mm 0;
+    }
+    .toc ol li .num {
+      color: #0d9488;
+      font-weight: 700;
+      width: 14mm;
+      flex-shrink: 0;
+    }
+    .toc ol li .title {
+      flex-grow: 1;
+    }
+    .toc ol li .pg {
+      color: #64748b;
+      font-size: 9pt;
+    }
+
+    /* ---- Body ---- */
+    /* Section H1s are direct children of <main>. H1s nested inside blockquotes
+       (real Claude responses we're quoting) inherit normal heading sizing but
+       NOT the page-break behavior or the teal divider. */
+    main > h1 {
+      string-set: section content();
+      font-size: 22pt;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      margin: 0 0 4mm 0;
+      color: #0f172a;
+      page-break-before: always;
+      page-break-after: avoid;
+      padding-top: 6mm;
+    }
+    main > h1:first-of-type {
+      page-break-before: avoid;
+    }
+
+    main > h2 {
+      font-size: 16pt;
+      font-weight: 600;
+      letter-spacing: -0.005em;
+      margin: 10mm 0 3mm 0;
+      color: #0f172a;
+      page-break-after: avoid;
+    }
+
+    main > h3 {
+      font-size: 11.5pt;
+      font-weight: 600;
+      margin: 6mm 0 2mm 0;
+      color: #1f2937;
+      page-break-after: avoid;
+    }
+
+    /* Headings nested inside quoted Claude responses (blockquotes) lose
+       section styling and stay inline with the surrounding quote. */
+    blockquote h1, blockquote h2, blockquote h3 {
+      font-size: 10.5pt;
+      font-weight: 600;
+      margin: 1mm 0 0 0;
+      color: #1f2937;
+      page-break-before: auto;
+      padding-top: 0;
+    }
+    blockquote h1::before, blockquote h2::before, blockquote h3::before {
+      display: none;
+    }
+
+    /* Section divider visual */
+    main > h1::before {
+      content: "";
+      display: block;
+      width: 18mm;
+      height: 3pt;
+      background: #0d9488;
+      margin-bottom: 3mm;
+    }
+
+    main p {
+      margin: 0 0 3mm 0;
+      orphans: 3;
+      widows: 3;
+    }
+
+    main blockquote {
+      margin: 4mm 0;
+      padding: 3mm 5mm;
+      border-inline-start: 3pt solid #0d9488;
+      background: #f8fafc;
+      color: #1f2937;
+      font-size: 10pt;
+    }
+    main blockquote strong {
+      color: #0f172a;
+    }
+    main h1 + blockquote {
+      font-size: 11.5pt;
+      padding: 4mm 6mm;
+      background: #ecfdf5;
+      border-inline-start-color: #0d9488;
+      margin: 0 0 6mm 0;
+    }
+    main h1 + blockquote strong {
+      color: #0d9488;
+      letter-spacing: 0.02em;
+    }
+
+    code, kbd {
+      font-family: "JetBrains Mono", "SF Mono", "Menlo", "Consolas", monospace;
+      font-size: 9pt;
+      background: #f1f5f9;
+      padding: 1pt 3pt;
+      border-radius: 2pt;
+      color: #0f172a;
+    }
+
+    pre {
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 4mm 5mm;
+      border-radius: 3pt;
+      font-size: 8.5pt;
+      line-height: 1.45;
+      overflow: hidden;
+      page-break-inside: avoid;
+    }
+
+    a { color: #0d9488; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    ul, ol { margin: 0 0 4mm 0; padding-inline-start: 6mm; }
+    li { margin-bottom: 1mm; }
+
+    /* Diagrams */
+    figure {
+      margin: 6mm 0;
+      page-break-inside: avoid;
+      text-align: center;
+    }
+    figure svg, figure img {
+      max-width: 100%;
+      height: auto;
+    }
+    figure figcaption {
+      font-size: 9pt;
+      color: #64748b;
+      margin-top: 2mm;
+      font-style: italic;
+    }
+
+    .figure-block {
+      margin: 6mm 0;
+      page-break-inside: avoid;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 4mm 0;
+      font-size: 9.5pt;
+      page-break-inside: avoid;
+    }
+    th, td {
+      text-align: start;
+      padding: 2mm 3mm;
+      border-bottom: 1px solid #e2e8f0;
+      vertical-align: top;
+    }
+    th {
+      background: #f8fafc;
+      font-weight: 600;
+      color: #0f172a;
+    }
+
+    main ul li input[type="checkbox"] {
+      margin-inline-end: 2mm;
+    }
+
+    .closing {
+      margin-top: 10mm;
+      padding: 6mm 8mm;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-inline-start: 4pt solid #0d9488;
+      page-break-inside: avoid;
+    }
+
+    figure, pre, table, .closing {
+      page-break-inside: avoid;
+    }
+    /* Long blockquotes (real Claude responses) need to be allowed to break
+       across pages — otherwise a single oversized quote leaves a half-empty
+       page above it. The "One-line claim" callout in §-headers is short
+       enough that pages don't get pushed out. */
+    blockquote {
+      page-break-inside: auto;
+    }
+    h1, h2, h3 {
+      break-after: avoid-page;
+    }
+
+    hr {
+      border: none;
+      border-top: 1px solid #e2e8f0;
+      margin: 6mm 0;
+    }
+
+    /* Editor's-note (italic in square brackets) callout — used in transcript */
+    main em {
+      color: #475569;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ===== COVER ===== -->
+  <section class="cover">
+    <p class="eyebrow">__EYEBROW__</p>
+    <h1>__TITLE_HEADLINE__<small>__TITLE_SUBHEAD__</small></h1>
+    <p class="subtitle">__SUBTITLE__</p>
+
+    <p class="byline"><strong>By</strong>__BYLINE__</p>
+
+    <dl class="meta-grid">
+__META_GRID__
+    </dl>
+
+    <div class="cover-figure">
+__COVER_DIAGRAM__
+    </div>
+
+    <p class="footer">__COVER_FOOTER__</p>
+  </section>
+
+  <!-- ===== TOC ===== -->
+  <section class="toc">
+    <h2>Contents</h2>
+    <ol>
+__TOC_ITEMS__
+    </ol>
+  </section>
+
+  <!-- ===== BODY ===== -->
+  <main>
+__BODY__
+  </main>
+</body>
+</html>

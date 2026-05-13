@@ -117,3 +117,70 @@ def test_canonical_encode_excludes_row_hash_and_id():
     encoded = audit.canonical_encode(payload)
     assert b"row_hash" not in encoded
     assert b'"id":7' not in encoded
+
+
+def test_iter_entries_filters_by_download(conn):
+    audit.append(conn, "x", case_id=1, download_id=10, details={"a": 1})
+    audit.append(conn, "x", case_id=1, download_id=20, details={"a": 2})
+    audit.append(conn, "x", case_id=1, details={"case_only": True})
+    rows = list(audit.iter_entries(conn, download_id=10))
+    assert [r["download_id"] for r in rows] == [10]
+    assert rows[0]["details"] == {"a": 1}
+
+
+def test_write_item_sidecar_writes_only_matching_rows(conn, tmp_path):
+    audit.append(conn, "download.created", case_id=1, download_id=42, details={"a": 1})
+    audit.append(conn, "noise", case_id=1, download_id=99, details={"x": 1})
+    audit.append(conn, "item.manifest_rendered", case_id=1, download_id=42, details={"b": 2})
+
+    item_dir = tmp_path / "case" / "stem"
+    item_dir.mkdir(parents=True)
+    out = audit.write_item_sidecar(
+        conn, download_id=42, item_dir=item_dir, stem="stem",
+    )
+    assert out == item_dir / "Metadata" / "stem.audit.json"
+    assert out.is_file()
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["download_id"] == 42
+    assert payload["stem"] == "stem"
+    actions = [e["action"] for e in payload["entries"]]
+    assert actions == ["download.created", "item.manifest_rendered"]
+    # details_json must round-trip back to row_hash via canonical_encode.
+    for entry in payload["entries"]:
+        rebuilt = {
+            k: entry[k]
+            for k in (
+                "timestamp", "action", "case_id", "download_id",
+                "actor", "details_json", "prev_hash",
+            )
+        }
+        assert audit.row_hash_for(rebuilt) == entry["row_hash"]
+
+
+def test_write_item_sidecar_uses_legacy_root_when_meta_lives_there(conn, tmp_path):
+    audit.append(conn, "download.created", case_id=1, download_id=7, details={})
+
+    item_dir = tmp_path / "case" / "legacy"
+    item_dir.mkdir(parents=True)
+    # Pre-v0.8 layout: meta.json sits at the item root, no Metadata/ dir.
+    (item_dir / "legacy.meta.json").write_text("{}", encoding="utf-8")
+
+    out = audit.write_item_sidecar(
+        conn, download_id=7, item_dir=item_dir, stem="legacy",
+    )
+    assert out == item_dir / "legacy.audit.json"
+    assert not (item_dir / "Metadata").exists()
+
+
+def test_write_item_sidecar_is_idempotent(conn, tmp_path):
+    audit.append(conn, "download.created", case_id=1, download_id=3, details={"k": "v"})
+    item_dir = tmp_path / "case" / "stem"
+    item_dir.mkdir(parents=True)
+    a = audit.write_item_sidecar(conn, download_id=3, item_dir=item_dir, stem="stem")
+    first = json.loads(a.read_text(encoding="utf-8"))
+    b = audit.write_item_sidecar(conn, download_id=3, item_dir=item_dir, stem="stem")
+    second = json.loads(b.read_text(encoding="utf-8"))
+    # generated_at_utc may differ across writes, but the payload entries
+    # are deterministic — they're the same DB rows in the same order.
+    assert first["entries"] == second["entries"]
+    assert first["download_id"] == second["download_id"]

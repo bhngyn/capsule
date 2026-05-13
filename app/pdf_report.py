@@ -542,6 +542,7 @@ def _format_download_options_section(
     subs = list(opts.get("subtitle_langs") or [])
     video_container = opts.get("video_container") or None
     audio_container = opts.get("audio_container") or None
+    force_gallery_run = bool(opts.get("force_gallery_run"))
     restart_count = int(opts.get("restart_count") or 0)
     stalled_count = int(cap.get("stalled_count") or 0)
 
@@ -551,6 +552,7 @@ def _format_download_options_section(
         or subs
         or video_container
         or audio_container
+        or force_gallery_run
         or restart_count
         or stalled_count
     ):
@@ -600,6 +602,12 @@ def _format_download_options_section(
             html.escape(", ".join(subs)),
         ))
 
+    if force_gallery_run:
+        rows.append((
+            labels["pdf.report.field.download_options.force_gallery_run.label"],
+            html.escape(labels["pdf.report.field.download_options.force_gallery_run.value"]),
+        ))
+
     if restart_count:
         template = labels["pdf.report.field.download_options.restart_count"]
         rows.append((
@@ -623,6 +631,30 @@ def _format_download_options_section(
         f"<section class='download-options-section'>"
         f"<h2>{heading}</h2>"
         f"<dl>{items}</dl>"
+        f"</section>"
+    )
+
+
+def _format_audit_trail_section(
+    stem: str,
+    labels: Mapping[str, str],
+) -> str:
+    """Render the Audit trail pointer for the per-item report PDF.
+
+    The per-item audit-log sidecar (``Metadata/{stem}.audit.json``) is
+    written after this PDF is signed and grows as post-finalize events
+    extend the chain (verify, extend_capture, recapture). The PDF
+    therefore can't carry a live entry count — instead we point the
+    recipient at the file and remind them the case-level
+    ``audit_log.json`` is authoritative.
+    """
+    template = labels["pdf.report.audit_trail.body"]
+    body_text = template.replace("{path}", f"Metadata/{stem}.audit.json")
+    heading = html.escape(labels["pdf.report.heading.audit_trail"])
+    return (
+        f"<section class='audit-trail-section'>"
+        f"<h2>{heading}</h2>"
+        f"<p class='audit-trail-pointer'>{html.escape(body_text)}</p>"
         f"</section>"
     )
 
@@ -684,6 +716,20 @@ def _render_item_report_html(
     capture_block = _format_capture_report(capture, labels)
     download_options_section = _format_download_options_section(
         item_view.get("download_options"), capture, labels,
+    )
+
+    # Audit-trail pointer (CLAUDE.md §6, §8). The per-item audit sidecar
+    # is mutable and is written after this PDF is signed, so the section
+    # carries a static pointer rather than a live entry count.
+    stem_for_audit = str(
+        item_view.get("stem")
+        or item_view.get("manifest_filename", "").removesuffix(".manifest.pdf")
+        or ""
+    )
+    audit_trail_section = (
+        _format_audit_trail_section(stem_for_audit, labels)
+        if stem_for_audit
+        else ""
     )
 
     # Gallery section — only emitted for capture_kind == "gallery"
@@ -838,6 +884,7 @@ def _render_item_report_html(
         "{{capture_block}}": capture_block,
         "{{media_context_section}}": media_context_section,
         "{{download_options_section}}": download_options_section,
+        "{{audit_trail_section}}": audit_trail_section,
         "{{gallery_section}}": gallery_section,
         "{{tool_gallery_dl_row}}": tool_gallery_dl_row,
         "{{footer_note}}": html.escape(footer_note),

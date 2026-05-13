@@ -12,6 +12,7 @@
     "activeTab",
     "storage",
     "scripting",
+    "pageCapture",
     "declarativeNetRequest",
     "declarativeNetRequestFeedback"
   ],

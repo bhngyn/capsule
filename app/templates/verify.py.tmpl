@@ -8,6 +8,7 @@ Checks performed:
   2. Every file listed in manifest.json exists at the expected size + hashes
   3. Every {stem}.meta.json has a valid {stem}.meta.json.sig
   4. The audit-log hash chain (audit_log.json) is intact
+  5. Every per-item Metadata/{stem}.audit.json is a subset of audit_log.json
 
 Dependency: ``cryptography`` (PyPI). Tested with Python 3.10+.
 
@@ -132,6 +133,71 @@ def _verify_audit_chain(export_dir: Path) -> tuple[bool, list[str]]:
     return True, []
 
 
+def _verify_per_item_audit(export_dir: Path) -> tuple[bool, list[str]]:
+    """Cross-check each per-item audit.json against the case-level chain.
+
+    The per-item sidecar is mutable and not signed by meta.json.sig. Its
+    integrity guarantee is that every (id, row_hash) pair MUST appear in
+    the case-level audit_log.json — which IS signed transitively via
+    manifest.sig. A tampered per-item file falls out here.
+    """
+    issues: list[str] = []
+    audit_path = export_dir / "audit_log.json"
+    if not audit_path.is_file():
+        # No global audit log to cross-check against. The per-item
+        # sidecars (if any) can still be validated for in-file row_hash
+        # consistency below.
+        global_pairs: set[tuple[int, str]] = set()
+    else:
+        global_entries = json.loads(audit_path.read_text(encoding="utf-8"))
+        global_pairs = {
+            (int(e["id"]), str(e["row_hash"]))
+            for e in global_entries
+        }
+
+    downloads = export_dir / "downloads"
+    if not downloads.is_dir():
+        return True, []
+    for stem_dir in sorted(downloads.iterdir()):
+        if not stem_dir.is_dir():
+            continue
+        stem = stem_dir.name
+        for candidate in (stem_dir / "Metadata", stem_dir):
+            sidecar = candidate / f"{stem}.audit.json"
+            if sidecar.is_file():
+                break
+        else:
+            continue  # sidecar absent (legacy item) — not a failure
+        try:
+            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+            entries = payload.get("entries") or []
+        except (OSError, ValueError) as exc:
+            issues.append(f"{stem}: audit sidecar unreadable ({exc})")
+            continue
+        for entry in entries:
+            rebuilt = {
+                k: entry[k]
+                for k in (
+                    "timestamp", "action", "case_id", "download_id",
+                    "actor", "details_json", "prev_hash",
+                )
+            }
+            canon = json.dumps(
+                rebuilt, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+            if hashlib.sha256(canon).hexdigest() != entry["row_hash"]:
+                issues.append(
+                    f"{stem}: row_hash mismatch at id={entry.get('id')}"
+                )
+                continue
+            if global_pairs and (int(entry["id"]), entry["row_hash"]) not in global_pairs:
+                issues.append(
+                    f"{stem}: id={entry.get('id')} not in audit_log.json"
+                )
+    return not issues, issues
+
+
 def main(argv: list[str]) -> int:
     export_dir = Path(argv[1]) if len(argv) > 1 else Path.cwd()
     print(f"Verifying export at {export_dir}")
@@ -146,6 +212,7 @@ def main(argv: list[str]) -> int:
         ("manifest", lambda: _verify_manifest(export_dir, public_key)),
         ("per-item signatures", lambda: _verify_per_item_signatures(export_dir, public_key)),
         ("audit chain", lambda: _verify_audit_chain(export_dir)),
+        ("per-item audit sidecars", lambda: _verify_per_item_audit(export_dir)),
     ):
         ok, issues = fn()
         if ok:

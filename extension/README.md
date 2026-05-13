@@ -30,7 +30,8 @@ reviewer can see exactly what context produced them.
 | `tabs`, `activeTab` | Read the active tab URL and the open-tabs list when you choose "Send open tabs". |
 | `storage` | Persist the pairing token and the chosen active case in `chrome.storage.local`. The token is stored locally; it is never sent except to the paired Capsule server. |
 | `scripting` | Inject the live-capture probe (only when you toggle live capture ON). |
-| `<all_urls>` (optional) | Required if you want to capture cookies for many domains in one click. Granted at runtime, not on install. |
+| `<all_urls>` (optional) | Capsule asks for access to a site the first time you Send or Sync cookies on that site. You can revoke per-site access from `chrome://extensions` → Capsule → Site access. |
+| `pageCapture` | Captures the page as a single MHTML file when **Live capture** is enabled. |
 
 ## What never leaves your machine
 

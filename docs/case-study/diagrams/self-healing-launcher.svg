@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 660" font-family="Inter, system-ui, sans-serif">
+  <defs>
+    <marker id="arrL" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1f2937"/>
+    </marker>
+    <marker id="arrLg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0d9488"/>
+    </marker>
+  </defs>
+  <rect width="800" height="660" fill="#ffffff"/>
+
+  <text x="400" y="36" text-anchor="middle" font-size="18" font-weight="600" fill="#1f2937">Capsule.command — every assumption is a check with a recovery path</text>
+  <text x="400" y="58" text-anchor="middle" font-size="12" fill="#64748b">When the launcher fails on a user's machine, that's a future check that hasn't been written yet.</text>
+
+  <!-- Helper styles via inline -->
+
+  <!-- Step 1: arch detection -->
+  <rect x="280" y="90" width="240" height="56" rx="8" fill="#ecfdf5" stroke="#0d9488" stroke-width="1.5"/>
+  <text x="400" y="115" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2937">Detect host architecture</text>
+  <text x="400" y="132" text-anchor="middle" font-size="10.5" fill="#64748b">uname -m → arm64 vs x86_64</text>
+
+  <line x1="400" y1="146" x2="400" y2="174" stroke="#1f2937" stroke-width="1.5" marker-end="url(#arrL)"/>
+
+  <!-- Step 2: docker check -->
+  <rect x="280" y="180" width="240" height="56" rx="8" fill="#ecfdf5" stroke="#0d9488" stroke-width="1.5"/>
+  <text x="400" y="205" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2937">Is Docker running?</text>
+  <text x="400" y="222" text-anchor="middle" font-size="10.5" fill="#64748b">docker info — retry up to 60s</text>
+
+  <!-- branch right: not running -->
+  <line x1="520" y1="208" x2="610" y2="208" stroke="#1f2937" stroke-width="1.5" marker-end="url(#arrL)"/>
+  <rect x="610" y="180" width="170" height="56" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+  <text x="695" y="200" text-anchor="middle" font-size="11.5" font-weight="600" fill="#92400e">recover</text>
+  <text x="695" y="218" text-anchor="middle" font-size="10" fill="#92400e">open -a Docker</text>
+  <text x="695" y="231" text-anchor="middle" font-size="10" fill="#92400e">poll until ready</text>
+
+  <line x1="400" y1="236" x2="400" y2="264" stroke="#1f2937" stroke-width="1.5" marker-end="url(#arrL)"/>
+
+  <!-- Step 3: image present -->
+  <rect x="280" y="270" width="240" height="56" rx="8" fill="#ecfdf5" stroke="#0d9488" stroke-width="1.5"/>
+  <text x="400" y="295" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2937">Image present locally?</text>
+  <text x="400" y="312" text-anchor="middle" font-size="10.5" fill="#64748b">docker image inspect capsule:&lt;arch&gt;</text>
+
+  <!-- branch right: not present -->
+  <line x1="520" y1="298" x2="610" y2="298" stroke="#1f2937" stroke-width="1.5" marker-end="url(#arrL)"/>
+  <rect x="610" y="270" width="170" height="56" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+  <text x="695" y="290" text-anchor="middle" font-size="11.5" font-weight="600" fill="#92400e">recover</text>
+  <text x="695" y="308" text-anchor="middle" font-size="10" fill="#92400e">load images/capsule-*.tar.gz</text>
+  <text x="695" y="321" text-anchor="middle" font-size="10" fill="#92400e">show progress</text>
+
+  <line x1="400" y1="326" x2="400" y2="354" stroke="#1f2937" stroke-width="1.5" marker-end="url(#arrL)"/>
+
+  <!-- Step 4: digest match (the critical one) -->
+  <rect x="240" y="360" width="320" height="60" rx="8" fill="#ecfdf5" stroke="#0d9488" stroke-width="2"/>
+  <text x="400" y="384" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2937">Loaded image digest = stamped digest?</text>
+  <text x="400" y="402" text-anchor="middle" font-size="10.5" fill="#64748b">if [ "$loaded_id" = "$EXPECTED_DIGEST" ]; then needs_load=0; fi</text>
+
+  <!-- branch right: mismatch — the v0.5 fix -->
+  <line x1="560" y1="390" x2="610" y2="390" stroke="#0d9488" stroke-width="1.5" marker-end="url(#arrLg)"/>
+  <rect x="610" y="360" width="170" height="60" rx="8" fill="#ecfdf5" stroke="#0d9488" stroke-width="1.5"/>
+  <text x="695" y="380" text-anchor="middle" font-size="11.5" font-weight="600" fill="#0d9488">force-reload</text>
+  <text x="695" y="398" text-anchor="middle" font-size="10" fill="#1f2937">stale latest tag?</text>
+  <text x="695" y="411" text-anchor="middle" font-size="10" fill="#1f2937">re-load from .tar.gz</text>
+
+  <line x1="400" y1="420" x2="400" y2="448" stroke="#1f2937" stroke-width="1.5" marker-end="url(#arrL)"/>
+
+  <!-- Step 5: port available -->
+  <rect x="280" y="454" width="240" height="56" rx="8" fill="#ecfdf5" stroke="#0d9488" stroke-width="1.5"/>
+  <text x="400" y="479" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2937">Is :8080 free?</text>
+  <text x="400" y="496" text-anchor="middle" font-size="10.5" fill="#64748b">if not — message the user; do not silently bind another port</text>
+
+  <line x1="400" y1="510" x2="400" y2="538" stroke="#1f2937" stroke-width="1.5" marker-end="url(#arrL)"/>
+
+  <!-- Step 6: launch -->
+  <rect x="280" y="544" width="240" height="56" rx="8" fill="#1f2937" stroke="#1f2937" stroke-width="1.5"/>
+  <text x="400" y="569" text-anchor="middle" font-size="13" font-weight="600" fill="#ffffff">docker run capsule:&lt;arch&gt;</text>
+  <text x="400" y="586" text-anchor="middle" font-size="10.5" fill="#cbd5e1">open http://localhost:8080</text>
+
+  <!-- Caption -->
+  <text x="400" y="630" text-anchor="middle" font-size="11" fill="#64748b" font-style="italic">The teal block at step 4 is the fix that landed after one user opened Capsule.command on Apple Silicon and got the AMD64 warning chip.</text>
+  <text x="400" y="648" text-anchor="middle" font-size="11" fill="#64748b" font-style="italic">Failure → check → recovery. Repeat.</text>
+</svg>

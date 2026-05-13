@@ -24,6 +24,14 @@ CONFIG_DIR = Path(os.environ.get("CAPSULE_CONFIG_DIR", "/config"))
 # path as a degraded fallback.
 HOST_DOWNLOADS_DIR = os.environ.get("CAPSULE_HOST_DOWNLOADS_DIR", "").strip() or None
 
+# GitHub repo for Capsule self-update lookups (CLAUDE.md §15 v0.10). The
+# Tier 2 update card asks ``api.github.com/repos/{repo}/releases/latest``
+# for the most recent tag and compares against the bundled ``__version__``.
+# Empty when unset; ``app.updates`` then hides the Capsule row entirely so
+# dev builds without an upstream release stream don't show a permanently
+# dashed self-update card.
+CAPSULE_GITHUB_REPO = os.environ.get("CAPSULE_GITHUB_REPO", "").strip() or None
+
 DEFAULT_LANG = "en"
 # Bundles ship for en/ar/ja/es, all fully translated. merged_with_fallback
 # still guarantees no missing keys if a future bundle drifts.
