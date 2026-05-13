@@ -491,6 +491,24 @@ class CdpWarcWriter:
         })
 
     async def _finish_record(self, p: _PendingRequest, encoded_data_length: int) -> None:
+        # Pre-check the size BEFORE asking CDP for the body. A 500 MB hero
+        # video would otherwise be base64-decoded into Python heap just to
+        # be discarded by the post-fetch cap below — easy OOM on a laptop.
+        # ``encoded_data_length`` is the wire-bytes count Chromium attached
+        # to the loadingFinished event; for compressed responses the
+        # decoded body can be larger, so the post-fetch check stays as
+        # belt-and-braces.
+        if encoded_data_length and encoded_data_length > self._max_inline:
+            self._write_metadata_record(p.url, {
+                "kind": "body_truncated",
+                "method": p.method,
+                "status": p.response_status,
+                "encoded_data_length": encoded_data_length,
+                "max_inline_bytes": self._max_inline,
+                "mime_type": p.mime_type,
+                "truncated_before_fetch": True,
+            })
+            return
         body = b""
         try:
             data = await self._cdp.send("Network.getResponseBody", {"requestId": p.request_id})
@@ -511,9 +529,8 @@ class CdpWarcWriter:
             })
             return
         if len(body) > self._max_inline:
-            # Defensive cap — we don't want a single 500MB hero video to
-            # blow up memory. Replace body with a metadata pointer; the
-            # WARC reviewer sees the request was made and what size came back.
+            # Belt-and-braces: a compressed response can decode larger
+            # than its wire-bytes count, slipping past the pre-check.
             self._write_metadata_record(p.url, {
                 "kind": "body_truncated",
                 "method": p.method,

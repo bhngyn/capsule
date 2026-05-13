@@ -103,3 +103,117 @@ def test_warcio_version_returns_string_or_none():
     from app.warc_writer import warcio_version
     v = warcio_version()
     assert v is None or isinstance(v, str)
+
+
+def test_finish_record_skips_body_fetch_when_encoded_length_exceeds_cap(tmp_path):
+    """Regression for CRIT-2 (CODE_REVIEW 2026-05-13).
+
+    A 500 MB hero video would otherwise be base64-decoded into Python
+    heap just to be discarded by the post-fetch cap. The pre-check on
+    ``encoded_data_length`` must short-circuit before any
+    ``Network.getResponseBody`` CDP roundtrip happens.
+    """
+    import asyncio
+
+    import pytest
+    pytest.importorskip("warcio")
+
+    from app.warc_writer import CdpWarcWriter, _PendingRequest
+
+    class _FakeCdp:
+        def __init__(self):
+            self.sent: list[tuple[str, dict]] = []
+
+        async def send(self, method, params=None):
+            self.sent.append((method, params or {}))
+            # Network.enable etc. just return; getResponseBody must NOT
+            # be reached for this test to pass.
+            return {}
+
+        def on(self, *_args, **_kwargs):
+            return None
+
+    cdp = _FakeCdp()
+    writer = CdpWarcWriter(
+        cdp,
+        tmp_path / "test.warc.gz",
+        app_version="test",
+        chromium_version="0.0",
+        target_uri="https://example.test/",
+        max_inline_body_bytes=1_000_000,  # 1 MB cap
+    )
+
+    async def _drive():
+        async with writer:
+            p = _PendingRequest(
+                request_id="REQ-1",
+                url="https://example.test/big.mp4",
+                method="GET",
+                response_status=200,
+                mime_type="video/mp4",
+            )
+            # 50 MB encoded — well over the 1 MB cap.
+            await writer._finish_record(p, encoded_data_length=50_000_000)
+
+    asyncio.run(_drive())
+
+    sent_methods = [m for m, _ in cdp.sent]
+    assert "Network.getResponseBody" not in sent_methods, (
+        f"body fetch should be skipped when encoded_data_length exceeds "
+        f"max_inline_body_bytes; got CDP calls: {sent_methods}"
+    )
+    # And we should have at least one record (the warcinfo + the
+    # metadata-record-in-lieu-of-body) on disk.
+    assert (tmp_path / "test.warc.gz").is_file()
+    assert (tmp_path / "test.warc.gz").stat().st_size > 0
+
+
+def test_finish_record_fetches_body_when_encoded_length_under_cap(tmp_path):
+    """Sibling sanity check: small bodies still go through the normal
+    fetch + write_http_pair path.
+    """
+    import asyncio
+
+    import pytest
+    pytest.importorskip("warcio")
+
+    from app.warc_writer import CdpWarcWriter, _PendingRequest
+
+    class _FakeCdp:
+        def __init__(self):
+            self.sent: list[tuple[str, dict]] = []
+
+        async def send(self, method, params=None):
+            self.sent.append((method, params or {}))
+            if method == "Network.getResponseBody":
+                return {"body": "hello", "base64Encoded": False}
+            return {}
+
+        def on(self, *_args, **_kwargs):
+            return None
+
+    cdp = _FakeCdp()
+    writer = CdpWarcWriter(
+        cdp,
+        tmp_path / "test.warc.gz",
+        app_version="test",
+        chromium_version="0.0",
+        target_uri="https://example.test/",
+        max_inline_body_bytes=1_000_000,
+    )
+
+    async def _drive():
+        async with writer:
+            p = _PendingRequest(
+                request_id="REQ-2",
+                url="https://example.test/small.html",
+                method="GET",
+                response_status=200,
+                response_headers={"content-type": "text/html"},
+                mime_type="text/html",
+            )
+            await writer._finish_record(p, encoded_data_length=5)
+
+    asyncio.run(_drive())
+    sent_methods = [m for m, _ in cdp.sent]
+    assert "Network.getResponseBody" in sent_methods
