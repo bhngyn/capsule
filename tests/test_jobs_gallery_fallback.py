@@ -335,3 +335,289 @@ async def test_gallery_disabled_per_case_skips_gallery_dl(
     assert row["status"] == "done"
     assert json.loads(row["result_json"])["capture_kind"] == "page_only"
     assert gallery_calls["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_force_gallery_run_attaches_images_to_media_capture(
+    reload_modules, stub_pipeline, monkeypatch,
+):
+    """When the user opts in via DownloadOptions.force_gallery_run, gallery-dl
+    runs alongside yt-dlp even though yt-dlp produced media. The capture's
+    primary kind stays ``media`` (yt-dlp wins) and the gallery images attach
+    as additional ``gallery_NNN`` artifacts on the same item.
+    """
+    db_mod, jobs_mod = reload_modules
+    _, _, ytdlp_runner, gallery_dl_runner = stub_pipeline
+
+    async def yt_succeeds(url, *, case_dir, progress_queue=None, **_kw):
+        case_dir.mkdir(parents=True, exist_ok=True)
+        media = case_dir / "abc.mp4"
+        media.write_bytes(b"FAKEMP4DATA")
+        info = case_dir / "abc.info.json"
+        info.write_text(json.dumps({
+            "id": "abc", "title": "Hi", "ext": "mp4",
+            "extractor_key": "Generic",
+        }))
+        if progress_queue is not None:
+            await progress_queue.put(None)
+        return ytdlp_runner.RunResult(
+            returncode=0, stdout="", stderr="",
+            info=json.loads(info.read_text()),
+            produced_files=[media, info],
+        )
+
+    monkeypatch.setattr(ytdlp_runner, "run", yt_succeeds)
+    monkeypatch.setattr(
+        gallery_dl_runner, "run", _gallery_run_factory(["jpg", "png"], extractor="generic"),
+    )
+
+    conn = db_mod.connect()
+    try:
+        db_mod.migrate(conn)
+        from app import cases
+        case = cases.create(conn, name="Blog post with embedded video and photo set")
+    finally:
+        conn.close()
+
+    job = await jobs_mod.orchestrator().submit(
+        case_id=case.id,
+        url="https://kal-akal.com/?p=436",
+        download_options=jobs_mod.DownloadOptions(force_gallery_run=True),
+    )
+    row = await _wait_for_terminal(db_mod, job.id)
+    assert row["status"] == "done"
+    result = json.loads(row["result_json"])
+    # yt-dlp wins primary; gallery rides as extra artifacts.
+    assert result["capture_kind"] == "media"
+
+    # The audit log records both the gallery start and the gallery capture
+    # event, plus download.created with gallery_count and gallery_extractor.
+    conn = db_mod.connect()
+    try:
+        actions = [
+            r["action"]
+            for r in conn.execute(
+                "SELECT action FROM audit_log WHERE case_id = ? ORDER BY id",
+                (case.id,),
+            ).fetchall()
+        ]
+        # download.created details should carry the gallery counters even
+        # though capture_kind is media.
+        created_row = conn.execute(
+            "SELECT details_json FROM audit_log "
+            "WHERE case_id = ? AND action = 'download.created' "
+            "ORDER BY id DESC LIMIT 1",
+            (case.id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert "gallery.started" in actions
+    assert "gallery.captured" in actions
+    details = json.loads(created_row["details_json"])
+    assert details["capture_kind"] == "media"
+    assert details["gallery_count"] == 2
+    assert details["gallery_extractor"] == "generic"
+
+
+@pytest.mark.asyncio
+async def test_force_gallery_run_no_op_when_case_disables_gallery(
+    reload_modules, stub_pipeline, monkeypatch,
+):
+    """Per-case gallery_enabled=False overrides force_gallery_run.
+
+    The case-level toggle is the operator's escape hatch for an
+    investigation that must not call gallery-dl at all (e.g. a sensitive
+    site where any extra request is too noisy). It MUST win over the
+    per-job opt-in.
+    """
+    db_mod, jobs_mod = reload_modules
+    _, _, ytdlp_runner, gallery_dl_runner = stub_pipeline
+
+    monkeypatch.setattr(ytdlp_runner, "run", _empty_yt_run_factory())
+
+    gallery_calls = {"n": 0}
+
+    async def gallery_panic(*_a, **_kw):
+        gallery_calls["n"] += 1
+        raise AssertionError("gallery-dl must not run when case opts out")
+
+    monkeypatch.setattr(gallery_dl_runner, "run", gallery_panic)
+
+    conn = db_mod.connect()
+    try:
+        db_mod.migrate(conn)
+        from app import cases
+        case = cases.create(
+            conn,
+            name="No gallery, even with force_gallery_run",
+            settings={"gallery_enabled": False},
+        )
+    finally:
+        conn.close()
+
+    job = await jobs_mod.orchestrator().submit(
+        case_id=case.id,
+        url="https://example.com/x",
+        download_options=jobs_mod.DownloadOptions(force_gallery_run=True),
+    )
+    row = await _wait_for_terminal(db_mod, job.id)
+    assert row["status"] == "done"
+    assert json.loads(row["result_json"])["capture_kind"] == "page_only"
+    assert gallery_calls["n"] == 0
+
+
+# ---------------------------------------------------------------------------
+# capture_mode tests (v0.10)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_capture_mode_gallery_skips_ytdlp_forces_gallery_dl(
+    reload_modules, stub_pipeline, monkeypatch,
+):
+    """capture_mode='gallery' → yt-dlp is skipped entirely; gallery-dl runs
+    unconditionally and its images become the primary capture artifact."""
+    db_mod, jobs_mod = reload_modules
+    _, _, ytdlp_runner, gallery_dl_runner = stub_pipeline
+
+    ytdlp_calls = {"n": 0}
+
+    async def ytdlp_panic(*_a, **_kw):
+        ytdlp_calls["n"] += 1
+        raise AssertionError("yt-dlp must not run in gallery mode")
+
+    monkeypatch.setattr(ytdlp_runner, "run", ytdlp_panic)
+    monkeypatch.setattr(
+        gallery_dl_runner, "run", _gallery_run_factory(["jpg", "png"]),
+    )
+
+    conn = db_mod.connect()
+    try:
+        db_mod.migrate(conn)
+        from app import cases
+        case = cases.create(conn, name="Gallery mode test")
+    finally:
+        conn.close()
+
+    job = await jobs_mod.orchestrator().submit(
+        case_id=case.id,
+        url="https://www.instagram.com/p/xyz/",
+        download_options=jobs_mod.DownloadOptions(capture_mode="gallery"),
+    )
+    row = await _wait_for_terminal(db_mod, job.id)
+    assert row["status"] == "done"
+    result = json.loads(row["result_json"])
+    assert result["capture_kind"] == "gallery"
+    assert ytdlp_calls["n"] == 0  # yt-dlp never ran
+
+
+@pytest.mark.asyncio
+async def test_capture_mode_webpage_always_runs_gallery_dl_even_with_media(
+    reload_modules, stub_pipeline, monkeypatch,
+):
+    """capture_mode='webpage' → gallery-dl runs even when yt-dlp produced media.
+
+    Emphasis is on the page context; the video is incidental. Gallery images
+    attach as additional artifacts on the item; capture_kind stays 'media'
+    (yt-dlp wins as primary output).
+    """
+    db_mod, jobs_mod = reload_modules
+    _, _, ytdlp_runner, gallery_dl_runner = stub_pipeline
+
+    async def yt_succeeds(url, *, case_dir, progress_queue=None, **_kw):
+        case_dir.mkdir(parents=True, exist_ok=True)
+        media = case_dir / "abc.mp4"
+        media.write_bytes(b"FAKEMP4DATA")
+        info = case_dir / "abc.info.json"
+        info.write_text(json.dumps({
+            "id": "abc", "title": "Webpage video", "ext": "mp4",
+            "extractor_key": "Generic",
+        }))
+        if progress_queue is not None:
+            await progress_queue.put(None)
+        return ytdlp_runner.RunResult(
+            returncode=0, stdout="", stderr="",
+            info=json.loads(info.read_text()),
+            produced_files=[media, info],
+        )
+
+    gallery_calls = {"n": 0}
+
+    async def gallery_runs(*_a, **_kw):
+        gallery_calls["n"] += 1
+        return await _gallery_run_factory(["jpg"])(*_a, **_kw)
+
+    monkeypatch.setattr(ytdlp_runner, "run", yt_succeeds)
+    monkeypatch.setattr(gallery_dl_runner, "run", gallery_runs)
+
+    conn = db_mod.connect()
+    try:
+        db_mod.migrate(conn)
+        from app import cases
+        case = cases.create(conn, name="Webpage mode test")
+    finally:
+        conn.close()
+
+    job = await jobs_mod.orchestrator().submit(
+        case_id=case.id,
+        url="https://example.com/article-with-embed",
+        download_options=jobs_mod.DownloadOptions(capture_mode="webpage"),
+    )
+    row = await _wait_for_terminal(db_mod, job.id)
+    assert row["status"] == "done"
+    # yt-dlp found media → kind stays media; gallery images attach alongside
+    assert json.loads(row["result_json"])["capture_kind"] == "media"
+    assert gallery_calls["n"] == 1  # gallery-dl ran regardless of yt-dlp
+
+
+@pytest.mark.asyncio
+async def test_capture_mode_media_skips_gallery_when_ytdlp_succeeds(
+    reload_modules, stub_pipeline, monkeypatch,
+):
+    """capture_mode='media' → gallery-dl is skipped when yt-dlp finds media
+    (same as the current default fallback behaviour)."""
+    db_mod, jobs_mod = reload_modules
+    _, _, ytdlp_runner, gallery_dl_runner = stub_pipeline
+
+    async def yt_succeeds(url, *, case_dir, progress_queue=None, **_kw):
+        case_dir.mkdir(parents=True, exist_ok=True)
+        media = case_dir / "vid.mp4"
+        media.write_bytes(b"FAKEVIDEO")
+        info = case_dir / "vid.info.json"
+        info.write_text(json.dumps({
+            "id": "vid", "title": "Video", "ext": "mp4",
+            "extractor_key": "Youtube",
+        }))
+        if progress_queue is not None:
+            await progress_queue.put(None)
+        return ytdlp_runner.RunResult(
+            returncode=0, stdout="", stderr="",
+            info=json.loads(info.read_text()),
+            produced_files=[media, info],
+        )
+
+    gallery_calls = {"n": 0}
+
+    async def gallery_panic(*_a, **_kw):
+        gallery_calls["n"] += 1
+        raise AssertionError("gallery-dl must not run when yt-dlp succeeded in media mode")
+
+    monkeypatch.setattr(ytdlp_runner, "run", yt_succeeds)
+    monkeypatch.setattr(gallery_dl_runner, "run", gallery_panic)
+
+    conn = db_mod.connect()
+    try:
+        db_mod.migrate(conn)
+        from app import cases
+        case = cases.create(conn, name="Media mode test")
+    finally:
+        conn.close()
+
+    job = await jobs_mod.orchestrator().submit(
+        case_id=case.id,
+        url="https://www.youtube.com/watch?v=vid",
+        download_options=jobs_mod.DownloadOptions(capture_mode="media"),
+    )
+    row = await _wait_for_terminal(db_mod, job.id)
+    assert row["status"] == "done"
+    assert json.loads(row["result_json"])["capture_kind"] == "media"
+    assert gallery_calls["n"] == 0  # gallery-dl never ran
