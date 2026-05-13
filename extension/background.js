@@ -32,6 +32,7 @@ const STORAGE_KEYS = {
   blockAdsEnabled: "capsule.block_ads_enabled",
   realHarEnabled: "capsule.real_har_enabled",
   cookiePersistence: "capsule.cookie_persistence",
+  captureMode: "capsule.captureMode",
 };
 
 const DEFAULT_SERVER = "http://localhost:8080";
@@ -264,7 +265,7 @@ async function captureMHTML(tabId) {
       chrome.pageCapture.saveAsMHTML({ tabId }, async (blob) => {
         if (!blob) return resolve(null);
         const buf = await blob.arrayBuffer();
-        resolve(arrayBufferToBase64(buf));
+        resolve({ b64: arrayBufferToBase64(buf), size: blob.size });
       });
     } catch (e) {
       resolve(null);
@@ -469,7 +470,15 @@ async function attachDebuggerHar(tabId, durationMs = 3000) {
     await chrome.debugger.sendCommand(target, "Network.enable");
     await new Promise((r) => setTimeout(r, durationMs));
     chrome.debugger.onEvent.removeListener(onEvent);
-    await chrome.debugger.detach(target);
+    // Race the detach against a 3-second timeout so a hung detach never
+    // blocks the artifact chain — resolve (not reject) on timeout so the
+    // caller still gets the collected events.
+    await Promise.race([
+      new Promise((resolve) => {
+        chrome.debugger.detach(target, () => resolve());
+      }),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
   } catch (e) {
     try { chrome.debugger.onEvent.removeListener(onEvent); } catch (_) {}
     try { chrome.debugger.detach(target); } catch (_) {}
@@ -509,24 +518,40 @@ async function buildLiveCaptureForTab(tab, { realHar }) {
       realHar ? withTimeout(attachDebuggerHar(tab.id), 5000, "har_debugger") : Promise.resolve(null),
     ]);
 
-  if (!mhtmlB64) warnings.push("mhtml_unavailable");
+  // Unpack MHTML result — captureMHTML now returns {b64, size} or null.
+  const mhtmlResult = mhtmlB64; // variable holds the raw Promise result
+  const mhtmlBase64 = mhtmlResult ? mhtmlResult.b64 : null;
+  const MHTML_WARN_BYTES = 50 * 1024 * 1024; // 50 MB
+  if (!mhtmlBase64) warnings.push("mhtml_unavailable");
+  else if (mhtmlResult.size > MHTML_WARN_BYTES) warnings.push("mhtml_large");
   if (!screenshotB64) warnings.push("screenshot_unavailable");
   if (!environment) warnings.push("environment_unavailable");
 
-  const dom_html_b64 = domSnapshot
-    ? arrayBufferToBase64(new TextEncoder().encode(domSnapshot.outer_html).buffer)
+  // Cap DOM snapshot HTML at 5 MB before base64-encoding to prevent OOM on
+  // pathologically large pages.
+  const MAX_DOM_HTML_BYTES = 5 * 1024 * 1024; // 5 MB
+  let domHtml = domSnapshot ? (domSnapshot.outer_html || "") : null;
+  let domTruncated = false;
+  if (domHtml && domHtml.length > MAX_DOM_HTML_BYTES) {
+    domHtml = domHtml.slice(0, MAX_DOM_HTML_BYTES);
+    domTruncated = true;
+  }
+  const dom_html_b64 = domHtml
+    ? arrayBufferToBase64(new TextEncoder().encode(domHtml).buffer)
     : null;
 
   const live = {
     url: tab.url,
-    mhtml_b64: mhtmlB64,
+    mhtml_b64: mhtmlBase64,
     screenshot_b64: screenshotB64,
     har: debuggerHar || har,
     environment,
     tab_context: tabContext,
     session_state: sessionState,
     dom_snapshot_html_b64: dom_html_b64,
-    dom_snapshot_meta: domSnapshot ? domSnapshot.meta : null,
+    dom_snapshot_meta: domSnapshot
+      ? { ...domSnapshot.meta, truncated: domTruncated }
+      : null,
     capture_warnings: warnings,
   };
   return { live, warnings };
@@ -606,7 +631,7 @@ chrome.runtime.onStartup.addListener(() => {
 
 // --- submission -----------------------------------------------------------
 
-async function submitCapture({ caseId, urls, includeLiveCapture }) {
+async function submitCapture({ caseId, urls, includeLiveCapture, captureMode = null }) {
   const { cookies, skipped_urls, store_count } = await collectCookiesForUrls(urls);
 
   let liveCaptures = [];
@@ -626,15 +651,18 @@ async function submitCapture({ caseId, urls, includeLiveCapture }) {
     await chrome.storage.local.get([STORAGE_KEYS.cookiePersistence])
   )[STORAGE_KEYS.cookiePersistence] || "case";
 
+  const body = {
+    case_id: caseId,
+    urls,
+    cookies,
+    live_captures: liveCaptures,
+    cookie_persistence: cookiePersistence,
+  };
+  if (captureMode) body.capture_mode = captureMode;
+
   const resp = await authedFetch("/api/extension/capture", {
     method: "POST",
-    body: JSON.stringify({
-      case_id: caseId,
-      urls,
-      cookies,
-      live_captures: liveCaptures,
-      cookie_persistence: cookiePersistence,
-    }),
+    body: JSON.stringify(body),
   });
   return {
     ...resp,
@@ -704,6 +732,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             STORAGE_KEYS.realHarEnabled,
             STORAGE_KEYS.cookiePersistence,
             STORAGE_KEYS.liveCaptureEnabled,
+            STORAGE_KEYS.captureMode,
           ]);
           sendResponse({
             ok: true,
@@ -712,6 +741,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
               real_har: !!data[STORAGE_KEYS.realHarEnabled],
               cookie_persistence: data[STORAGE_KEYS.cookiePersistence] || "case",
               live_capture: !!data[STORAGE_KEYS.liveCaptureEnabled],
+              capture_mode: data[STORAGE_KEYS.captureMode] || null,
             },
           });
           return;
@@ -726,6 +756,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             updates[STORAGE_KEYS.cookiePersistence] = msg.payload.cookie_persistence;
           if (msg.payload.live_capture !== undefined)
             updates[STORAGE_KEYS.liveCaptureEnabled] = !!msg.payload.live_capture;
+          if ("capture_mode" in msg.payload)
+            updates[STORAGE_KEYS.captureMode] = msg.payload.capture_mode || null;
           await chrome.storage.local.set(updates);
           if (msg.payload.block_ads !== undefined) {
             await applyBlockAdsState();
@@ -734,7 +766,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           return;
         }
         case "submit-capture":
-          sendResponse({ ok: true, ...(await submitCapture(msg.payload)) });
+          sendResponse({ ok: true, ...(await submitCapture({
+            caseId: msg.payload.caseId,
+            urls: msg.payload.urls,
+            includeLiveCapture: msg.payload.includeLiveCapture,
+            captureMode: msg.payload.captureMode || null,
+          })) });
           return;
         case "sync-cookies":
           sendResponse({ ok: true, ...(await syncCookiesOnly(msg.payload)) });

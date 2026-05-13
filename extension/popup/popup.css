@@ -203,3 +203,45 @@ button.link {
   content: "⚠";
   flex-shrink: 0;
 }
+
+/* Capture mode pill group */
+.capture-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.capture-mode-label {
+  font-size: 12px;
+  color: var(--fg);
+}
+.pill-group {
+  display: inline-flex;
+  gap: 2px;
+  background: #f1f5f9;
+  border-radius: 9999px;
+  padding: 2px;
+}
+@media (prefers-color-scheme: dark) {
+  .pill-group { background: #1e293b; }
+}
+.pill {
+  border: none;
+  background: transparent;
+  border-radius: 9999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  color: var(--muted);
+  transition: background 0.15s, color 0.15s;
+}
+.pill[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.pill:hover:not([aria-pressed="true"]) {
+  color: var(--fg);
+}

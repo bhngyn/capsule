@@ -6,5 +6,51 @@
   "extDescription": {
     "message": "Send pages and cookies from this browser to the local Capsule app for forensic capture.",
     "description": "Extension store description."
+  },
+  "permissionRequiredTitle": {
+    "message": "Permission needed for $HOST$",
+    "description": "Title shown when the popup needs the user to grant host permission for a site.",
+    "placeholders": {
+      "host": { "content": "$1", "example": "twitter.com" }
+    }
+  },
+  "permissionRequiredBody": {
+    "message": "Capsule needs access to $HOST$ to read its cookies. Click the action again and choose Allow.",
+    "description": "Body explaining why the host permission is needed.",
+    "placeholders": {
+      "host": { "content": "$1", "example": "twitter.com" }
+    }
+  },
+  "permissionDeniedTitle": {
+    "message": "Permission denied",
+    "description": "Title shown after the user dismisses the host-permission prompt."
+  },
+  "unsupportedSchemeBody": {
+    "message": "Cookies can only be read on http:// or https:// pages.",
+    "description": "Body shown when the active tab is on a chrome://, about:, or other unsupported scheme."
+  },
+  "noCookiesFoundTitle": {
+    "message": "No cookies found",
+    "description": "Title for the result screen when permission was granted but the page had no cookies."
+  },
+  "noCookiesFoundBody": {
+    "message": "Make sure you're signed in on this tab, then try again.",
+    "description": "Hint shown alongside noCookiesFoundTitle."
+  },
+  "captureModeLabel": {
+    "message": "Capture mode",
+    "description": "Label for the capture mode segmented control."
+  },
+  "captureModeWebpage": {
+    "message": "Webpage",
+    "description": "Capture mode pill: page snapshot only, skip media download."
+  },
+  "captureModeMedia": {
+    "message": "Media",
+    "description": "Capture mode pill: force media download path."
+  },
+  "captureModeGallery": {
+    "message": "Gallery",
+    "description": "Capture mode pill: force gallery-dl image capture path."
   }
 }

@@ -6,5 +6,51 @@
   "extDescription": {
     "message": "أرسل الصفحات وملفات تعريف الارتباط من هذا المتصفح إلى تطبيق Capsule المحلي للتوثيق الجنائي.",
     "description": "Extension store description (Arabic)."
+  },
+  "permissionRequiredTitle": {
+    "message": "‏Capsule بحاجة إلى إذن للوصول إلى $HOST$",
+    "description": "Title shown when the popup needs the user to grant host permission for a site.",
+    "placeholders": {
+      "host": { "content": "$1", "example": "twitter.com" }
+    }
+  },
+  "permissionRequiredBody": {
+    "message": "‏Capsule بحاجة إلى الوصول إلى $HOST$ لقراءة ملفات تعريف الارتباط الخاصة به. انقر على الزر مرة أخرى ثم اختر «سماح».",
+    "description": "Body explaining why the host permission is needed.",
+    "placeholders": {
+      "host": { "content": "$1", "example": "twitter.com" }
+    }
+  },
+  "permissionDeniedTitle": {
+    "message": "تم رفض الإذن",
+    "description": "Title shown after the user dismisses the host-permission prompt."
+  },
+  "unsupportedSchemeBody": {
+    "message": "يمكن قراءة ملفات تعريف الارتباط فقط على صفحات http:// أو https://.",
+    "description": "Body shown when the active tab is on a chrome://, about:, or other unsupported scheme."
+  },
+  "noCookiesFoundTitle": {
+    "message": "لم يتم العثور على ملفات تعريف ارتباط",
+    "description": "Title for the result screen when permission was granted but the page had no cookies."
+  },
+  "noCookiesFoundBody": {
+    "message": "تأكد من تسجيل الدخول في هذا التبويب ثم حاول مرة أخرى.",
+    "description": "Hint shown alongside noCookiesFoundTitle."
+  },
+  "captureModeLabel": {
+    "message": "وضع الالتقاط",
+    "description": "Label for the capture mode segmented control (Arabic)."
+  },
+  "captureModeWebpage": {
+    "message": "صفحة ويب",
+    "description": "Capture mode pill: page snapshot only (Arabic)."
+  },
+  "captureModeMedia": {
+    "message": "وسائط",
+    "description": "Capture mode pill: force media download path (Arabic)."
+  },
+  "captureModeGallery": {
+    "message": "معرض",
+    "description": "Capture mode pill: force gallery-dl image capture path (Arabic)."
   }
 }
