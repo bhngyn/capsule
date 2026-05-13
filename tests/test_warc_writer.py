@@ -103,3 +103,60 @@ def test_warcio_version_returns_string_or_none():
     from app.warc_writer import warcio_version
     v = warcio_version()
     assert v is None or isinstance(v, str)
+
+
+def test_aexit_catalogs_pending_requests_that_never_finished(tmp_path):
+    """Regression for HIGH-2 (CODE_REVIEW 2026-05-13).
+
+    Anything still in ``_pending`` after the 1-second drain window
+    would otherwise be silently dropped, leaving a mysterious gap in
+    the WARC that a forensic reviewer comparing against the HAR
+    couldn't explain. The fix catalogs each stragglers as a
+    ``body_not_received_in_drain_window`` metadata record.
+    """
+    import asyncio
+
+    import pytest
+    pytest.importorskip("warcio")
+
+    from app.warc_writer import CdpWarcWriter, _PendingRequest
+
+    class _FakeCdp:
+        async def send(self, *_a, **_kw):
+            return {}
+        def on(self, *_a, **_kw):
+            return None
+
+    writer = CdpWarcWriter(
+        _FakeCdp(),
+        tmp_path / "drain.warc.gz",
+        app_version="test",
+        chromium_version="0.0",
+        target_uri="https://example.test/",
+    )
+
+    async def _drive():
+        async with writer:
+            # Two never-finished requests still in _pending at exit.
+            writer._pending["A"] = _PendingRequest(
+                request_id="A",
+                url="https://example.test/late1.css",
+                method="GET",
+                response_status=200,
+                mime_type="text/css",
+            )
+            writer._pending["B"] = _PendingRequest(
+                request_id="B",
+                url="https://example.test/late2.js",
+                method="GET",
+                response_status=200,
+                mime_type="application/javascript",
+            )
+        # On exit, both should have been catalogued as metadata records.
+
+    record_count_before = writer._record_count
+    asyncio.run(_drive())
+    # Two stragglers → record_count grows by exactly two beyond the
+    # warcinfo record written on enter.
+    assert writer._record_count - record_count_before >= 2
+    assert not writer._pending  # ``_pending`` is cleared

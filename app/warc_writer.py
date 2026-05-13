@@ -288,6 +288,23 @@ class CdpWarcWriter:
             if not self._pending:
                 break
             await asyncio.sleep(0.05)
+        # Anything still in ``_pending`` after the drain window will
+        # never get a body — its loadingFinished event arrived too
+        # late or never. Catalog these as metadata records so the WARC
+        # remains a complete catalog of every request the page made;
+        # a forensic reviewer comparing the WARC to the HAR would
+        # otherwise see a mysterious gap with no audit trail.
+        if self._pending:
+            stragglers = list(self._pending.values())
+            self._pending.clear()
+            for p in stragglers:
+                with suppress(Exception):
+                    self._write_metadata_record(p.url, {
+                        "kind": "body_not_received_in_drain_window",
+                        "method": p.method,
+                        "status": p.response_status,
+                        "mime_type": p.mime_type,
+                    })
         if self._fp is not None:
             with suppress(Exception):
                 self._fp.flush()

@@ -49,6 +49,18 @@ UPLOADER_MAX = 40
 SEPARATOR = "__"
 
 
+_DOT_OR_WS = re.compile(r"^[\s.]+|[\s.]+$")
+
+
+def _strip_dots_and_whitespace(s: str) -> str:
+    """Remove leading and trailing ``.``/whitespace, in any combination.
+
+    Single regex pass — handles ``"name. .  "`` → ``"name"`` and
+    ``"  ..foo.."`` → ``"foo"`` without leaving a dangling dot.
+    """
+    return _DOT_OR_WS.sub("", s)
+
+
 def sanitize_component(s: str, max_len: int = TITLE_MAX) -> str:
     """Return ``s`` made safe for use as a single path component.
 
@@ -67,13 +79,19 @@ def sanitize_component(s: str, max_len: int = TITLE_MAX) -> str:
     s = unicodedata.normalize("NFKC", s)
     s = _ILLEGAL_RE.sub("-", s)
     s = _WHITESPACE_RE.sub(" ", s)
-    s = s.strip().strip(".").strip()
+    # NTFS forbids trailing dots AND trailing whitespace. A naive
+    # ``.strip().strip(".").strip()`` chain leaves a trailing dot on
+    # inputs like ``"name. .  "`` (strip() removes the spaces, then
+    # strip(".") removes the trailing dot, but the interior ``". "``
+    # remains so the final strip() yields ``"name."``). Strip both
+    # classes together until idempotent.
+    s = _strip_dots_and_whitespace(s)
 
     if not s:
         return "untitled"
 
     if len(s) > max_len:
-        s = s[:max_len].rstrip().rstrip(".").rstrip()
+        s = _strip_dots_and_whitespace(s[:max_len])
         if not s:
             return "untitled"
 

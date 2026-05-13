@@ -40,6 +40,24 @@ class TestSanitizeComponent:
         assert sanitize_component(" hello ") == "hello"
         assert sanitize_component(".hello.") == "hello"
 
+    def test_strips_interleaved_dot_and_space(self):
+        """Regression for HIGH-3 (CODE_REVIEW 2026-05-13).
+
+        The naive ``.strip().strip(".").strip()`` chain leaves a
+        trailing dot on inputs like ``"name. .  "``:
+          .strip()    -> "name. ."
+          .strip(".") -> "name. "
+          .strip()    -> "name."
+        Windows forbids trailing dots, so the on-disk folder name
+        gets silently rewritten and the relpath in meta.json no
+        longer resolves.
+        """
+        assert sanitize_component("name. .  ") == "name"
+        assert sanitize_component("  ..foo..") == "foo"
+        assert sanitize_component(". . . hello . . .") == "hello"
+        assert sanitize_component("..") == "untitled"
+        assert sanitize_component(" . ") == "untitled"
+
     def test_truncates_at_max_len(self):
         s = "a" * 200
         assert len(sanitize_component(s, max_len=80)) == 80
