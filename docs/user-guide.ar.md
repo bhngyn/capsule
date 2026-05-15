@@ -129,7 +129,8 @@ GET  /api/cases       → قائمة بكلّ القضايا مع المعرّف
     ├── Captures/
     │   ├── youtube__veritasium__…__abc123XYZ.page.mhtml
     │   ├── youtube__veritasium__…__abc123XYZ.page.png
-    │   └── youtube__veritasium__…__abc123XYZ.page.warc.gz
+    │   ├── youtube__veritasium__…__abc123XYZ.page.warc.gz
+    │   └── youtube__veritasium__…__abc123XYZ.page.frozen.html  ← عرض بملف واحد
     ├── Media/
     │   ├── youtube__veritasium__…__abc123XYZ.mp4          ← ملف الوسائط
     │   └── youtube__veritasium__…__abc123XYZ.thumbnail.jpg
@@ -153,7 +154,7 @@ GET  /api/cases       → قائمة بكلّ القضايا مع المعرّف
 └── pixiv__user__series_title__dl-2026-05-07__a1b2c3d4e5f6/
     ├── …report.pdf             ← قابل للقراءة + شريط مصغّرات (حتى ٢٠ صورة مصغّرة)
     ├── …manifest.pdf           ← كلّ صورة مدرجة بالبصمات الكاملة
-    ├── Captures/               ← page.mhtml ، page.png ، page.warc.gz
+    ├── Captures/               ← page.mhtml ، page.png ، page.warc.gz ، page.frozen.html
     ├── Media/
     │   ├── …001.jpg            ← الصورة #١
     │   ├── …002.png

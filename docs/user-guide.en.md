@@ -129,7 +129,8 @@ For every item, Capsule writes a self-contained per-item folder:
     ├── Captures/
     │   ├── youtube__veritasium__…__abc123XYZ.page.mhtml
     │   ├── youtube__veritasium__…__abc123XYZ.page.png
-    │   └── youtube__veritasium__…__abc123XYZ.page.warc.gz
+    │   ├── youtube__veritasium__…__abc123XYZ.page.warc.gz
+    │   └── youtube__veritasium__…__abc123XYZ.page.frozen.html  ← single-file view
     ├── Media/
     │   ├── youtube__veritasium__…__abc123XYZ.mp4          ← media file
     │   └── youtube__veritasium__…__abc123XYZ.thumbnail.jpg
@@ -153,7 +154,7 @@ Image-gallery captures share the same per-item folder layout but replace the sin
 └── pixiv__user__series_title__dl-2026-05-07__a1b2c3d4e5f6/
     ├── …report.pdf             ← human-readable + thumbnail strip (up to 20 thumbs)
     ├── …manifest.pdf           ← every image listed with full hashes
-    ├── Captures/               ← page.mhtml, page.png, page.warc.gz
+    ├── Captures/               ← page.mhtml, page.png, page.warc.gz, page.frozen.html
     ├── Media/
     │   ├── …001.jpg            ← image #1
     │   ├── …002.png
