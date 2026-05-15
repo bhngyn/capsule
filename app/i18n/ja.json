@@ -331,6 +331,7 @@
   "download.action.restart.confirm.cancel": "キャンセル",
   "download.stalled.chip": "{seconds, plural, other {停滞中 — # 秒間進行なし}}",
   "download.stalled.aria": "このキャプチャは最近進行していません",
+  "download.stalled.explanation": "最近進行は見られませんが、ジョブはまだ実行中です。本当に動かない場合は「やり直し」を使ってください。",
   "pdf.report.heading.download_options": "ダウンロードオプション",
   "pdf.report.field.download_options.audio_only.label": "音声のみ",
   "pdf.report.field.download_options.audio_only.value": "音声のみ抽出 — ページスナップショットには元の動画が保存されています。",

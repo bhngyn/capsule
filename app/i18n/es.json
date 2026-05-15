@@ -331,6 +331,7 @@
   "download.action.restart.confirm.cancel": "Cancelar",
   "download.stalled.chip": "{seconds, plural, one {Bloqueado — sin progreso durante # segundo} other {Bloqueado — sin progreso durante # segundos}}",
   "download.stalled.aria": "Esta captura no ha avanzado recientemente",
+  "download.stalled.explanation": "Capsule no ha visto progreso recientemente, pero el trabajo sigue ejecutándose. Usa Reiniciar si crees que está realmente bloqueado.",
   "pdf.report.heading.download_options": "Opciones de descarga",
   "pdf.report.field.download_options.audio_only.label": "Solo audio",
   "pdf.report.field.download_options.audio_only.value": "Solo se extrajo el audio — la captura de página conserva el vídeo original.",

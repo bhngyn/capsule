@@ -218,3 +218,52 @@ async def test_reveal_succeeds_with_stubbed_opener(client, monkeypatch, capsule_
     assert body["ok"] is True
     assert spawned and spawned[0][0] in {"open", "explorer", "xdg-open"}
     assert spawned[0][-1].endswith("downloads")
+
+
+# ----------------------------------------------------------------------
+# CLAUDE.md §16 v0.11 bucket 2 #10 — Pydantic Literal[] rejection
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_batch_rejects_unknown_capture_mode(client):
+    """An unknown capture_mode string must be rejected at Pydantic
+    deserialization with 422 — never reach the orchestrator."""
+    resp = await client.post(
+        "/api/jobs/batch",
+        json={
+            "items": [
+                {"url": "https://example.com/one", "capture_mode": "bogus"}
+            ]
+        },
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_batch_accepts_empty_capture_mode_as_none(client):
+    """Frontend sentinel: empty string normalises to None via the
+    ``mode='before'`` validator before the Literal check fires."""
+    resp = await client.post(
+        "/api/jobs/batch",
+        json={
+            "items": [
+                {"url": "https://example.com/one", "capture_mode": ""}
+            ]
+        },
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_batch_accepts_each_valid_capture_mode(client):
+    for mode in ("webpage", "media", "gallery"):
+        resp = await client.post(
+            "/api/jobs/batch",
+            json={
+                "items": [
+                    {"url": f"https://example.com/{mode}", "capture_mode": mode}
+                ]
+            },
+        )
+        assert resp.status_code == 200, (mode, resp.text)

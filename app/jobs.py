@@ -41,6 +41,7 @@ from . import (
     config,
     cookies as cookies_mod,
     db as db_mod,
+    db_retry as db_retry_mod,
     errors as errors_mod,
     gallery_dl_runner,
     network as network_mod,
@@ -234,9 +235,16 @@ def _cleanup_bundle(bundle: UserBrowserBundle) -> None:
 # builder (build_container_argv, build_format_spec) and the JobBatchItem
 # validator share one source of truth — drift here would let an unknown
 # string slip into yt-dlp's argv. None ⇒ "let yt-dlp pick" (back-compat).
+#
+# CLAUDE.md §16 v0.11 bucket 2 #10: ``CaptureMode`` is the typed enum.
+# JobBatchItem uses it via ``Literal[...]``; ``_CAPTURE_MODE_VALUES`` is
+# derived via ``typing.get_args`` so the two layers can't drift.
+from typing import Literal, get_args  # noqa: PLC0415  (placed inline by intent)
+
+CaptureMode = Literal["webpage", "media", "gallery"]
 VIDEO_CONTAINERS: tuple[str, ...] = ("mp4", "webm", "mkv")
 AUDIO_CONTAINERS: tuple[str, ...] = ("mp3", "m4a", "opus", "wav", "flac")
-_CAPTURE_MODE_VALUES: frozenset[str] = frozenset({"webpage", "media", "gallery"})
+_CAPTURE_MODE_VALUES: frozenset[str] = frozenset(get_args(CaptureMode))
 
 
 @dataclass
@@ -592,16 +600,23 @@ def _update_job(
         fields.append("finished_at = ?")
         params.append(job.updated_at)
     params.append(job.id)
-    with conn:
-        conn.execute(f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?", params)
+
+    def _run() -> None:
+        with conn:
+            conn.execute(f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?", params)
+
+    db_retry_mod.db_retry(_run, label=f"_update_job:{job.id}")
 
 
 def _flush_progress(conn: sqlite3.Connection, job_id: str, payload: dict[str, Any]) -> None:
-    with conn:
-        conn.execute(
-            "UPDATE jobs SET progress_json = ?, updated_at = ? WHERE id = ?",
-            (_dumps(payload), _utcnow(), job_id),
-        )
+    def _run() -> None:
+        with conn:
+            conn.execute(
+                "UPDATE jobs SET progress_json = ?, updated_at = ? WHERE id = ?",
+                (_dumps(payload), _utcnow(), job_id),
+            )
+
+    db_retry_mod.db_retry(_run, label=f"_flush_progress:{job_id}")
 
 
 # --- Orchestrator ------------------------------------------------------------
@@ -1366,9 +1381,14 @@ class JobOrchestrator:
                     app_version=postprocess.APP_VERSION,
                 )
             except Exception as exc:
+                # CLAUDE.md §16 v0.11 bucket 2 #5: emit an explicit
+                # "unknown" sentinel so a recipient can tell "Chromium
+                # never started" from a genuine "version 0" string. The
+                # error class + message are already audit-logged below as
+                # ``page.capture_failed``.
                 bundle = capture_mod.CaptureBundle(
                     mhtml=None, screenshot=None, warc=None,
-                    chromium_version="0", browsertrix_version="0",
+                    chromium_version="unknown", browsertrix_version="unknown",
                     page_title=None, response_headers=None,
                 )
                 audit.append(
@@ -1418,6 +1438,64 @@ class JobOrchestrator:
                     details={
                         "job_id": job.id,
                         "timed_out_waits": timed_out,
+                    },
+                )
+            # CLAUDE.md §16 v0.11 bucket 2 #1/#3/#4: forensic failure
+            # markers. Each fires only when the corresponding step was
+            # attempted AND silently swallowed an exception. The page
+            # snapshot still succeeded; these rows tell a recipient
+            # which capture-side mutation didn't fire.
+            if report.warc_in_session_error is not None:
+                audit.append(
+                    conn,
+                    "capture.warc_session_failed",
+                    case_id=case.id,
+                    actor="system",
+                    details={
+                        "job_id": job.id,
+                        "error_class": report.warc_in_session_error,
+                        # bundle.warc is the merged result — present iff
+                        # the browsertrix fallback succeeded.
+                        "fallback_succeeded": bundle.warc is not None,
+                    },
+                )
+            # bundle.warc is None iff BOTH the in-session writer and the
+            # browsertrix fallback failed (or browsertrix wasn't on PATH).
+            # That's the "evidence gap" case — every capture is supposed
+            # to have a WARC per CLAUDE.md §6.
+            if bundle.warc is None:
+                audit.append(
+                    conn,
+                    "capture.warc_missing",
+                    case_id=case.id,
+                    actor="system",
+                    details={
+                        "job_id": job.id,
+                        "in_session_error_class": report.warc_in_session_error,
+                        "browsertrix_version": bundle.browsertrix_version,
+                    },
+                )
+            if report.banner_hide_error is not None:
+                audit.append(
+                    conn,
+                    "capture.banners_hide_failed",
+                    case_id=case.id,
+                    actor="system",
+                    details={
+                        "job_id": job.id,
+                        "error_class": report.banner_hide_error,
+                        "banner_hide_version": report.banner_hide_version,
+                    },
+                )
+            if report.console_sidecar_error is not None:
+                audit.append(
+                    conn,
+                    "capture.console_sidecar_failed",
+                    case_id=case.id,
+                    actor="system",
+                    details={
+                        "job_id": job.id,
+                        "error_class": report.console_sidecar_error,
                     },
                 )
 
@@ -1564,19 +1642,31 @@ class JobOrchestrator:
                     )
                     return
                 if intent == "cancel":
-                    # Best-effort cleanup of the .part file so a future re-capture
-                    # of the same URL doesn't accidentally resume a corrupted blob.
-                    for p in run_result.produced_files:
-                        try:
-                            p.unlink()
-                        except OSError:
-                            pass
+                    # CLAUDE.md §16 v0.11 bucket 2 #6: wipe every .part /
+                    # .ytdl in the case dir, not just files in
+                    # ``produced_files``. The runner's own watchdog uses
+                    # the same helper for ``restart=True`` so a future
+                    # re-capture of the same URL doesn't accidentally
+                    # resume a corrupted blob. The audit row preserves
+                    # the count for chain-of-custody.
+                    wiped_count = ytdlp_runner._wipe_partial_files(
+                        cases.downloads_dir_for(case.slug)
+                    )
                     self._set_status(conn, job, STATUS_CANCELLED)
                     audit.append(
                         conn, "job.cancelled",
                         case_id=case.id, actor="user",
                         details={"job_id": job.id, "from": "running"},
                     )
+                    if wiped_count > 0:
+                        audit.append(
+                            conn, "job.cancelled_cleanup",
+                            case_id=case.id, actor="system",
+                            details={
+                                "job_id": job.id,
+                                "wiped_count": wiped_count,
+                            },
+                        )
                     self._close_channel(job)
                     return
 

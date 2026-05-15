@@ -245,6 +245,14 @@ class CaptureReport:
     warc_record_count: int = 0
     warc_encoding_normalized: bool = False
     warc_format_version: str | None = None
+    # CLAUDE.md §16 v0.11 bucket 2 #1/#3/#4: forensic failure markers.
+    # Each is the exception class name (e.g. "TimeoutError") of the
+    # silently-swallowed step, or None when the step succeeded. The
+    # orchestrator emits a distinct audit row when any of these is set
+    # so a recipient can see WHY a capture-side mutation didn't fire.
+    warc_in_session_error: str | None = None
+    banner_hide_error: str | None = None
+    console_sidecar_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -287,7 +295,10 @@ class CaptureReport:
                 "record_count": self.warc_record_count,
                 "encoding_normalized": self.warc_encoding_normalized,
                 "format_version": self.warc_format_version,
+                "in_session_error": self.warc_in_session_error,
             },
+            "banner_hide_error": self.banner_hide_error,
+            "console_sidecar_error": self.console_sidecar_error,
         }
         return out
 
@@ -954,6 +965,13 @@ async def _playwright_snapshot(
     warc_format_version: str | None = None
     warc_in_session = False
     warcio_v: str | None = None
+    # CLAUDE.md §16 v0.11 bucket 2 #1/#3/#4: capture the exception class
+    # name of any silently-swallowed step so the orchestrator can emit a
+    # distinct audit row. None means the step either succeeded or did not
+    # run.
+    warc_in_session_error: str | None = None
+    banner_hide_error: str | None = None
+    console_sidecar_error: str | None = None
 
     render_wait_started = _time.monotonic()
 
@@ -1082,7 +1100,8 @@ async def _playwright_snapshot(
                             target_uri=url,
                         )
                         await warc_writer.__aenter__()
-                except Exception:
+                except Exception as exc:
+                    warc_in_session_error = type(exc).__name__
                     warc_writer = None  # falls back to browsertrix subprocess
 
             goto_kwargs: dict[str, Any] = {
@@ -1115,8 +1134,9 @@ async def _playwright_snapshot(
                 try:
                     await page.add_style_tag(content=rules_b.css)
                     banner_hide_applied = True
-                except Exception:
+                except Exception as exc:
                     banner_hide_applied = False
+                    banner_hide_error = type(exc).__name__
 
             # Tier A — promote loading="lazy" → eager so subsequent
             # scroll surfaces every below-the-fold image on the wire.
@@ -1274,8 +1294,13 @@ async def _playwright_snapshot(
                     warc_encoding_normalized = res.encoding_normalized
                     warc_format_version = res.format_version
                     warc_in_session = res.record_count > 0
-                except Exception:
+                except Exception as exc:
                     warc_in_session = False
+                    # Only set if not already populated by the setup path —
+                    # the original exception is more informative than the
+                    # __aexit__ failure that followed it.
+                    if warc_in_session_error is None:
+                        warc_in_session_error = type(exc).__name__
         finally:
             await browser.close()
 
@@ -1289,7 +1314,8 @@ async def _playwright_snapshot(
             }, ensure_ascii=False, separators=(",", ":")),
             encoding="utf-8",
         )
-    except Exception:
+    except Exception as exc:
+        console_sidecar_error = type(exc).__name__
         console_path = None  # type: ignore[assignment]
 
     # Sanitize the HAR Playwright wrote — strip Cookie/Set-Cookie/Authorization
@@ -1305,6 +1331,18 @@ async def _playwright_snapshot(
         # to hash a zero-record archive.
         with __import__("contextlib").suppress(Exception):
             warc_path.unlink()
+
+    # CLAUDE.md §16 v0.11 bucket 2 #4: if the console sidecar write
+    # failed, the message count + error count in meta.json must NOT
+    # claim values for an absent sidecar — that's a forensic inconsistency
+    # a recipient can't reconcile. Zero them out so the absence of the
+    # file matches the zero count.
+    if console_sidecar_error is not None:
+        console_message_count_out = 0
+        console_error_count_out = 0
+    else:
+        console_message_count_out = len(console_events)
+        console_error_count_out = error_count
 
     report = CaptureReport(
         render_waits=waits,
@@ -1322,8 +1360,8 @@ async def _playwright_snapshot(
         iframes_seen=iframes_seen,
         screenshot_truncated_at_px=screenshot_truncated_at_px,
         readiness_timed_out=readiness_timed_out,
-        console_message_count=len(console_events),
-        console_error_count=error_count,
+        console_message_count=console_message_count_out,
+        console_error_count=console_error_count_out,
         response=response_block,
         media_context_captured=media_context_captured,
         media_context_selector=media_context_selector,
@@ -1331,6 +1369,9 @@ async def _playwright_snapshot(
         warc_record_count=warc_record_count,
         warc_encoding_normalized=warc_encoding_normalized,
         warc_format_version=warc_format_version,
+        warc_in_session_error=warc_in_session_error,
+        banner_hide_error=banner_hide_error,
+        console_sidecar_error=console_sidecar_error,
     )
     return {
         "mhtml": mhtml_path,

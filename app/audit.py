@@ -30,6 +30,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from . import db_retry as _db_retry
+
 __all__ = [
     "ZERO_HASH",
     "FORBIDDEN_DETAIL_SUBSTRING",
@@ -159,26 +161,30 @@ def append(
         "prev_hash": prev_hash,
     }
     rh = row_hash_for(row)
-    with conn:
-        cur = conn.execute(
-            """
-            INSERT INTO audit_log
-                (timestamp, action, case_id, download_id, actor,
-                 details_json, prev_hash, row_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                row["timestamp"],
-                row["action"],
-                row["case_id"],
-                row["download_id"],
-                row["actor"],
-                row["details_json"],
-                row["prev_hash"],
-                rh,
-            ),
-        )
-    return int(cur.lastrowid or 0)
+
+    def _insert() -> int:
+        with conn:
+            cur = conn.execute(
+                """
+                INSERT INTO audit_log
+                    (timestamp, action, case_id, download_id, actor,
+                     details_json, prev_hash, row_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["timestamp"],
+                    row["action"],
+                    row["case_id"],
+                    row["download_id"],
+                    row["actor"],
+                    row["details_json"],
+                    row["prev_hash"],
+                    rh,
+                ),
+            )
+        return int(cur.lastrowid or 0)
+
+    return _db_retry.db_retry(_insert, label=f"audit.append:{action}")
 
 
 def verify_chain(conn: sqlite3.Connection) -> tuple[bool, int | None]:

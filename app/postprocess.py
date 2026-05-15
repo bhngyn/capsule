@@ -35,6 +35,7 @@ Errors:
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import hashlib
 import json
@@ -342,8 +343,31 @@ def _resolve_collisions(case_dir: Path, stem: str) -> str:
 
 
 def _move_into(target_dir: Path, source: Path, new_name: str | None = None) -> Path:
+    """Move ``source`` into ``target_dir`` and return the resolved path.
+
+    CLAUDE.md §16 v0.11 bucket 2 #9: if the destination already exists
+    (concurrent postprocess on the same ``url_hash``, or a partial
+    rollback that left an artifact behind), suffix the file stem with
+    ``__c2``/``__c3``/… instead of silently overwriting via
+    ``shutil.move``. Both the meta.json relpath and the on-disk filename
+    pick up the suffix together — they stay synchronised because we
+    return the resolved Path.
+    """
     target_dir.mkdir(parents=True, exist_ok=True)
-    dest = target_dir / (new_name or source.name)
+    desired = new_name or source.name
+    dest = target_dir / desired
+    if dest.exists():
+        stem = dest.stem
+        suffix = dest.suffix
+        # Split on the *last* dot so a name like ``foo.tar.gz`` keeps
+        # the ``.gz`` and renames ``foo.tar`` → ``foo.tar__c2``.
+        i = 2
+        while True:
+            candidate = target_dir / f"{stem}__c{i}{suffix}"
+            if not candidate.exists():
+                dest = candidate
+                break
+            i += 1
     shutil.move(str(source), str(dest))
     return dest
 
@@ -568,6 +592,34 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             dest = _move_into(captures_dir, src, new_name=named)
             moved.append(dest)
             artifacts[role] = paths.relative_to_downloads(dest)
+
+        # CLAUDE.md §16 v0.11 bucket 2 #2: confirm the HAR was redacted
+        # before we hash and sign it. ``capture._redact_har_in_place``
+        # stamps ``log._capsule_redacted_header_count`` on success. If
+        # the marker is missing, the HAR may still carry Cookie /
+        # Set-Cookie / Authorization headers — never ship that as
+        # evidence. Delete the sidecar, drop the role, and the audit
+        # row that fires below records the chain-of-custody.
+        har_redaction_failed = False
+        if "page_har" in artifacts:
+            har_rel = artifacts["page_har"]
+            har_abs = config.DOWNLOADS_DIR / har_rel
+            marker_present = False
+            try:
+                har_payload = json.loads(har_abs.read_text(encoding="utf-8"))
+                log = har_payload.get("log") if isinstance(har_payload, dict) else None
+                if isinstance(log, dict) and "_capsule_redacted_header_count" in log:
+                    marker_present = True
+            except (OSError, ValueError):
+                marker_present = False
+            if not marker_present:
+                har_redaction_failed = True
+                with contextlib.suppress(OSError):
+                    har_abs.unlink()
+                # Keep ``moved`` consistent so the rollback path doesn't
+                # try to re-delete a file we already unlinked.
+                moved = [p for p in moved if p != har_abs]
+                artifacts.pop("page_har", None)
 
         # Step 5a: hash every non-PDF artifact. The two PDFs (report
         # rendered next, manifest after) are hashed afterwards so the
@@ -1016,6 +1068,19 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                         {"name": w.get("name"), "ok": w.get("ok"), "timed_out": w.get("timed_out")}
                         for w in (capture_block.get("render_waits") or [])
                     ],
+                },
+            )
+        # CLAUDE.md §16 v0.11 bucket 2 #2: HAR sidecar was missing the
+        # ``_capsule_redacted_header_count`` marker, so we deleted it
+        # rather than ship potentially un-redacted Cookie/Authorization
+        # headers as evidence. The audit row records the gap.
+        if har_redaction_failed:
+            audit.append(
+                conn, "capture.har_redaction_failed",
+                case_id=case.id, download_id=download_id, actor="system",
+                details={
+                    "stem": stem,
+                    "action_taken": "har_sidecar_deleted",
                 },
             )
 

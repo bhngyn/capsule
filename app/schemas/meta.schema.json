@@ -206,8 +206,20 @@
               "type": "boolean",
               "description": "True iff response bodies were normalized to Content-Encoding: identity (CDP returns decoded bodies). False for browsertrix subprocess captures (those record on-the-wire bytes)."
             },
-            "format_version": { "type": ["string", "null"] }
+            "format_version": { "type": ["string", "null"] },
+            "in_session_error": {
+              "type": ["string", "null"],
+              "description": "Exception class name when the in-session CDP→WARC writer was silently swallowed (CLAUDE.md §16 v0.11 bucket 2 #1). ``null`` when the writer either succeeded or wasn't attempted. v10."
+            }
           }
+        },
+        "banner_hide_error": {
+          "type": ["string", "null"],
+          "description": "Exception class name when the cookie/consent banner CSS injection failed (CLAUDE.md §16 v0.11 bucket 2 #3). ``null`` when injection succeeded or banner-hide was disabled. v10."
+        },
+        "console_sidecar_error": {
+          "type": ["string", "null"],
+          "description": "Exception class name when the page.console.json sidecar write failed (CLAUDE.md §16 v0.11 bucket 2 #4). When set, console_message_count and console_error_count are forced to 0 so the absence of the sidecar matches the count. v10."
         },
         "stalled_count": {
           "type": "integer",

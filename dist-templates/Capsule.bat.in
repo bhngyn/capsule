@@ -150,17 +150,59 @@ if defined EXISTS (
 )
 
 if "!NEED_RUN!"=="1" (
+  rem CLAUDE.md §16 v0.11 bucket 1 #2: capture stderr so we can
+  rem translate Docker's most common failures into investigator-
+  rem friendly hints instead of dumping the raw text.
+  set "ERR_TMP=%TEMP%\capsule-launcher-%RANDOM%.err"
   docker run -d --name %CONTAINER% --restart no ^
     -p %PORT%:8080 ^
     -v "%DOWNLOADS%:/downloads" ^
     -v "%CONFIG%:/config" ^
     -e "CAPSULE_HOST_DOWNLOADS_DIR=%DOWNLOADS%" ^
-    %IMAGE_TAG% >nul
+    %IMAGE_TAG% >nul 2>"!ERR_TMP!"
   if errorlevel 1 (
-    echo Failed to start Capsule. Check Docker Desktop.
+    findstr /i /c:"address already in use" /c:"port is already allocated" "!ERR_TMP!" >nul
+    if not errorlevel 1 (
+      echo Port %PORT% on your computer is already taken.
+      echo.
+      echo Two common causes:
+      echo   - A previous Capsule container is still running. Stop it with:
+      echo       docker rm -f %CONTAINER%
+      echo   - Another local app is bound to %PORT%. Use a different port:
+      echo       edit this launcher and change "-p %PORT%:8080" to "-p 9090:8080",
+      echo       then open http://localhost:9090 instead.
+      echo.
+      echo Docker's exact message:
+      type "!ERR_TMP!"
+    ) else (
+      findstr /i /c:"permission denied" "!ERR_TMP!" >nul
+      if not errorlevel 1 (
+        echo Windows denied access to one of the folders this launcher tried to mount.
+        echo.
+        echo Right-click the Capsule folder, Properties -^> Security, and confirm
+        echo your user has read/write. Re-run this launcher afterwards.
+        echo.
+        echo Docker's exact message:
+        type "!ERR_TMP!"
+      ) else (
+        findstr /i /c:"Cannot connect to the Docker daemon" /c:"daemon socket" "!ERR_TMP!" >nul
+        if not errorlevel 1 (
+          echo Lost the connection to Docker Desktop mid-launch. Open Docker
+          echo Desktop, wait until the whale icon settles, then re-run this launcher.
+          echo.
+          echo Docker's exact message:
+          type "!ERR_TMP!"
+        ) else (
+          echo Capsule could not start. Docker's message:
+          type "!ERR_TMP!"
+        )
+      )
+    )
+    del "!ERR_TMP!" >nul 2>&1
     pause
     exit /b 1
   )
+  del "!ERR_TMP!" >nul 2>&1
   echo Capsule started.
 )
 

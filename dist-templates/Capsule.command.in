@@ -152,14 +152,71 @@ fi
 mkdir -p "$DOWNLOADS" "$CONFIG"
 
 start_fresh() {
-  docker run -d \
-    --name "$CONTAINER" \
-    --restart no \
-    -p "${PORT}:8080" \
-    -v "$DOWNLOADS:/downloads" \
-    -v "$CONFIG:/config" \
-    -e "CAPSULE_HOST_DOWNLOADS_DIR=$DOWNLOADS" \
-    "$IMAGE_TAG" >/dev/null
+  # Capture stderr so common failures translate to investigator-friendly
+  # text (CLAUDE.md §16 v0.11 bucket 1 #2). On success, the container id
+  # goes to /dev/null. Exit 0 → caller continues; exit 1 → caller already
+  # printed the translated message and we leave the launcher to exit.
+  local err_tmp
+  err_tmp="$(mktemp -t capsule-launcher.XXXXXX)"
+  if docker run -d \
+        --name "$CONTAINER" \
+        --restart no \
+        -p "${PORT}:8080" \
+        -v "$DOWNLOADS:/downloads" \
+        -v "$CONFIG:/config" \
+        -e "CAPSULE_HOST_DOWNLOADS_DIR=$DOWNLOADS" \
+        "$IMAGE_TAG" >/dev/null 2>"$err_tmp"
+  then
+    rm -f "$err_tmp"
+    return 0
+  fi
+  local err
+  err="$(cat "$err_tmp")"
+  rm -f "$err_tmp"
+  case "$err" in
+    *"address already in use"*|*"port is already allocated"*)
+      cat <<MSG
+Port ${PORT} on your computer is already taken by another app.
+
+Two common causes:
+  - A previous Capsule container is still running. Stop it with:
+      docker rm -f $CONTAINER
+  - Another local web app is bound to ${PORT}. Use a different port:
+      edit this launcher and change "-p ${PORT}:8080" to "-p 9090:8080",
+      then open http://localhost:9090 instead.
+
+Docker's exact message:
+$err
+MSG
+      ;;
+    *"permission denied"*)
+      cat <<MSG
+macOS denied access to one of the folders this launcher tried to mount.
+
+Open System Settings -> Privacy & Security -> Files and Folders and
+make sure Docker has access to your Documents folder. Then re-run this
+launcher.
+
+Docker's exact message:
+$err
+MSG
+      ;;
+    *"Cannot connect to the Docker daemon"*|*"daemon socket"*)
+      cat <<MSG
+Lost the connection to Docker Desktop mid-launch. Open Docker Desktop,
+wait until the whale icon settles, then re-run this launcher.
+
+Docker's exact message:
+$err
+MSG
+      ;;
+    *)
+      echo "Capsule could not start. Docker's message:"
+      echo "$err"
+      ;;
+  esac
+  read -n 1 -s -r -p "Press any key to close..."; echo
+  exit 1
 }
 
 # 0 iff the named container has a host-port binding for $PORT/tcp.

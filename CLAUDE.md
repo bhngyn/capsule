@@ -59,21 +59,34 @@ This release assumes a **safe operating environment**: the investigator's device
 │  Docker container (single image, ~1.7GB; investigator-grade) │
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │  FastAPI backend (Python 3.12)                         │  │
-│  │  ─ /api/cases             POST/GET — list + create     │  │
-│  │  ─ /api/jobs/batch        POST — submit captures       │  │
-│  │  ─ /api/jobs/{id}/events  SSE — live progress          │  │
-│  │  ─ /api/library           GET — browse captures        │  │
-│  │  ─ /api/library/verify    POST — re-hash + sig check   │  │
-│  │  ─ /api/cases/{id}/export POST — signed zip + PDF      │  │
-│  │  ─ /api/audit             GET — append-only audit log  │  │
-│  │  ─ /api/cookies           POST — upload cookies.txt    │  │
-│  │  ─ /api/cookies/json      POST — extension cookies     │  │
-│  │  ─ /api/system/version    GET                          │  │
-│  │  ─ /api/system/profile    GET/PUT — speed profile      │  │
-│  │  ─ /api/system/reveal     POST — open folder           │  │
-│  │  ─ /api/system/update     POST — only when user clicks │  │
-│  │  ─ /api/i18n/{lang}       GET                          │  │
-│  │  ─ /api/extension/*       pair / capture / cases       │  │
+│  │  ─ /api/cases                  POST/GET — list+create  │  │
+│  │  ─ /api/cases/{id}/clear       POST — destructive wipe │  │
+│  │  ─ /api/cases/{id}/export      POST — signed zip+PDF   │  │
+│  │  ─ /api/jobs/batch             POST — submit captures  │  │
+│  │  ─ /api/jobs/preflight         POST — dedup probe (v0.4)│ │
+│  │  ─ /api/jobs/duplicate-outcome POST — modal report     │  │
+│  │  ─ /api/jobs/{id}/events       SSE  — live progress    │  │
+│  │  ─ /api/jobs/{id}/{pause,resume,cancel,restart} (v0.7) │  │
+│  │  ─ /api/library                GET  — browse captures  │  │
+│  │  ─ /api/library/verify         POST — re-hash+sig check│  │
+│  │  ─ /api/audit                  GET  — append-only log  │  │
+│  │  ─ /api/cookies                POST — upload .txt      │  │
+│  │  ─ /api/cookies/json           POST — extension cookies│  │
+│  │  ─ /api/system/version         GET                     │  │
+│  │  ─ /api/system/profile         GET/PUT — speed profile │  │
+│  │  ─ /api/system/reveal          POST — open folder      │  │
+│  │  ─ /api/system/update          POST — user-click only  │  │
+│  │  ─ /api/system/updates         GET  — cached state v0.10│ │
+│  │  ─ /api/system/updates/check   POST — refresh registry │  │
+│  │  ─ /api/system/updates/auto_check PUT  — opt-out toggle│  │
+│  │  ─ /api/system/updates/dismiss_banner POST — audit only│  │
+│  │  ─ /api/i18n/{lang}            GET                     │  │
+│  │  ─ /api/extension/pair         POST — token mint       │  │
+│  │  ─ /api/extension/pair/{id}/rotate POST — rotate token │  │
+│  │  ─ /api/extension/pair/{id}    DELETE — revoke         │  │
+│  │  ─ /api/extension/tokens       GET  — list paired      │  │
+│  │  ─ /api/extension/capture      POST — submit from ext  │  │
+│  │  ─ /api/extension/cases        GET  — case picker      │  │
 │  └────────────────────────────────────────────────────────┘  │
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │  Capture pipeline (per job, sequential, every URL):    │  │
@@ -337,13 +350,13 @@ For every capture, all files live together in `/downloads/{case_slug}/{stem}/`. 
 | `Captures/{stem}.user-browser.dom-snapshot.html`   | Extension live capture | Click-time `document.documentElement.outerHTML` from the user's authenticated browser. Distinct from the Playwright MHTML — locks in exactly what the investigator was looking at. (v2)                                                                                                                                          |
 | `Captures/{stem}.user-browser.dom-snapshot.json`   | Extension live capture | Structural counts that go with the DOM HTML (node count, iframe count, video count, image total + visible). (v2)                                                                                                                                                                                                                  |
 
-`{stem}.meta.json` is the canonical record. Schema lives at `/app/schemas/meta.schema.json` and is versioned (`"schema_version": 9` for new captures; v2–v8 records continue to validate). When the schema changes, write a migration. v2 (hardening pass) adds:
+`{stem}.meta.json` is the canonical record. Schema lives at `/app/schemas/meta.schema.json` and is versioned (`"schema_version": 10` for new captures; v2–v9 records continue to validate). When the schema changes, write a migration. v2 (hardening pass) adds:
 
 - `capture` — the capture report: render-wait outcomes (`load`, `fonts`, `images`, `video`, `lazy_load`, `networkidle`), blocked-request count + sample, `blocklist_version`, `banner_hide_applied`, `banner_hide_version`, `tab_context_used`.
 - `cookies_snapshot_sha256` — SHA-256 of the cookies file the job consumed; binds the capture to the exact cookie set without ever logging values.
 - `ephemeral_cookies_used` — true iff the job used a one-shot ephemeral cookie file (extension-supplied, never persisted to the case directory).
 
-v3 (Track A) adds the `manifest_pdf` artifact role + checksum and `capture.report_lang`. v4 adds the `report_pdf` artifact role + checksum (the per-item human-readable report PDF). Both PDFs are referenced by hash in `meta.json` and therefore transitively signed by `meta.json.sig` — no extra signing path required. v5 adds `url_canonical` and `force_recapture_index` for the §15 dedup pass. v6 (Gallery pass v0.5) adds the `gallery` capture_kind plus `gallery_count`, `gallery_extractor`, `tools.gallery_dl_version`, `capture.gallery_attempted`, `capture.gallery_outcome`, and the `gallery_NNN` / `gallery_NNN_meta` / `gallery_info` artifact roles. v7 (Page-preservation hardening v0.6) adds the `capture.warc` sub-block, `capture.response`, the `page_har` / `page_console` / `page_context_screenshot` artifact roles, and `tools.warcio_version`. v8 (Download options + reliability v0.7) adds the `download_options` block (`audio_only`, `quality_cap`, `subtitle_langs`, `restart_count`) and `capture.stalled_count`. v9 (Format choice v0.9) adds `download_options.video_container` and `download_options.audio_container`.
+v3 (Track A) adds the `manifest_pdf` artifact role + checksum and `capture.report_lang`. v4 adds the `report_pdf` artifact role + checksum (the per-item human-readable report PDF). Both PDFs are referenced by hash in `meta.json` and therefore transitively signed by `meta.json.sig` — no extra signing path required. v5 adds `url_canonical` and `force_recapture_index` for the §15 dedup pass. v6 (Gallery pass v0.5) adds the `gallery` capture_kind plus `gallery_count`, `gallery_extractor`, `tools.gallery_dl_version`, `capture.gallery_attempted`, `capture.gallery_outcome`, and the `gallery_NNN` / `gallery_NNN_meta` / `gallery_info` artifact roles. v7 (Page-preservation hardening v0.6) adds the `capture.warc` sub-block, `capture.response`, the `page_har` / `page_console` / `page_context_screenshot` artifact roles, and `tools.warcio_version`. v8 (Download options + reliability v0.7) adds the `download_options` block (`audio_only`, `quality_cap`, `subtitle_langs`, `restart_count`) and `capture.stalled_count`. v9 (Format choice v0.9) adds `download_options.video_container` and `download_options.audio_container`. v10 (Capture mode + routing knobs v0.11) adds `download_options.capture_mode` (`"webpage" | "media" | "gallery" | null`) and `download_options.force_gallery_run` (bool). v10 records are emitted unconditionally by [`postprocess.finalize`](app/postprocess.py); v2–v9 records on disk continue to validate without modification.
 
 The new sidecars are referenced by hash in `meta.json` and therefore transitively signed by `meta.json.sig` — no extra signing path required.
 
@@ -851,8 +864,70 @@ CLAUDE.md §1 problem #2 ("Updates are a barrier") was only half-solved through 
 - **i18n** — new keys under `settings.update.*`, `home.banner.*`, `errors.update.*`, `header.settings.updates_available_aria`. All four bundles (en/ja/ar/es) updated; Arabic uses six-form plurals (`zero`/`one`/`two`/`few`/`many`/`other`) for the "N updates available" plural per CLAUDE.md §4.5.
 - **Tests** — [`tests/test_updates.py`](tests/test_updates.py) covers the registry, settings round-trip, atomic cache write, `fetch_latest` with mocked PyPI + GitHub responses, `compute_components_view`, and `auto_check_on_launch` honouring the toggle + swallowing network errors. [`tests/test_main_updates.py`](tests/test_main_updates.py) drives the HTTP routes via `httpx.ASGITransport`. [`tests/test_auto_check.py`](tests/test_auto_check.py) confirms the lifespan task fires when enabled, skips when disabled, and never blocks startup on network failure. Network is stubbed at the `urllib.request.urlopen` boundary; no real socket is opened during tests.
 
+### Capture mode + routing knobs (v0.11)
+
+Through v0.10, the orchestrator's Phase-2 → Phase-3 sequence was hard-coded: yt-dlp ran first for every URL; gallery-dl only fired when yt-dlp produced zero files. That collapses two real investigator workflows into one. A page like a Pixiv post with an embedded ugoira video, or a journalist's tweet with a 12-image carousel and an attached clip, needs **both** runners. Conversely, an investigator who already knows the source is a media-free image gallery wastes 30s of yt-dlp wall-time before the gallery-dl fallback engages. v0.11 surfaces routing as a first-class knob on the Advanced disclosure, plus a "always run gallery-dl too" opt-in. The forensic stance is unchanged: the page snapshot package (MHTML/PNG/WARC) is identical across modes; only the *download* phase differs, and the user's pick is bound to `meta.json` transitively via `meta.json.sig`.
+
+- **`DownloadOptions.capture_mode`** ([`app/jobs.py:279`](app/jobs.py:279)) — `"webpage" | "media" | "gallery" | None`. Validated against `_CAPTURE_MODE_VALUES` in [`DownloadOptions.from_dict`](app/jobs.py:327). Routing semantics in [`JobOrchestrator._dispatch`](app/jobs.py:1507):
+  - `"webpage"` — skip yt-dlp entirely; always run gallery-dl. Use when the URL is a known image-only source and the investigator doesn't want yt-dlp's 30s probe.
+  - `"media"` — run yt-dlp only; never fall back to gallery-dl. Use when the URL is unambiguously a video and a stray photo gallery would be confusing.
+  - `"gallery"` — alias of `"webpage"` (skip yt-dlp; jump straight to gallery-dl). Kept as a distinct enum so future routing changes can split them.
+  - `None` (default) — yt-dlp first, gallery-dl fallback when yt-dlp produces zero files (legacy v0.5 behavior). The default exists so existing capture flows are unchanged.
+- **`DownloadOptions.force_gallery_run`** ([`app/jobs.py:275`](app/jobs.py:275)) — boolean opt-in that runs gallery-dl **alongside** yt-dlp (not as a fallback). Combines with `capture_mode=None` to capture both sides of a hybrid page. The "Always run gallery-dl too" switch in [`index.html:397-406`](app/static/index.html:397) drives this flag.
+- **Schema v10** — additive only. [`app/schemas/meta.schema.json`](app/schemas/meta.schema.json) adds `download_options.capture_mode` (anyOf null|enum) and `download_options.force_gallery_run` (bool). [`postprocess.finalize`](app/postprocess.py) emits `schema_version: 10` going forward; v2–v9 records on disk continue to validate without modification.
+- **Frontend** — [`app/static/index.html:296-313`](app/static/index.html:296) renders the capture-mode segmented pill (icon-led: `globe` / `monitor` / `images`) inside the Advanced disclosure; the force-gallery-run switch sits at [`app/static/index.html:397-406`](app/static/index.html:397). Both persist to `localStorage` as part of `capsule.downloadOptions`. The disclosure auto-opens when any knob is non-default via [`hasNonDefaultDownloadOptions`](app/static/app.js).
+- **No new audit actions** — the existing `download.options_applied` row carries `capture_mode` + `force_gallery_run` automatically through [`DownloadOptions.to_dict`](app/jobs.py:294).
+- **i18n** — new keys under `download.options.capture_mode.{label,aria,option.{webpage,media,gallery}}` and `download.options.force_gallery_run.{label,aria}`. All four bundles (en/ja/ar/es) updated.
+- **No DB migration** — `download_options_json` is a free-form JSON blob, so v10 fields ride through without a schema migration.
+
 ## 16. Still open
+
+The two long-standing items at the top are deferred design work (or feature work waiting on corpus evidence). The three buckets below are the **v0.11 hardening backlog** — drift surfaced during the v0.11 audit. Each entry points to file:line and a one-line "why it matters." Knock items down in priority order; mark them complete by deleting from this list.
 
 - **RFC 3161 trusted timestamping** — deferred to v2 as opt-in.
 - **Drop `browsertrix-crawler` from the Docker image** — the v0.6 in-session CDP→WARC writer now produces the WARC for every capture; browsertrix only fires as a fallback when warcio is missing or the writer raises. Once we have a release's worth of corpus data showing the in-session path is robust across our target sites, the binary can leave the image (saves ~150 MB on disk) and the fallback can become "no WARC, use the existing `page.capture_failed` audit row." Tracked here so the Dockerfile and the §"Hardening pass (v0.6)" entry are removed in lockstep.
 - **End-to-end WARC validity test** — the v0.6 unit tests cover the warc_writer helpers (header filtering, encoding rewrite, HTTP wire-format reconstruction). A fixture-driven test that drives a real Playwright session against a static HTML page, runs `warcio check` over the output, and replays it via [replayweb.page](https://replayweb.page) is still TODO. Should land before the browsertrix removal above.
+
+### v0.11 backlog — "Just works" gaps (highest investigator impact)
+
+First-run and UX failures that surface to a non-technical user as a wall of text or a silently-wrong UI state. These are the items most likely to make a user give up before they ever capture their first URL.
+
+- **README has no Troubleshooting section** ([`README.md`](README.md)). CLAUDE.md §14 requires guidance for the three most common first-run failures: port 8080 already in use, bind-mount permission denied, Docker Desktop not running. Without it, the rendered launcher errors are raw Docker stderr in English.
+- **Dist launchers don't translate Docker failures** ([`dist-templates/Capsule.command.in`](dist-templates/Capsule.command.in), [`dist-templates/Capsule.bat.in`](dist-templates/Capsule.bat.in)). Detect the common cases (`Cannot connect to the Docker daemon`, `bind: address already in use`, `permission denied while trying to connect`) and render an investigator-friendly hint with a retry suggestion.
+- **No contextual "Check for yt-dlp update?" CTA on extractor-failure cards.** CLAUDE.md §4.4 specifies this contextual prompt; the current error card ([`index.html:625-670`](app/static/index.html:625)) shows a generic Retry button regardless of error pattern. The "extractor outdated" patterns in [`app/errors.py`](app/errors.py) should drive a distinct CTA on the error card.
+- **Tier-2 update error path unwired in UI.** The i18n key `errors.update.requires_image_rebuild` exists but no frontend branch displays it when `POST /api/system/update?component=capsule` returns 400. The user clicking a hypothetical "Update Capsule" button (or any caller that misroutes) would see the raw error, not localized copy.
+- **Stalled-job amber chip lacks a non-fatal explanation.** Per CLAUDE.md §15 v0.7 ("**No SIGTERM** — stall is a UI signal"), but the chip aria-label and tooltip don't tell the user the job hasn't been killed. Non-technical investigators assume "Stalled" = "Failed" and abandon a recoverable job.
+- **Recent-captures open-folder action is always-visible** ([`index.html:715-718`](app/static/index.html:715)) instead of the hover-revealed action that CLAUDE.md §15 v0.4 specifies. Visual hierarchy shift; not a forensic gap.
+- **First-paint FOUC for RTL locales** ([`index.html:2`](app/static/index.html:2)). `<html dir="ltr">` is hardcoded; [`app.js:1707`](app/static/app.js:1707) flips it after Alpine boots, but Arabic users see an LTR flash before hydration. An inline `<script>` head block that reads `localStorage.getItem('capsule.locale')` and sets `dir` before paint closes the gap.
+
+### v0.11 backlog — Forensic chain-of-custody gaps
+
+Silent failures in the capture pipeline that don't surface to the user AND don't appear in the audit log. A recipient inspecting the evidence months later has no record that something went wrong.
+
+- **WARC double-fallback has no `capture.warc_missing` audit row** ([`capture.py:1085-1086`](app/capture.py:1085)). If the in-session CDP writer raises *and* the browsertrix fallback also fails, the `warc_captured_in_session: false` flag is the only signal — there's no audit row recording "WARC was attempted and we have nothing."
+- **HAR redaction failure silently swallowed** ([`capture.py:1299-1300`](app/capture.py:1299)) — `except Exception: pass`. If `_redact_har_in_place` raises, the HAR sidecar is left on disk **with potentially unredacted Cookie / Set-Cookie / Authorization headers**. No audit row, no version recorded.
+- **Banner-hide CSS injection failure swallowed** ([`capture.py:1115-1119`](app/capture.py:1115)). The catch sets `banner_hide_applied=False` without distinguishing "CSS injected successfully" from "injection failed; the visible page may differ from MHTML." Recipient can't tell.
+- **Console-log sidecar write failure** ([`capture.py:1284-1293`](app/capture.py:1284)) sets `console_path = None` on OSError while `console_message_count` is still emitted in `meta.json`. Recipient sees a count but no sidecar — forensic inconsistency.
+- **Stub `CaptureBundle` uses `chromium_version="0"` on exception** ([`jobs.py:1369-1373`](app/jobs.py:1369)). The recipient can't tell "Chromium never started" from "unknown version."
+- **Cancel during yt-dlp leaves orphan `.part`/`.ytdl` files** ([`jobs.py:1569-1573`](app/jobs.py:1569)) — cleanup is best-effort with `except OSError: pass` and no audit row enumerates what survived. Restart-after-cancel can then resume against unexpected leftovers.
+- **Stall-counter persistence races** ([`jobs.py:2175-2206`](app/jobs.py:2175)). `download_options.stalled_count` increments in memory but DB persist failures log a warning and continue without retry. Same shape for `restart_count`. The audit log loses forensic counters on flaky DB writes.
+- **No retry around audit/DB writes on `OperationalError`.** Single-investigator usage masks this, but Windows AV scans and external backup tools trigger SQLite busy errors that silently drop audit rows. Wrap [`audit.append`](app/audit.py) callsites and orchestrator DB updates with a bounded retry on `sqlite3.OperationalError`.
+- **`_move_into` is not atomic** ([`postprocess.py:344-348`](app/postprocess.py:344)). The DB UNIQUE constraint usually prevents collisions before the move, but concurrent postprocess on the same `url_hash` (e.g. extension submission racing a UI submission) can clobber. Add an explicit pre-move existence check + collision-suffix path.
+- **Capture-mode enum validation only in `from_dict`** ([`jobs.py:327`](app/jobs.py:327)) — no validation at the FastAPI endpoint boundary in [`main.py`](app/main.py). If the frontend `_CAPTURE_MODES` drifts from the backend `_CAPTURE_MODE_VALUES`, unknown strings could reach the orchestrator. Validate at deserialization with a Pydantic `Literal[...]` instead of post-hoc.
+
+### v0.11 backlog — Edge-case test coverage (files that should exist)
+
+The test suite has 539 tests across 42 files but skips entire failure classes. Each file below should be created and seeded with at least the listed cases. Prioritize by how often the failure mode bites users on real machines.
+
+- **[`tests/test_capture_io_failures.py`](tests/test_capture_io_failures.py)** — ENOSPC mid-WARC, EMFILE (inotify exhaustion), bind-mount permission denied, symlink loops, stale NFS.
+- **[`tests/test_windows_portability.py`](tests/test_windows_portability.py)** — trailing-dot/space sanitization edge cases beyond what [`test_sanitize.py`](tests/test_sanitize.py) covers, 260-char path limit + long-path opt-in, NTFS case-insensitivity collisions (`Case` vs `case`).
+- **[`tests/test_unicode_robustness.py`](tests/test_unicode_robustness.py)** — combining diacritics that decompose under NFKC, ZWJ grapheme-cluster boundaries during 80-char truncation, RTL-mark injection (U+202E/U+202D) in titles.
+- **[`tests/test_capture_crash_recovery.py`](tests/test_capture_crash_recovery.py)** — Chromium OOM mid-screenshot, sandbox violation returning empty PNG, Playwright context closed mid-`goto`, WARC writer mid-stream when MHTML save raises.
+- **[`tests/test_evidence_recipient_compat.py`](tests/test_evidence_recipient_compat.py)** — bundled [`verify.py.tmpl`](app/templates/verify.py.tmpl) imports + runs on Python 3.9 (recipient floor), zip extraction on Windows with long paths, mixed legacy + v0.8 layout in one export.
+- **[`tests/test_gallery_scale_limits.py`](tests/test_gallery_scale_limits.py)** — 50,000-image gallery with `gallery_max_items=200` cap, post-sanitization filename collisions inside a single gallery, gallery-dl binary missing (ENOENT vs the existing mocked-binary test in [`test_jobs_gallery_fallback.py`](tests/test_jobs_gallery_fallback.py)).
+- **[`tests/test_job_concurrency_races.py`](tests/test_job_concurrency_races.py)** — two URLs in the same batch resolving to the same `url_hash`, 500-URL batch (today's [`test_jobs_batch.py`](tests/test_jobs_batch.py) only proves the 25-URL guard), cancel during dispatch phase, restart-then-cancel state machine.
+- **[`tests/test_update_check_edge_cases.py`](tests/test_update_check_edge_cases.py)** — PyPI returns 200 with malformed JSON, GitHub 429 rate-limit, auto-check task firing during shutdown lifespan.
+- **[`tests/test_audit_replay.py`](tests/test_audit_replay.py)** — chain-replay safety across schema migrations, audit-log + downloads-tree desync, partial-write row recovery.
+- **[`tests/test_db_lock_contention.py`](tests/test_db_lock_contention.py)** — concurrent audit-log writes during chain verification, WAL-mode races, external lock (Windows AV) holding the DB file.
+- **[`tests/test_signing_rotation.py`](tests/test_signing_rotation.py)** — key rotation between `finalize()` start and `meta.json.sig` write, verifying a mixed-key library, audit-row provenance during rotation.
+- **[`tests/test_settings_persistence.py`](tests/test_settings_persistence.py)** — malformed `settings.json` falling back to defaults, partial-write atomicity for the auto-check toggle, settings file held open by a system tool.

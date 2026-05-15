@@ -1142,7 +1142,20 @@
           window.open('https://github.com/bhngyn/ytdlp/blob/main/README.md#troubleshooting', '_blank', 'noopener');
           return;
         }
-        if (action === 'errors.action.check_update' || action === 'errors.action.add_cookies') {
+        if (action === 'errors.action.check_update') {
+          // CLAUDE.md §16 v0.11 bucket 1 #3: contextual CTA on extractor-
+          // outdated failures. Navigate to Settings AND fire the check
+          // so the investigator doesn't have to find the "Check now"
+          // button after landing — saves a click on the most common
+          // recovery path.
+          this.route = 'settings';
+          window.location.hash = 'settings';
+          // Fire-and-forget; checkUpdatesNow handles its own loading
+          // state + toast on network failure.
+          this.checkUpdatesNow();
+          return;
+        }
+        if (action === 'errors.action.add_cookies') {
           this.route = 'settings';
           window.location.hash = 'settings';
           return;

@@ -79,6 +79,22 @@ CAPSULE_DOWNLOADS_DIR=$PWD/_dev/downloads CAPSULE_CONFIG_DIR=$PWD/_dev/config \
 
 To rebuild the dist bundles yourself, run [`scripts/build-dist.sh`](scripts/build-dist.sh) — it drives `docker buildx` for both arches, saves the per-arch tarballs with their content digests, and renders the launchers from `dist-templates/`.
 
+## Troubleshooting
+
+Three first-run failures cover almost everything we see. If something else breaks, the launcher prints the Docker error verbatim — copy it into an issue and we'll help.
+
+### "Cannot connect to the Docker daemon" / "docker: command not found"
+
+Docker Desktop isn't running, or isn't installed. Start it from your Applications folder (macOS) or the system tray (Windows) and wait until the whale icon settles. The launcher will work on the next try.
+
+### "Port is already allocated" / "bind: address already in use"
+
+Something else on your machine is using port 8080. The fastest fix is to remap. Edit the launcher (`Capsule.command` or `Capsule.bat`) and change `-p 8080:8080` to `-p 9090:8080`, then open <http://localhost:9090> instead. Common port hogs: another local web app, a stale Capsule container from a previous run (`docker ps` to confirm), or AirPlay on macOS.
+
+### "Permission denied" / the bind-mount can't be written
+
+Docker doesn't have permission to read or write the folder you pointed it at. On macOS, open **System Settings → Privacy & Security → Files and Folders** and make sure Docker has access to your Documents folder. On Windows, right-click the Capsule folder, **Properties → Security**, and confirm your user has read/write. The launcher creates `~/Documents/Capsule/` by default; pick a different host folder if your security policy blocks the default.
+
 ## Status
 
 v1.0.0 is the first stable release. The backend is feature-complete: cases, jobs, capture pipeline (Playwright + yt-dlp + gallery-dl + in-session CDP→WARC + HAR + console capture), post-processing, hash-chained audit log, signed meta + evidence export with bundled verifier. The frontend SPA in v1 surfaces only the **downloader** (paste a link or list, watch the four-phase progress, find results in the recent-captures list, with download-options and per-job pause/resume/restart/cancel controls) and **Settings** (language, signing-key fingerprint, browser-extension pairing, yt-dlp / gallery-dl updater). The case-management surfaces (Cases / Library / Item detail / Audit log) live on disk and over the API; the downloader uses them under the hood (every job lands in the default case — slug `downloads` for fresh installs, `quick-captures` preserved on legacy installs). EN, JA, ES, and AR ship as fully translated locales; the runtime ICU/RTL pipeline is the same shared path.

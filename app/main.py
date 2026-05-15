@@ -20,7 +20,7 @@ import sys
 import tempfile
 from pathlib import Path
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 from contextlib import asynccontextmanager
 
@@ -442,7 +442,10 @@ class JobBatchItem(BaseModel):
     force_gallery_run: bool = False
     # CLAUDE.md §15 v0.10 — capture mode routing.
     # "webpage" | "media" | "gallery" | None (None ⇒ current default behaviour).
-    capture_mode: str | None = None
+    # CLAUDE.md §16 v0.11 bucket 2 #10: Literal[...] enforces the enum at
+    # deserialization. ``_normalize_capture_mode`` runs ``mode='before'``
+    # so the frontend's empty-string sentinel still maps to None.
+    capture_mode: jobs_mod.CaptureMode | None = None
 
     @field_validator("quality_cap")
     @classmethod
@@ -477,15 +480,13 @@ class JobBatchItem(BaseModel):
             )
         return v
 
-    @field_validator("capture_mode")
+    @field_validator("capture_mode", mode="before")
     @classmethod
-    def _validate_capture_mode(cls, v: str | None) -> str | None:
-        if v is None or v == "":
+    def _normalize_capture_mode(cls, v: object) -> object:
+        # Frontend sends "" when the user hasn't picked a mode; map to
+        # None before Pydantic's Literal check rejects it.
+        if v == "" or v is None:
             return None
-        if v not in jobs_mod._CAPTURE_MODE_VALUES:
-            raise ValueError(
-                f"capture_mode must be one of {sorted(jobs_mod._CAPTURE_MODE_VALUES)}"
-            )
         return v
 
     @field_validator("subtitle_langs")

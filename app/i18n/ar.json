@@ -331,6 +331,7 @@
   "download.action.restart.confirm.cancel": "إلغاء",
   "download.stalled.chip": "{seconds, plural, zero {متوقف — لا تقدم لـ # ثانية} one {متوقف — لا تقدم لثانية واحدة} two {متوقف — لا تقدم لثانيتين} few {متوقف — لا تقدم لـ # ثوانٍ} many {متوقف — لا تقدم لـ # ثانية} other {متوقف — لا تقدم لـ # ثانية}}",
   "download.stalled.aria": "هذا الالتقاط لم يتقدم مؤخرًا",
+  "download.stalled.explanation": "لم يلاحظ كابسول أي تقدم مؤخرًا، لكن المهمة لا تزال قيد التشغيل. استخدم إعادة التشغيل إذا كنت تعتقد أنها متوقفة فعلًا.",
   "pdf.report.heading.download_options": "خيارات التنزيل",
   "pdf.report.field.download_options.audio_only.label": "الصوت فقط",
   "pdf.report.field.download_options.audio_only.value": "تم استخراج الصوت فقط — لقطة الصفحة تحفظ الفيديو الأصلي.",

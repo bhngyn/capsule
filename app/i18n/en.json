@@ -331,6 +331,7 @@
   "download.action.restart.confirm.cancel": "Cancel",
   "download.stalled.chip": "{seconds, plural, one {Stalled — no progress for # second} other {Stalled — no progress for # seconds}}",
   "download.stalled.aria": "This capture has not made progress recently",
+  "download.stalled.explanation": "Capsule hasn't seen progress recently, but the job is still running. Use Restart if you believe it's truly stuck.",
   "pdf.report.heading.download_options": "Download options",
   "pdf.report.field.download_options.audio_only.label": "Audio only",
   "pdf.report.field.download_options.audio_only.value": "Audio extracted only — page snapshot preserves the original video.",

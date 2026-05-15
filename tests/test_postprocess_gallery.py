@@ -157,11 +157,12 @@ def test_gallery_capture_full_happy_path(env):
     gallery_info_path = metadata_dir / f"{result.stem}.gallery_info.json"
     assert gallery_info_path.exists()
 
-    # Read meta.json — schema v9 (v6 added the gallery fields, v7 the
+    # Read meta.json — schema v10 (v6 added the gallery fields, v7 the
     # page-preservation hardening block, v8 download_options, v9 the
-    # container picker). The gallery fields are preserved across bumps.
+    # container picker, v10 capture_mode + force_gallery_run). The
+    # gallery fields are preserved across bumps.
     meta = json.loads(result.meta_json_path.read_text())
-    assert meta["schema_version"] == 9
+    assert meta["schema_version"] == 10
     assert meta["capture_kind"] == "gallery"
     assert meta["gallery_count"] == 4
     assert meta["gallery_extractor"] == "twitter"

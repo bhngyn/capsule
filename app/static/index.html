@@ -5,6 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Capsule</title>
 
+  <!-- CLAUDE.md §16 v0.11 bucket 1 #7: prevent the LTR → RTL flash on
+       first paint for Arabic/Hebrew/Farsi/Urdu locales. Reads the saved
+       locale from localStorage and applies lang+dir before any
+       stylesheet or vendor script runs. The authoritative setter in
+       applyHtmlAttrs() still re-runs after Alpine boots so the language
+       picker keeps working. Inline, blocking, and synchronous on
+       purpose — the goal is "no LTR pixels ever paint." -->
+  <script>
+    (function(){
+      try {
+        // Key must match writePref('capsule.lang', …) in app.js.
+        var l = localStorage.getItem('capsule.lang');
+        if (l) {
+          document.documentElement.setAttribute('lang', l);
+          document.documentElement.setAttribute(
+            'dir', /^(ar|he|fa|ur)/.test(l) ? 'rtl' : 'ltr'
+          );
+        }
+      } catch (_) { /* no localStorage / private mode — fall through */ }
+    })();
+  </script>
+
   <!-- Vendor libraries.
        CLAUDE.md §15 calls for self-hosting these inside the container; that
        step is gated on a Tailwind compile in the Dockerfile and is tracked
@@ -562,14 +584,23 @@
               <span class="text-xs text-zinc-700 dark:text-zinc-300" x-text="progressLabel(j)"></span>
               <span class="text-xs font-mono text-zinc-500" x-text="progressBytes(j)"></span>
             </div>
-            <!-- Stalled chip (CLAUDE.md §15 v0.7). Set by the runner's
-                 watchdog when no progress JSON has arrived for >= threshold
-                 seconds. Cleared by the next real progress event. -->
+            <!-- Stalled chip (CLAUDE.md §15 v0.7 + v0.11 bucket 1 #5).
+                 Set by the runner's watchdog when no progress JSON has
+                 arrived for >= threshold seconds. The job is still
+                 running — stall is a UI signal, not a kill condition.
+                 The non-fatal explanation rides on :title (native
+                 tooltip) and an aria-describedby pointer for screen
+                 readers, so an investigator doesn't read the amber
+                 chip as "failed." -->
             <div x-show="j.stalled" x-cloak
                  class="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-amber-100 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 border border-amber-200 dark:border-amber-900"
-                 :aria-label="t('download.stalled.aria')">
+                 :aria-label="t('download.stalled.aria')"
+                 :aria-describedby="`stalled-desc-${j.id}`"
+                 :title="t('download.stalled.explanation')">
               <i data-lucide="clock" class="size-3.5" aria-hidden="true"></i>
               <span x-text="stalledChipText(j)"></span>
+              <span :id="`stalled-desc-${j.id}`" class="sr-only"
+                    x-text="t('download.stalled.explanation')"></span>
             </div>
             <!-- Per-job control toolbar (CLAUDE.md §15 v0.7). Pause/Resume
                  visible based on status; Cancel always available unless

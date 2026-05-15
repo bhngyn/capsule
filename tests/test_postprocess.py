@@ -696,10 +696,12 @@ def test_manifest_pdf_hash_present_in_meta_and_checksums(env):
     # Schema v8 (CLAUDE.md §15 v0.7): adds the ``download_options`` block
     # at the root and ``capture.stalled_count`` for the per-job download
     # knobs + reliability counters; v9 (CLAUDE.md §15 v0.9) adds the
-    # container picker (video_container, audio_container). Per CLAUDE.md
-    # §13.15, schema and producer move in lockstep. Manifest + report PDFs
-    # continue to ride the same artifact-binding transitive signature path.
-    assert meta["schema_version"] == 9
+    # container picker (video_container, audio_container); v10 (CLAUDE.md
+    # §15 v0.11) adds ``capture_mode`` + ``force_gallery_run`` for
+    # orchestrator routing. Per CLAUDE.md §13.15, schema and producer
+    # move in lockstep. Manifest + report PDFs continue to ride the same
+    # artifact-binding transitive signature path.
+    assert meta["schema_version"] == 10
     assert meta["url_canonical"]
     assert meta["force_recapture_index"] is None
     # CLAUDE.md §15 v0.7: download_options block always emitted on v8+.
@@ -962,3 +964,56 @@ def test_meta_json_signature_covers_user_browser_artifacts(env):
     # would catch it. Sanity-check the meta record referenced the file.
     meta = json.loads(data)
     assert meta["artifacts"].get("user_browser_mhtml")
+
+
+# ----------------------------------------------------------------------
+# CLAUDE.md §16 v0.11 bucket 2 #9 — _move_into collision suffix
+# ----------------------------------------------------------------------
+
+
+def test_move_into_collision_appends_c2_suffix(env, tmp_path):
+    """A pre-existing destination must not be silently overwritten."""
+    pp = env["pp"]
+    target = tmp_path / "out"
+    target.mkdir()
+    existing = target / "foo.mp4"
+    existing.write_bytes(b"original")
+
+    src = tmp_path / "src" / "foo.mp4"
+    src.parent.mkdir()
+    src.write_bytes(b"incoming")
+
+    dest = pp._move_into(target, src, new_name="foo.mp4")
+    assert dest.name == "foo__c2.mp4"
+    assert dest.read_bytes() == b"incoming"
+    assert existing.read_bytes() == b"original"  # untouched
+
+
+def test_move_into_collision_increments_to_c3(env, tmp_path):
+    """Two prior collisions → third move resolves to __c3."""
+    pp = env["pp"]
+    target = tmp_path / "out"
+    target.mkdir()
+    (target / "foo.mp4").write_bytes(b"a")
+    (target / "foo__c2.mp4").write_bytes(b"b")
+
+    src = tmp_path / "src"
+    src.mkdir()
+    incoming = src / "foo.mp4"
+    incoming.write_bytes(b"c")
+
+    dest = pp._move_into(target, incoming, new_name="foo.mp4")
+    assert dest.name == "foo__c3.mp4"
+
+
+def test_move_into_no_collision_keeps_desired_name(env, tmp_path):
+    """No pre-existing file → behavior matches pre-v0.11."""
+    pp = env["pp"]
+    target = tmp_path / "out"
+    src = tmp_path / "src" / "fresh.png"
+    src.parent.mkdir()
+    src.write_bytes(b"x")
+
+    dest = pp._move_into(target, src, new_name="fresh.png")
+    assert dest.name == "fresh.png"
+    assert dest.read_bytes() == b"x"

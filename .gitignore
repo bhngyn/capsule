@@ -27,6 +27,9 @@ env/
 *.swp
 *~
 
+# Claude Code harness state — local worktrees, plans, settings overrides
+.claude/
+
 # Project — local capture / config dirs
 _dev/
 /downloads/
