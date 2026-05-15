@@ -1,0 +1,356 @@
+{
+  "extName": {
+    "message": "Capsule",
+    "description": "Extension display name."
+  },
+  "extDescription": {
+    "message": "このブラウザのページとクッキーをローカルの Capsule アプリに送信し、法的証拠として保存します。",
+    "description": "Extension store description."
+  },
+
+  "permissionRequiredTitle": {
+    "message": "$HOST$ へのアクセス許可が必要です",
+    "description": "Title shown when the popup needs the user to grant host permission for a site.",
+    "placeholders": {
+      "host": { "content": "$1", "example": "twitter.com" }
+    }
+  },
+  "permissionRequiredBody": {
+    "message": "Capsule がクッキーを読み取るには $HOST$ へのアクセスが必要です。もう一度アイコンをクリックして「許可」を選択してください。",
+    "description": "Body explaining why the host permission is needed.",
+    "placeholders": {
+      "host": { "content": "$1", "example": "twitter.com" }
+    }
+  },
+  "permissionDeniedTitle": {
+    "message": "アクセスが拒否されました",
+    "description": "Title shown after the user dismisses the host-permission prompt."
+  },
+  "unsupportedSchemeBody": {
+    "message": "クッキーを読み取れるのは http:// または https:// のページのみです。",
+    "description": "Body shown when the active tab is on a chrome://, about:, or other unsupported scheme."
+  },
+  "noCookiesFoundTitle": {
+    "message": "クッキーが見つかりませんでした",
+    "description": "Title for the result screen when permission was granted but the page had no cookies."
+  },
+  "noCookiesFoundBody": {
+    "message": "このタブでサインインしていることを確認してから、再試行してください。",
+    "description": "Hint shown alongside noCookiesFoundTitle."
+  },
+
+  "captureModeLabel": {
+    "message": "キャプチャモード",
+    "description": "Label for the capture mode segmented control."
+  },
+  "captureModeWebpage": {
+    "message": "ウェブページ",
+    "description": "Capture mode pill: page snapshot only, skip media download."
+  },
+  "captureModeMedia": {
+    "message": "メディア",
+    "description": "Capture mode pill: force media download path."
+  },
+  "captureModeGallery": {
+    "message": "ギャラリー",
+    "description": "Capture mode pill: force gallery-dl image capture path."
+  },
+
+  "popupTitle": {
+    "message": "Capsule",
+    "description": "Browser-tab title for the popup. Brand name; usually left as-is."
+  },
+  "popupUnpairedMessage": {
+    "message": "この拡張機能はまだ Capsule とペアリングされていません。",
+    "description": "Shown when the popup opens but no pairing token is stored locally."
+  },
+  "popupPairButton": {
+    "message": "Capsule とペアリング",
+    "description": "Button on the unpaired screen that opens the pairing page."
+  },
+  "popupActiveCaseLabel": {
+    "message": "アクティブなケース",
+    "description": "Label above the case picker dropdown."
+  },
+  "popupSendTabAriaLabel": {
+    "message": "アクティブなタブを送信",
+    "description": "Accessible label for the primary Send-this-tab button."
+  },
+  "popupSendTabButton": {
+    "message": "このタブを送信",
+    "description": "Primary button: submit the current tab as a capture job."
+  },
+  "popupSendListToggleButton": {
+    "message": "URL のリストを送信",
+    "description": "Button: reveals the multi-URL textarea form."
+  },
+  "popupSyncCookiesButton": {
+    "message": "このサイトのクッキーを同期",
+    "description": "Button: uploads cookies for the active tab's domain to the active case."
+  },
+  "popupUrlListPlaceholder": {
+    "message": "1 行に 1 件の URL・最大 25 件",
+    "description": "Placeholder text for the multi-URL textarea."
+  },
+  "popupSendListButton": {
+    "message": "リストを送信",
+    "description": "Submit button for the multi-URL textarea."
+  },
+  "popupCaptureOptionsHeading": {
+    "message": "キャプチャオプション",
+    "description": "Summary text for the collapsible Capture-options block."
+  },
+  "popupLiveCaptureLabel": {
+    "message": "ライブキャプチャを含める",
+    "description": "Toggle label: ship MHTML/screenshot/DOM/storage from the user's browser."
+  },
+  "popupLiveCaptureHint": {
+    "message": "— MHTML・スクリーンショット・DOM スナップショット・ストレージ状態を正式キャプチャと一緒に送信します。",
+    "description": "Hint shown under the Include-live-capture toggle. Leading em-dash is intentional."
+  },
+  "popupBlockAdsLabel": {
+    "message": "このブラウザで広告とトラッカーをブロック",
+    "description": "Toggle label: enable declarativeNetRequest blocking in the user's tab."
+  },
+  "popupBlockAdsHint": {
+    "message": "— バックエンドのブロックリストと同じ設定を使用し、ライブキャプチャにトラッカーノイズが混入しないようにします。",
+    "description": "Hint shown under the block-ads toggle."
+  },
+  "popupRealHarLabel": {
+    "message": "ネットワークログ全体を記録 (chrome.debugger)",
+    "description": "Toggle label: attach the Chrome debugger to record a full HAR."
+  },
+  "popupRealHarHint": {
+    "message": "— 接続中は Chrome に黄色いバナーが表示されます。デフォルトはオフです。",
+    "description": "Hint shown under the chrome.debugger toggle, warning about the visible banner."
+  },
+  "popupEphemeralCookiesLabel": {
+    "message": "一時クッキー（使い捨て）",
+    "description": "Toggle label: send cookies for this capture only, never persist to the case."
+  },
+  "popupEphemeralCookiesHint": {
+    "message": "— このキャプチャのみクッキーを送信します。ケースのディレクトリには保存されません。",
+    "description": "Hint shown under the ephemeral-cookies toggle."
+  },
+  "popupRotateTokenButton": {
+    "message": "トークンをローテート",
+    "description": "Link button in the popup footer that mints a new token."
+  },
+  "popupManageButton": {
+    "message": "管理",
+    "description": "Link button in the popup footer that opens the pairing page."
+  },
+  "popupPairedAsLabel": {
+    "message": "「$LABEL$」としてペアリング済み",
+    "description": "Chip in the popup footer showing the human-readable label of the active pairing.",
+    "placeholders": {
+      "label": { "content": "$1", "example": "Brian's laptop" }
+    }
+  },
+  "popupDoneButton": {
+    "message": "完了",
+    "description": "Button that returns from the result screen to the paired screen."
+  },
+
+  "statusChecking": {
+    "message": "確認中…",
+    "description": "Status pill while the popup is verifying the pairing."
+  },
+  "statusNotPaired": {
+    "message": "未ペアリング",
+    "description": "Status pill when no pairing token is stored locally."
+  },
+  "statusServerChanged": {
+    "message": "サーバーが変更されました",
+    "description": "Status pill when the Capsule server's signing key fingerprint no longer matches the paired one."
+  },
+  "statusOffline": {
+    "message": "オフライン",
+    "description": "Status pill when the Capsule server can't be reached."
+  },
+  "statusConnected": {
+    "message": "接続済み",
+    "description": "Status pill when the popup has reached the paired Capsule server."
+  },
+
+  "errorScreenTitle": {
+    "message": "問題が発生しました",
+    "description": "Heading on the popup's error screen."
+  },
+  "errorRetryButton": {
+    "message": "再試行",
+    "description": "Button on the error screen that re-runs the popup init."
+  },
+  "errorBackButton": {
+    "message": "戻る",
+    "description": "Link on the error screen that returns to the paired screen."
+  },
+  "errorServerFingerprintMismatch": {
+    "message": "Capsule サーバーの署名キーが変更されました。拡張機能を再ペアリングしてください。",
+    "description": "Error body when the server's Ed25519 fingerprint doesn't match the paired one."
+  },
+  "errorServerUnreachable": {
+    "message": "$URL$ で Capsule に接続できません。アプリが起動しているか確認してください。",
+    "description": "Error body when the popup can't reach the paired Capsule server.",
+    "placeholders": {
+      "url": { "content": "$1", "example": "http://localhost:8080" }
+    }
+  },
+  "errorCasesLoadFailed": {
+    "message": "ケースの読み込みに失敗しました: $REASON$",
+    "description": "Error body when the case list couldn't be fetched.",
+    "placeholders": {
+      "reason": { "content": "$1", "example": "network" }
+    }
+  },
+  "errorNoActiveTab": {
+    "message": "アクティブなタブが見つかりません。",
+    "description": "Error shown when the popup can't find an active tab to capture."
+  },
+  "errorNoCaseSelected": {
+    "message": "先にケースを選択してください。",
+    "description": "Error shown when the user tries to submit without choosing a case."
+  },
+  "errorNoUrlsProvided": {
+    "message": "URL を 1 件以上貼り付けてください。",
+    "description": "Error shown when the multi-URL textarea is empty on submit."
+  },
+  "errorSyncFailed": {
+    "message": "同期に失敗しました: $REASON$",
+    "description": "Error body when the sync-cookies endpoint returned a failure.",
+    "placeholders": {
+      "reason": { "content": "$1", "example": "network" }
+    }
+  },
+  "errorRotateTokenFailed": {
+    "message": "トークンのローテートに失敗しました: $REASON$",
+    "description": "Error body when the rotate-token endpoint returned a failure.",
+    "placeholders": {
+      "reason": { "content": "$1", "example": "unauthorized" }
+    }
+  },
+  "errorSubmissionFailed": {
+    "message": "送信に失敗しました",
+    "description": "Generic error body when capture submission failed for an unknown reason."
+  },
+
+  "resultCookiesSyncedTitle": {
+    "message": "クッキーを同期しました",
+    "description": "Title on the result screen after a successful cookies sync."
+  },
+  "resultTokenRotatedTitle": {
+    "message": "トークンをローテートしました",
+    "description": "Title on the result screen after a successful token rotation."
+  },
+  "resultNewTokenIdLabel": {
+    "message": "新しいトークン ID: $ID$",
+    "description": "Result row showing the freshly-minted token's id.",
+    "placeholders": {
+      "id": { "content": "$1", "example": "a1b2c3d4e5f6" }
+    }
+  },
+
+  "warningCookiesSkipped": {
+    "message": "$URL$ のクッキーはスキップされました",
+    "description": "Warning row shown in the result screen when cookies couldn't be attached for a URL.",
+    "placeholders": {
+      "url": { "content": "$1", "example": "https://x.com/foo" }
+    }
+  },
+
+  "sentCount_other": {
+    "message": "$COUNT$ 件を送信しました",
+    "description": "Result-screen title after a successful multi-capture submit. ICU plural form 'other' / fallback.",
+    "placeholders": {
+      "count": { "content": "$1", "example": "5" }
+    }
+  },
+
+  "pairPageTitle": {
+    "message": "Capsule とペアリング",
+    "description": "Browser-tab title for the pairing page."
+  },
+  "pairHeadingTitle": {
+    "message": "Capsule とペアリング",
+    "description": "H1 heading on the pairing page."
+  },
+  "pairStep1": {
+    "message": "ブラウザで Capsule を開きます（デフォルト: <code>http://localhost:8080</code>）。",
+    "description": "Pairing step 1. Contains inline <code> markup; rendered as innerHTML."
+  },
+  "pairStep2": {
+    "message": "<strong>設定 → ブラウザ拡張機能</strong> に移動し、<strong>新しい拡張機能をペアリング</strong> をクリックします。",
+    "description": "Pairing step 2. Contains inline <strong> markup; rendered as innerHTML."
+  },
+  "pairStep3": {
+    "message": "Capsule に表示される <strong>トークン</strong> をコピーします（一度しか表示されません）。",
+    "description": "Pairing step 3. Contains inline <strong> markup; rendered as innerHTML."
+  },
+  "pairStep4": {
+    "message": "下のフォームに貼り付けてください。",
+    "description": "Pairing step 4."
+  },
+  "pairServerUrlLabel": {
+    "message": "Capsule サーバー URL",
+    "description": "Label above the server-URL input."
+  },
+  "pairTokenLabel": {
+    "message": "トークン",
+    "description": "Label above the token input."
+  },
+  "pairTokenPlaceholder": {
+    "message": "capsule-…",
+    "description": "Placeholder hint for the token input. Tokens start with the literal prefix 'capsule-' followed by base32 characters."
+  },
+  "pairLabelInputLabel": {
+    "message": "このデバイスのラベル（任意）",
+    "description": "Label above the device-label input."
+  },
+  "pairLabelInputPlaceholder": {
+    "message": "マイラップトップ",
+    "description": "Placeholder text inside the device-label input."
+  },
+  "pairSubmitButton": {
+    "message": "ペアリング",
+    "description": "Submit button on the pairing form."
+  },
+  "pairPrivacyNotice": {
+    "message": "ペアリング後、この拡張機能は上記の Capsule サーバー URL <em>にのみ</em> 通信します。インターネット上の外部サーバーにデータを送信することはありません。トークンはブラウザの拡張機能ストレージに保存され、ウェブページと共有されることはありません。",
+    "description": "Privacy notice at the bottom of the pairing page. Contains inline <em> markup; rendered as innerHTML."
+  },
+  "pairUnpairButton": {
+    "message": "この拡張機能のペアリングを解除",
+    "description": "Link button that wipes the locally-stored pairing token."
+  },
+  "pairDefaultDeviceLabel": {
+    "message": "ブラウザ拡張機能",
+    "description": "Default device label submitted when the user leaves the label input blank."
+  },
+  "pairAlreadyPairedMessage": {
+    "message": "$URL$ とペアリング済みです（サーバーフィンガープリント: $FINGERPRINT$）。トークンはローカルに保存されています。再ペアリングするか、下記のペアリング解除ボタンで変更できます。",
+    "description": "Message shown when the pairing page loads with an existing token.",
+    "placeholders": {
+      "url": { "content": "$1", "example": "http://localhost:8080" },
+      "fingerprint": { "content": "$2", "example": "ab12cd34" }
+    }
+  },
+  "pairSuccessMessage": {
+    "message": "ペアリングが完了しました。サーバーフィンガープリント: $FINGERPRINT$。このタブを閉じてポップアップを開いてください。",
+    "description": "Success message after a fresh pairing.",
+    "placeholders": {
+      "fingerprint": { "content": "$1", "example": "ab12cd34" }
+    }
+  },
+  "pairUnpairedMessage": {
+    "message": "ペアリングを解除しました。ローカルのトークンはブラウザから削除されました。",
+    "description": "Message shown after the user clicks 'Unpair this extension'."
+  },
+  "errorPairMissingServerOrToken": {
+    "message": "サーバー URL とトークンの両方が必要です。",
+    "description": "Error shown when the user clicks Pair without filling both fields."
+  },
+  "errorPairFailed": {
+    "message": "ペアリングに失敗しました。",
+    "description": "Generic error when the pair request failed and no specific reason was returned."
+  }
+}
