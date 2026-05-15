@@ -512,6 +512,39 @@ def _format_capture_report(
     lazy_promoted_html = _scalar(cap.get("lazy_promoted_count") or 0)
     readiness_html = _bool(bool(cap.get("readiness_timed_out")))
 
+    # CLAUDE.md §15 v0.12: frozen single-file HTML view. The block is
+    # always emitted to meta.json so absence-vs-default is unambiguous;
+    # the PDF row reads "generated, tier=full, N inlined, M external"
+    # on success and "skipped" / "size_budget_exceeded" on failure.
+    # When the block is missing entirely (legacy pre-v11 records) the
+    # row falls through to a dash so an old item still renders.
+    fh = cap.get("frozen_html") or {}
+    if isinstance(fh, dict) and fh.get("generated"):
+        tier = fh.get("tier") or "?"
+        tier_key = f"pdf.report.field.capture.frozen_html.tier.{tier}"
+        tier_label = labels.get(tier_key, tier)
+        inlined = int(fh.get("inlined_image_count") or 0)
+        external = int(fh.get("external_image_count") or 0)
+        shadow = int(fh.get("shadow_root_omitted_count") or 0)
+        # Compose: tier + "N inlined, M external" + optional shadow note.
+        body = labels["pdf.report.field.capture.frozen_html.summary"].format(
+            tier=html.escape(tier_label),
+            inlined=inlined,
+            external=external,
+        )
+        if shadow:
+            body = body + " · " + labels[
+                "pdf.report.field.capture.frozen_html.shadow_omitted"
+            ].format(count=shadow)
+        frozen_html_html = body
+    elif isinstance(fh, dict) and fh.get("error"):
+        err_key = f"pdf.report.field.capture.frozen_html.error.{fh['error'].split(':', 1)[0]}"
+        frozen_html_html = html.escape(
+            labels.get(err_key, fh.get("error") or labels["pdf.report.field.unknown"])
+        )
+    else:
+        frozen_html_html = dash
+
     rows = [
         (labels["pdf.report.field.render_wait"], waits_html),
         (labels["pdf.report.field.blocked_requests"], blocked_html),
@@ -524,6 +557,7 @@ def _format_capture_report(
         (labels["pdf.report.field.capture.media_context.label"], ctx_html),
         (labels["pdf.report.field.capture.page_height.label"], height_html),
         (labels["pdf.report.field.capture.warc_session.label"], warc_html),
+        (labels["pdf.report.field.capture.frozen_html.label"], frozen_html_html),
         (labels["pdf.report.field.tab_context"], _bool(cap.get("tab_context_used"))),
         (labels["pdf.report.field.report_lang"], _scalar(cap.get("report_lang"))),
     ]

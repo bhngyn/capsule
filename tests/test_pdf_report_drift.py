@@ -184,3 +184,68 @@ def test_v06_counter_keys_present_in_every_bundle(lang):
     assert labels["pdf.report.field.capture.videos_paused.label"]
     assert labels["pdf.report.field.capture.lazy_promoted.label"]
     assert labels["pdf.report.field.capture.readiness_timed_out.label"]
+
+
+# --- v0.12 frozen-html row in the capture report ---------------------------
+
+
+def test_capture_report_renders_frozen_html_generated(labels):
+    """Generated frozen.html: row shows tier + counts."""
+    from app import pdf_report
+
+    html_out = pdf_report._format_capture_report(
+        {"frozen_html": {
+            "generated": True, "tier": "full",
+            "inlined_image_count": 12, "external_image_count": 3,
+            "shadow_root_omitted_count": 0,
+        }},
+        labels,
+    )
+    assert labels["pdf.report.field.capture.frozen_html.label"] in html_out
+    # Localised tier word + the counts substituted in.
+    assert labels["pdf.report.field.capture.frozen_html.tier.full"] in html_out
+    assert "12" in html_out
+    assert "3" in html_out
+
+
+def test_capture_report_renders_frozen_html_size_budget_exceeded(labels):
+    """Hard-cap omission: row shows the localised error explanation."""
+    from app import pdf_report
+
+    html_out = pdf_report._format_capture_report(
+        {"frozen_html": {"generated": False, "error": "size_budget_exceeded"}},
+        labels,
+    )
+    expected = labels["pdf.report.field.capture.frozen_html.error.size_budget_exceeded"]
+    assert expected in html_out
+
+
+def test_capture_report_renders_frozen_html_skipped(labels):
+    """Default 'skipped' outcome: localised explanation."""
+    from app import pdf_report
+
+    html_out = pdf_report._format_capture_report(
+        {"frozen_html": {"generated": False, "error": "skipped"}},
+        labels,
+    )
+    assert labels["pdf.report.field.capture.frozen_html.error.skipped"] in html_out
+
+
+def test_capture_report_legacy_record_without_frozen_html_block(labels):
+    """A pre-v11 meta.json that omits the frozen_html block entirely
+    must still render — the row falls through to the localised dash."""
+    from app import pdf_report
+
+    html_out = pdf_report._format_capture_report({}, labels)
+    assert labels["pdf.report.field.capture.frozen_html.label"] in html_out
+
+
+@pytest.mark.parametrize("lang", ["en", "ja", "ar", "es"])
+def test_v12_frozen_html_keys_present_in_every_bundle(lang):
+    from app import pdf_report
+
+    labels = pdf_report._load_pdf_strings(lang)
+    assert labels["pdf.report.field.capture.frozen_html.label"]
+    assert labels["pdf.report.field.capture.frozen_html.summary"]
+    assert labels["pdf.report.field.capture.frozen_html.tier.full"]
+    assert labels["pdf.report.field.capture.frozen_html.error.size_budget_exceeded"]
