@@ -502,11 +502,24 @@ def _format_capture_report(
     else:
         height_html = dash
 
+    # CLAUDE.md §15 v0.6 drift fix (v0.12): three forensic counters that
+    # land in meta.json.capture today but were never surfaced to the
+    # per-item PDF. Always rendered — consistent with the existing
+    # "always show the row, render dash/0 when no signal" pattern — so
+    # a recipient can see Capsule looked for these signals even when the
+    # value is zero.
+    videos_paused_html = _scalar(cap.get("videos_paused") or 0)
+    lazy_promoted_html = _scalar(cap.get("lazy_promoted_count") or 0)
+    readiness_html = _bool(bool(cap.get("readiness_timed_out")))
+
     rows = [
         (labels["pdf.report.field.render_wait"], waits_html),
         (labels["pdf.report.field.blocked_requests"], blocked_html),
         (labels["pdf.report.field.banner_hide"], banner_html),
         (labels["pdf.report.field.capture.animations_frozen.label"], anim_html),
+        (labels["pdf.report.field.capture.videos_paused.label"], videos_paused_html),
+        (labels["pdf.report.field.capture.lazy_promoted.label"], lazy_promoted_html),
+        (labels["pdf.report.field.capture.readiness_timed_out.label"], readiness_html),
         (labels["pdf.report.field.capture.console.label"], console_html),
         (labels["pdf.report.field.capture.media_context.label"], ctx_html),
         (labels["pdf.report.field.capture.page_height.label"], height_html),
@@ -543,6 +556,12 @@ def _format_download_options_section(
     video_container = opts.get("video_container") or None
     audio_container = opts.get("audio_container") or None
     force_gallery_run = bool(opts.get("force_gallery_run"))
+    # CLAUDE.md §15 v0.11 drift fix (v0.12): the capture_mode i18n keys
+    # already exist in all four bundles but the rendering code was never
+    # written. ``None`` = default fallback routing (yt-dlp then gallery-dl),
+    # which renders nothing — the row is only meaningful when the
+    # investigator picked a non-default mode.
+    capture_mode = opts.get("capture_mode") or None
     restart_count = int(opts.get("restart_count") or 0)
     stalled_count = int(cap.get("stalled_count") or 0)
 
@@ -553,6 +572,7 @@ def _format_download_options_section(
         or video_container
         or audio_container
         or force_gallery_run
+        or capture_mode
         or restart_count
         or stalled_count
     ):
@@ -606,6 +626,16 @@ def _format_download_options_section(
         rows.append((
             labels["pdf.report.field.download_options.force_gallery_run.label"],
             html.escape(labels["pdf.report.field.download_options.force_gallery_run.value"]),
+        ))
+
+    # v0.11 drift fix: localise the mode via the dedicated bundle key,
+    # fall back to the raw enum value if a future mode is added before
+    # the bundle is updated (so a missing key never crashes the PDF).
+    if capture_mode in {"webpage", "media", "gallery"}:
+        mode_key = f"pdf.report.field.download_options.capture_mode.{capture_mode}"
+        rows.append((
+            labels["pdf.report.field.download_options.capture_mode"],
+            html.escape(labels.get(mode_key, capture_mode)),
         ))
 
     if restart_count:
