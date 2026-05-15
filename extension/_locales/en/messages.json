@@ -7,6 +7,7 @@
     "message": "Send pages and cookies from this browser to the local Capsule app for forensic capture.",
     "description": "Extension store description."
   },
+
   "permissionRequiredTitle": {
     "message": "Permission needed for $HOST$",
     "description": "Title shown when the popup needs the user to grant host permission for a site.",
@@ -37,6 +38,7 @@
     "message": "Make sure you're signed in on this tab, then try again.",
     "description": "Hint shown alongside noCookiesFoundTitle."
   },
+
   "captureModeLabel": {
     "message": "Capture mode",
     "description": "Label for the capture mode segmented control."
@@ -52,5 +54,310 @@
   "captureModeGallery": {
     "message": "Gallery",
     "description": "Capture mode pill: force gallery-dl image capture path."
+  },
+
+  "popupTitle": {
+    "message": "Capsule",
+    "description": "Browser-tab title for the popup. Brand name; usually left as-is."
+  },
+  "popupUnpairedMessage": {
+    "message": "This extension hasn't been paired with a Capsule install yet.",
+    "description": "Shown when the popup opens but no pairing token is stored locally."
+  },
+  "popupPairButton": {
+    "message": "Pair with Capsule",
+    "description": "Button on the unpaired screen that opens the pairing page."
+  },
+  "popupActiveCaseLabel": {
+    "message": "Active case",
+    "description": "Label above the case picker dropdown."
+  },
+  "popupSendTabAriaLabel": {
+    "message": "Send active tab",
+    "description": "Accessible label for the primary Send-this-tab button."
+  },
+  "popupSendTabButton": {
+    "message": "Send this tab",
+    "description": "Primary button: submit the current tab as a capture job."
+  },
+  "popupSendListToggleButton": {
+    "message": "Send a list of URLs",
+    "description": "Button: reveals the multi-URL textarea form."
+  },
+  "popupSyncCookiesButton": {
+    "message": "Sync cookies for this site",
+    "description": "Button: uploads cookies for the active tab's domain to the active case."
+  },
+  "popupUrlListPlaceholder": {
+    "message": "One URL per line · max 25",
+    "description": "Placeholder text for the multi-URL textarea."
+  },
+  "popupSendListButton": {
+    "message": "Send list",
+    "description": "Submit button for the multi-URL textarea."
+  },
+  "popupCaptureOptionsHeading": {
+    "message": "Capture options",
+    "description": "Summary text for the collapsible Capture-options block."
+  },
+  "popupLiveCaptureLabel": {
+    "message": "Include live capture",
+    "description": "Toggle label: ship MHTML/screenshot/DOM/storage from the user's browser."
+  },
+  "popupLiveCaptureHint": {
+    "message": "— ships MHTML, screenshot, DOM snapshot, storage state alongside the canonical capture.",
+    "description": "Hint shown under the Include-live-capture toggle. Leading em-dash is intentional."
+  },
+  "popupBlockAdsLabel": {
+    "message": "Block ads + trackers in this browser",
+    "description": "Toggle label: enable declarativeNetRequest blocking in the user's tab."
+  },
+  "popupBlockAdsHint": {
+    "message": "— matches the backend's block list so the live capture doesn't carry tracker noise.",
+    "description": "Hint shown under the block-ads toggle."
+  },
+  "popupRealHarLabel": {
+    "message": "Capture full network log (chrome.debugger)",
+    "description": "Toggle label: attach the Chrome debugger to record a full HAR."
+  },
+  "popupRealHarHint": {
+    "message": "— Chrome shows a yellow banner while attached. Off by default.",
+    "description": "Hint shown under the chrome.debugger toggle, warning about the visible banner."
+  },
+  "popupEphemeralCookiesLabel": {
+    "message": "Ephemeral cookies (one-shot)",
+    "description": "Toggle label: send cookies for this capture only, never persist to the case."
+  },
+  "popupEphemeralCookiesHint": {
+    "message": "— send cookies for this capture only. Never written to the case directory.",
+    "description": "Hint shown under the ephemeral-cookies toggle."
+  },
+  "popupRotateTokenButton": {
+    "message": "Rotate token",
+    "description": "Link button in the popup footer that mints a new token."
+  },
+  "popupManageButton": {
+    "message": "Manage",
+    "description": "Link button in the popup footer that opens the pairing page."
+  },
+  "popupPairedAsLabel": {
+    "message": "paired as “$LABEL$”",
+    "description": "Chip in the popup footer showing the human-readable label of the active pairing.",
+    "placeholders": {
+      "label": { "content": "$1", "example": "Brian's laptop" }
+    }
+  },
+  "popupDoneButton": {
+    "message": "Done",
+    "description": "Button that returns from the result screen to the paired screen."
+  },
+
+  "statusChecking": {
+    "message": "Checking…",
+    "description": "Status pill while the popup is verifying the pairing."
+  },
+  "statusNotPaired": {
+    "message": "Not paired",
+    "description": "Status pill when no pairing token is stored locally."
+  },
+  "statusServerChanged": {
+    "message": "Server changed",
+    "description": "Status pill when the Capsule server's signing key fingerprint no longer matches the paired one."
+  },
+  "statusOffline": {
+    "message": "Offline",
+    "description": "Status pill when the Capsule server can't be reached."
+  },
+  "statusConnected": {
+    "message": "Connected",
+    "description": "Status pill when the popup has reached the paired Capsule server."
+  },
+
+  "errorScreenTitle": {
+    "message": "Something went wrong",
+    "description": "Heading on the popup's error screen."
+  },
+  "errorRetryButton": {
+    "message": "Retry",
+    "description": "Button on the error screen that re-runs the popup init."
+  },
+  "errorBackButton": {
+    "message": "Back",
+    "description": "Link on the error screen that returns to the paired screen."
+  },
+  "errorServerFingerprintMismatch": {
+    "message": "The Capsule server's signing key has changed. Re-pair the extension.",
+    "description": "Error body when the server's Ed25519 fingerprint doesn't match the paired one."
+  },
+  "errorServerUnreachable": {
+    "message": "Capsule isn't reachable at $URL$. Make sure the app is running.",
+    "description": "Error body when the popup can't reach the paired Capsule server.",
+    "placeholders": {
+      "url": { "content": "$1", "example": "http://localhost:8080" }
+    }
+  },
+  "errorCasesLoadFailed": {
+    "message": "Failed to load cases: $REASON$",
+    "description": "Error body when the case list couldn't be fetched.",
+    "placeholders": {
+      "reason": { "content": "$1", "example": "network" }
+    }
+  },
+  "errorNoActiveTab": {
+    "message": "No active tab.",
+    "description": "Error shown when the popup can't find an active tab to capture."
+  },
+  "errorNoCaseSelected": {
+    "message": "Pick a case first.",
+    "description": "Error shown when the user tries to submit without choosing a case."
+  },
+  "errorNoUrlsProvided": {
+    "message": "Paste at least one URL.",
+    "description": "Error shown when the multi-URL textarea is empty on submit."
+  },
+  "errorSyncFailed": {
+    "message": "Sync failed: $REASON$",
+    "description": "Error body when the sync-cookies endpoint returned a failure.",
+    "placeholders": {
+      "reason": { "content": "$1", "example": "network" }
+    }
+  },
+  "errorRotateTokenFailed": {
+    "message": "Could not rotate token: $REASON$",
+    "description": "Error body when the rotate-token endpoint returned a failure.",
+    "placeholders": {
+      "reason": { "content": "$1", "example": "unauthorized" }
+    }
+  },
+  "errorSubmissionFailed": {
+    "message": "Submission failed",
+    "description": "Generic error body when capture submission failed for an unknown reason."
+  },
+
+  "resultCookiesSyncedTitle": {
+    "message": "Cookies synced",
+    "description": "Title on the result screen after a successful cookies sync."
+  },
+  "resultTokenRotatedTitle": {
+    "message": "Token rotated",
+    "description": "Title on the result screen after a successful token rotation."
+  },
+  "resultNewTokenIdLabel": {
+    "message": "New token id: $ID$",
+    "description": "Result row showing the freshly-minted token's id.",
+    "placeholders": {
+      "id": { "content": "$1", "example": "a1b2c3d4e5f6" }
+    }
+  },
+
+  "warningCookiesSkipped": {
+    "message": "cookies skipped for: $URL$",
+    "description": "Warning row shown in the result screen when cookies couldn't be attached for a URL.",
+    "placeholders": {
+      "url": { "content": "$1", "example": "https://x.com/foo" }
+    }
+  },
+
+  "sentCount_one": {
+    "message": "Sent $COUNT$ capture",
+    "description": "Result-screen title after a successful single-capture submit. ICU plural form 'one'.",
+    "placeholders": {
+      "count": { "content": "$1", "example": "1" }
+    }
+  },
+  "sentCount_other": {
+    "message": "Sent $COUNT$ captures",
+    "description": "Result-screen title after a successful multi-capture submit. ICU plural form 'other' / fallback.",
+    "placeholders": {
+      "count": { "content": "$1", "example": "5" }
+    }
+  },
+
+  "pairPageTitle": {
+    "message": "Pair with Capsule",
+    "description": "Browser-tab title for the pairing page."
+  },
+  "pairHeadingTitle": {
+    "message": "Pair with Capsule",
+    "description": "H1 heading on the pairing page."
+  },
+  "pairStep1": {
+    "message": "Open Capsule in your browser (default <code>http://localhost:8080</code>).",
+    "description": "Pairing step 1. Contains inline <code> markup; rendered as innerHTML."
+  },
+  "pairStep2": {
+    "message": "Go to <strong>Settings → Browser extension</strong> and click <strong>Pair a new extension</strong>.",
+    "description": "Pairing step 2. Contains inline <strong> markup; rendered as innerHTML."
+  },
+  "pairStep3": {
+    "message": "Copy the <strong>token</strong> Capsule shows you (it's revealed once).",
+    "description": "Pairing step 3. Contains inline <strong> markup; rendered as innerHTML."
+  },
+  "pairStep4": {
+    "message": "Paste it below.",
+    "description": "Pairing step 4."
+  },
+  "pairServerUrlLabel": {
+    "message": "Capsule server URL",
+    "description": "Label above the server-URL input."
+  },
+  "pairTokenLabel": {
+    "message": "Token",
+    "description": "Label above the token input."
+  },
+  "pairTokenPlaceholder": {
+    "message": "capsule-…",
+    "description": "Placeholder hint for the token input. Tokens start with the literal prefix 'capsule-' followed by base32 characters."
+  },
+  "pairLabelInputLabel": {
+    "message": "A label for this device (optional)",
+    "description": "Label above the device-label input."
+  },
+  "pairLabelInputPlaceholder": {
+    "message": "My laptop",
+    "description": "Placeholder text inside the device-label input."
+  },
+  "pairSubmitButton": {
+    "message": "Pair",
+    "description": "Submit button on the pairing form."
+  },
+  "pairPrivacyNotice": {
+    "message": "Once paired, the extension talks <em>only</em> to the Capsule server URL above. It never sends data to the public internet. The token is stored in your browser's extension storage and is never shared with web pages.",
+    "description": "Privacy notice at the bottom of the pairing page. Contains inline <em> markup; rendered as innerHTML."
+  },
+  "pairUnpairButton": {
+    "message": "Unpair this extension",
+    "description": "Link button that wipes the locally-stored pairing token."
+  },
+  "pairDefaultDeviceLabel": {
+    "message": "Browser extension",
+    "description": "Default device label submitted when the user leaves the label input blank."
+  },
+  "pairAlreadyPairedMessage": {
+    "message": "Paired with $URL$ (server fingerprint: $FINGERPRINT$). The token is stored locally — change it by re-pairing or unpair below.",
+    "description": "Message shown when the pairing page loads with an existing token.",
+    "placeholders": {
+      "url": { "content": "$1", "example": "http://localhost:8080" },
+      "fingerprint": { "content": "$2", "example": "ab12cd34" }
+    }
+  },
+  "pairSuccessMessage": {
+    "message": "Paired. Server fingerprint: $FINGERPRINT$. You can close this tab and open the popup.",
+    "description": "Success message after a fresh pairing.",
+    "placeholders": {
+      "fingerprint": { "content": "$1", "example": "ab12cd34" }
+    }
+  },
+  "pairUnpairedMessage": {
+    "message": "Unpaired. The local token has been removed from the browser.",
+    "description": "Message shown after the user clicks 'Unpair this extension'."
+  },
+  "errorPairMissingServerOrToken": {
+    "message": "Server URL and token are both required.",
+    "description": "Error shown when the user clicks Pair without filling both fields."
+  },
+  "errorPairFailed": {
+    "message": "Pairing failed.",
+    "description": "Generic error when the pair request failed and no specific reason was returned."
   }
 }

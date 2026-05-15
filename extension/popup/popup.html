@@ -2,7 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Capsule</title>
+    <title data-i18n="popupTitle">Capsule</title>
+    <script>
+      // Pre-paint: flip <html lang> + dir to match the browser UI language so
+      // RTL locales (Arabic, Hebrew, Persian, Urdu) don't FOUC into LTR before
+      // popup.js hydrates. Inline so it runs before the stylesheet applies.
+      (() => {
+        try {
+          const lang = (chrome.i18n.getUILanguage() || "en").split("-")[0];
+          document.documentElement.lang = lang;
+          document.documentElement.dir =
+            ["ar", "he", "fa", "ur"].indexOf(lang) >= 0 ? "rtl" : "ltr";
+        } catch (_) { /* ignore — keep defaults */ }
+      })();
+    </script>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
@@ -13,7 +26,7 @@
       </div>
       <div class="status" id="status-pill" data-state="loading" aria-live="polite">
         <span class="status-dot"></span>
-        <span class="status-text">Checking…</span>
+        <span class="status-text" data-i18n="statusChecking">Checking…</span>
       </div>
     </header>
 
@@ -21,74 +34,75 @@
 
       <!-- Unpaired ----------------------------------------------------- -->
       <section id="screen-unpaired" hidden>
-        <p class="muted">
+        <p class="muted" data-i18n="popupUnpairedMessage">
           This extension hasn't been paired with a Capsule install yet.
         </p>
-        <button class="primary" id="open-pair-page">Pair with Capsule</button>
+        <button class="primary" id="open-pair-page" data-i18n="popupPairButton">Pair with Capsule</button>
       </section>
 
       <!-- Paired -------------------------------------------------------- -->
       <section id="screen-paired" hidden>
 
         <label class="field">
-          <span class="field-label">Active case</span>
-          <select id="case-select" aria-label="Active case"></select>
+          <span class="field-label" data-i18n="popupActiveCaseLabel">Active case</span>
+          <select id="case-select" data-i18n-aria-label="popupActiveCaseLabel" aria-label="Active case"></select>
         </label>
 
         <div class="actions">
-          <button class="primary" id="send-tab" aria-label="Send active tab">
+          <button class="primary" id="send-tab" data-i18n-aria-label="popupSendTabAriaLabel" aria-label="Send active tab">
             <span class="icon" aria-hidden="true">⤓</span>
-            Send this tab
+            <span data-i18n="popupSendTabButton">Send this tab</span>
           </button>
           <button class="secondary" id="send-list-toggle">
             <span class="icon" aria-hidden="true">≡</span>
-            Send a list of URLs
+            <span data-i18n="popupSendListToggleButton">Send a list of URLs</span>
           </button>
           <button class="secondary" id="sync-cookies">
             <span class="icon" aria-hidden="true">🍪</span>
-            Sync cookies for this site
+            <span data-i18n="popupSyncCookiesButton">Sync cookies for this site</span>
           </button>
         </div>
 
         <div id="list-form" hidden>
           <textarea id="list-urls" rows="6"
+                    data-i18n-placeholder="popupUrlListPlaceholder"
                     placeholder="One URL per line · max 25"></textarea>
-          <button class="primary" id="send-list">Send list</button>
+          <button class="primary" id="send-list" data-i18n="popupSendListButton">Send list</button>
         </div>
 
         <details class="settings-card">
-          <summary>Capture options</summary>
+          <summary data-i18n="popupCaptureOptionsHeading">Capture options</summary>
           <label class="toggle">
             <input type="checkbox" id="live-capture" />
             <span>
-              Include live capture
-              <small class="muted">— ships MHTML, screenshot, DOM snapshot, storage state alongside the canonical capture.</small>
+              <span data-i18n="popupLiveCaptureLabel">Include live capture</span>
+              <small class="muted" data-i18n="popupLiveCaptureHint">— ships MHTML, screenshot, DOM snapshot, storage state alongside the canonical capture.</small>
             </span>
           </label>
           <label class="toggle">
             <input type="checkbox" id="block-ads" />
             <span>
-              Block ads + trackers in this browser
-              <small class="muted">— matches the backend's block list so the live capture doesn't carry tracker noise.</small>
+              <span data-i18n="popupBlockAdsLabel">Block ads + trackers in this browser</span>
+              <small class="muted" data-i18n="popupBlockAdsHint">— matches the backend's block list so the live capture doesn't carry tracker noise.</small>
             </span>
           </label>
           <label class="toggle">
             <input type="checkbox" id="real-har" />
             <span>
-              Capture full network log (chrome.debugger)
-              <small class="muted">— Chrome shows a yellow banner while attached. Off by default.</small>
+              <span data-i18n="popupRealHarLabel">Capture full network log (chrome.debugger)</span>
+              <small class="muted" data-i18n="popupRealHarHint">— Chrome shows a yellow banner while attached. Off by default.</small>
             </span>
           </label>
           <label class="toggle">
             <input type="checkbox" id="ephemeral-cookies" />
             <span>
-              Ephemeral cookies (one-shot)
-              <small class="muted">— send cookies for this capture only. Never written to the case directory.</small>
+              <span data-i18n="popupEphemeralCookiesLabel">Ephemeral cookies (one-shot)</span>
+              <small class="muted" data-i18n="popupEphemeralCookiesHint">— send cookies for this capture only. Never written to the case directory.</small>
             </span>
           </label>
           <div class="capture-mode-row">
             <span class="capture-mode-label" data-i18n="captureModeLabel">Capture mode</span>
-            <div class="pill-group" id="capture-mode-group" role="group" aria-label="Capture mode">
+            <div class="pill-group" id="capture-mode-group" role="group" data-i18n-aria-label="captureModeLabel" aria-label="Capture mode">
               <button class="pill" id="cm-webpage" data-mode="webpage" data-i18n="captureModeWebpage" aria-pressed="false">Webpage</button>
               <button class="pill" id="cm-media"   data-mode="media"   data-i18n="captureModeMedia"   aria-pressed="false">Media</button>
               <button class="pill" id="cm-gallery" data-mode="gallery" data-i18n="captureModeGallery" aria-pressed="false">Gallery</button>
@@ -98,8 +112,8 @@
 
         <div class="footer">
           <span class="label-chip" id="label-chip"></span>
-          <button class="link" id="rotate-token">Rotate token</button>
-          <button class="link" id="manage">Manage</button>
+          <button class="link" id="rotate-token" data-i18n="popupRotateTokenButton">Rotate token</button>
+          <button class="link" id="manage" data-i18n="popupManageButton">Manage</button>
         </div>
 
       </section>
@@ -109,15 +123,15 @@
         <h2 id="result-title">Sent</h2>
         <ul id="result-warnings" class="warnings" hidden></ul>
         <ul id="result-jobs" class="jobs"></ul>
-        <button class="primary" id="back-to-paired">Done</button>
+        <button class="primary" id="back-to-paired" data-i18n="popupDoneButton">Done</button>
       </section>
 
       <!-- Error --------------------------------------------------------- -->
       <section id="screen-error" hidden>
-        <h2>Something went wrong</h2>
+        <h2 data-i18n="errorScreenTitle">Something went wrong</h2>
         <p id="error-message" class="error"></p>
-        <button class="secondary" id="retry">Retry</button>
-        <button class="link" id="error-back">Back</button>
+        <button class="secondary" id="retry" data-i18n="errorRetryButton">Retry</button>
+        <button class="link" id="error-back" data-i18n="errorBackButton">Back</button>
       </section>
 
     </main>

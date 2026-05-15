@@ -9,6 +9,37 @@ function send(type, payload) {
   });
 }
 
+function t(key, substitutions) {
+  try {
+    return chrome.i18n.getMessage(key, substitutions) || key;
+  } catch (_) {
+    return key;
+  }
+}
+
+function i18nApply(root = document) {
+  root.querySelectorAll("[data-i18n]").forEach((el) => {
+    const msg = t(el.getAttribute("data-i18n"));
+    if (msg) el.textContent = msg;
+  });
+  root.querySelectorAll("[data-i18n-html]").forEach((el) => {
+    const msg = t(el.getAttribute("data-i18n-html"));
+    if (msg) el.innerHTML = msg;
+  });
+  root.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+    const msg = t(el.getAttribute("data-i18n-placeholder"));
+    if (msg) el.setAttribute("placeholder", msg);
+  });
+  root.querySelectorAll("[data-i18n-aria-label]").forEach((el) => {
+    const msg = t(el.getAttribute("data-i18n-aria-label"));
+    if (msg) el.setAttribute("aria-label", msg);
+  });
+  root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+    const msg = t(el.getAttribute("data-i18n-title"));
+    if (msg) el.setAttribute("title", msg);
+  });
+}
+
 async function refresh() {
   const resp = await send("get-pairing");
   const p = resp?.pairing || {};
@@ -17,8 +48,10 @@ async function refresh() {
   if (p.token) {
     $("result").hidden = false;
     $("result").className = "ok";
-    $("result").textContent =
-      `Paired with ${p.serverUrl} (server fingerprint: ${p.fingerprint || "unknown"}). The token is stored locally — change it by re-pairing or unpair below.`;
+    $("result").textContent = t("pairAlreadyPairedMessage", [
+      p.serverUrl || "",
+      p.fingerprint || "unknown",
+    ]);
   }
 }
 
@@ -36,9 +69,9 @@ async function deriveTokenId(raw) {
 async function pair() {
   const serverUrl = $("server-url").value.trim();
   const token = $("token").value.trim();
-  const label = $("label").value.trim() || "Browser extension";
+  const label = $("label").value.trim() || t("pairDefaultDeviceLabel");
   if (!serverUrl || !token) {
-    setResult("error", "Server URL and token are both required.");
+    setResult("error", t("errorPairMissingServerOrToken"));
     return;
   }
   let tokenId = "";
@@ -49,13 +82,10 @@ async function pair() {
   }
   const resp = await send("pair", { serverUrl, token, tokenId, label });
   if (!resp?.ok) {
-    setResult("error", resp?.error || "Pairing failed.");
+    setResult("error", resp?.error || t("errorPairFailed"));
     return;
   }
-  setResult(
-    "ok",
-    `Paired. Server fingerprint: ${resp.fingerprint}. You can close this tab and open the popup.`
-  );
+  setResult("ok", t("pairSuccessMessage", [resp.fingerprint]));
   $("token").value = ""; // don't leave the raw token in the input
 }
 
@@ -67,10 +97,11 @@ function setResult(state, text) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  i18nApply();
   refresh();
   $("pair").addEventListener("click", pair);
   $("unpair").addEventListener("click", async () => {
     await send("clear-pairing");
-    setResult("ok", "Unpaired. The local token has been removed from the browser.");
+    setResult("ok", t("pairUnpairedMessage"));
   });
 });

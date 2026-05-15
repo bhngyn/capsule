@@ -19,10 +19,62 @@ async function send(type, payload) {
   });
 }
 
-function setStatus(state, text) {
+// --- i18n ----------------------------------------------------------------
+
+function t(key, substitutions) {
+  try {
+    return chrome.i18n.getMessage(key, substitutions) || key;
+  } catch (_) {
+    return key;
+  }
+}
+
+// Plural lookup keyed off the browser UI language. WebExtension messages.json
+// has no native ICU support, so we store one key per CLDR plural category
+// (sentCount_one, sentCount_other, etc.) and pick at runtime. Arabic carries
+// all six forms; Japanese carries only "other".
+function tPlural(stem, count) {
+  const sub = [String(count)];
+  let rule = "other";
+  try {
+    const lang = chrome.i18n.getUILanguage() || "en";
+    rule = new Intl.PluralRules(lang).select(count);
+  } catch (_) { /* fall back to other */ }
+  const tried = chrome.i18n.getMessage(`${stem}_${rule}`, sub);
+  if (tried) return tried;
+  return chrome.i18n.getMessage(`${stem}_other`, sub) || `${stem}_${rule}`;
+}
+
+// Walks data-i18n*  attributes and applies translations to textContent /
+// placeholder / aria-label / title. For keys that legitimately contain
+// inline markup (pair-page steps, privacy notice), use data-i18n-html.
+function i18nApply(root = document) {
+  root.querySelectorAll("[data-i18n]").forEach((el) => {
+    const msg = t(el.getAttribute("data-i18n"));
+    if (msg) el.textContent = msg;
+  });
+  root.querySelectorAll("[data-i18n-html]").forEach((el) => {
+    const msg = t(el.getAttribute("data-i18n-html"));
+    if (msg) el.innerHTML = msg;
+  });
+  root.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+    const msg = t(el.getAttribute("data-i18n-placeholder"));
+    if (msg) el.setAttribute("placeholder", msg);
+  });
+  root.querySelectorAll("[data-i18n-aria-label]").forEach((el) => {
+    const msg = t(el.getAttribute("data-i18n-aria-label"));
+    if (msg) el.setAttribute("aria-label", msg);
+  });
+  root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+    const msg = t(el.getAttribute("data-i18n-title"));
+    if (msg) el.setAttribute("title", msg);
+  });
+}
+
+function setStatus(state, key) {
   const pill = $("status-pill");
   pill.dataset.state = state;
-  pill.querySelector(".status-text").textContent = text;
+  pill.querySelector(".status-text").textContent = t(key);
 }
 
 function showError(message) {
@@ -68,34 +120,6 @@ async function ensureHostPermission(urls) {
   return granted ? { ok: true, origins } : { ok: false, reason: "permission_denied", origins };
 }
 
-function tForHost(key, host) {
-  // chrome.i18n.getMessage with a single substitution. Falls back to the
-  // English template if the bundle is missing for any reason.
-  const fallbacks = {
-    permissionRequiredTitle: `Permission needed for ${host}`,
-    permissionRequiredBody: `Capsule needs access to ${host} to read its cookies. Click the action again and choose Allow.`,
-  };
-  try {
-    return chrome.i18n.getMessage(key, [host]) || fallbacks[key] || key;
-  } catch (_) {
-    return fallbacks[key] || key;
-  }
-}
-
-function t(key) {
-  const fallbacks = {
-    permissionDeniedTitle: "Permission denied",
-    unsupportedSchemeBody: "Cookies can only be read on http:// or https:// pages.",
-    noCookiesFoundTitle: "No cookies found",
-    noCookiesFoundBody: "Make sure you're signed in on this tab, then try again.",
-  };
-  try {
-    return chrome.i18n.getMessage(key) || fallbacks[key] || key;
-  } catch (_) {
-    return fallbacks[key] || key;
-  }
-}
-
 function updateCaptureModeUI(mode) {
   document.querySelectorAll("#capture-mode-group .pill").forEach((btn) => {
     btn.setAttribute("aria-pressed", String(btn.dataset.mode === mode));
@@ -109,41 +133,42 @@ function showPermissionError(perm, urls) {
   }
   // permission_denied (or request_failed): build a per-host message.
   const host = urls.length === 1 ? hostFromUrl(urls[0]) : `${urls.length} sites`;
-  $("error-message").textContent = `${tForHost("permissionRequiredTitle", host)} — ${tForHost("permissionRequiredBody", host)}`;
+  $("error-message").textContent =
+    `${t("permissionRequiredTitle", [host])} — ${t("permissionRequiredBody", [host])}`;
   show("error");
 }
 
 // --- init ----------------------------------------------------------------
 
 async function init() {
-  setStatus("loading", "Checking…");
+  setStatus("loading", "statusChecking");
   const pairingResp = await send("get-pairing");
   const pairing = pairingResp.pairing || {};
 
   if (!pairing.token) {
-    setStatus("warn", "Not paired");
+    setStatus("warn", "statusNotPaired");
     show("unpaired");
     return;
   }
 
   const identity = await send("check-identity");
   if (!identity?.ok) {
-    setStatus("error", identity?.reason === "fingerprint_mismatch" ? "Server changed" : "Offline");
+    setStatus("error", identity?.reason === "fingerprint_mismatch" ? "statusServerChanged" : "statusOffline");
     show("error");
     $("error-message").textContent =
       identity?.reason === "fingerprint_mismatch"
-        ? "The Capsule server's signing key has changed. Re-pair the extension."
-        : "Capsule isn't reachable at " + (pairing.serverUrl || "localhost:8080") + ". Make sure the app is running.";
+        ? t("errorServerFingerprintMismatch")
+        : t("errorServerUnreachable", [pairing.serverUrl || "localhost:8080"]);
     return;
   }
 
-  setStatus("ok", "Connected");
-  $("label-chip").textContent = pairing.label ? `paired as “${pairing.label}”` : "";
+  setStatus("ok", "statusConnected");
+  $("label-chip").textContent = pairing.label ? t("popupPairedAsLabel", [pairing.label]) : "";
   $("rotate-token").hidden = !pairing.tokenId;
 
   const casesResp = await send("list-cases");
   if (!casesResp?.ok) {
-    showError("Failed to load cases: " + (casesResp?.error || "unknown"));
+    showError(t("errorCasesLoadFailed", [casesResp?.error || "unknown"]));
     return;
   }
   const cases = casesResp.cases || [];
@@ -201,9 +226,9 @@ function currentCaptureMode() {
 
 async function sendActiveTab() {
   const url = await getActiveTabUrl();
-  if (!url) return showError("No active tab.");
+  if (!url) return showError(t("errorNoActiveTab"));
   const caseId = selectedCaseId();
-  if (!caseId) return showError("Pick a case first.");
+  if (!caseId) return showError(t("errorNoCaseSelected"));
   const perm = await ensureHostPermission([url]);
   if (!perm.ok) return showPermissionError(perm, [url]);
   const resp = await send("submit-capture", {
@@ -222,9 +247,9 @@ async function sendList() {
     .map((s) => s.trim())
     .filter(Boolean)
     .slice(0, 25);
-  if (urls.length === 0) return showError("Paste at least one URL.");
+  if (urls.length === 0) return showError(t("errorNoUrlsProvided"));
   const caseId = selectedCaseId();
-  if (!caseId) return showError("Pick a case first.");
+  if (!caseId) return showError(t("errorNoCaseSelected"));
   const perm = await ensureHostPermission(urls);
   if (!perm.ok) return showPermissionError(perm, urls);
   const resp = await send("submit-capture", {
@@ -238,13 +263,13 @@ async function sendList() {
 
 async function syncCookies() {
   const url = await getActiveTabUrl();
-  if (!url) return showError("No active tab.");
+  if (!url) return showError(t("errorNoActiveTab"));
   const caseId = selectedCaseId();
-  if (!caseId) return showError("Pick a case first.");
+  if (!caseId) return showError(t("errorNoCaseSelected"));
   const perm = await ensureHostPermission([url]);
   if (!perm.ok) return showPermissionError(perm, [url]);
   const resp = await send("sync-cookies", { caseId, url });
-  if (!resp?.ok) return showError("Sync failed: " + (resp?.error || "unknown"));
+  if (!resp?.ok) return showError(t("errorSyncFailed", [resp?.error || "unknown"]));
   const domains = (resp.summary?.domains || []).map((d) => d.domain);
   $("result-warnings").hidden = true;
   $("result-jobs").innerHTML = "";
@@ -262,7 +287,7 @@ async function syncCookies() {
     li.append(hint, meta);
     $("result-jobs").appendChild(li);
   } else {
-    $("result-title").textContent = "Cookies synced";
+    $("result-title").textContent = t("resultCookiesSyncedTitle");
     const li = document.createElement("li");
     const div = document.createElement("div");
     div.textContent = domains.join(", ");
@@ -275,27 +300,32 @@ async function syncCookies() {
 async function rotateToken() {
   const resp = await send("rotate-token");
   if (!resp?.ok) {
-    showError("Could not rotate token: " + (resp?.error || "unknown"));
+    showError(t("errorRotateTokenFailed", [resp?.error || "unknown"]));
     return;
   }
-  $("result-title").textContent = "Token rotated";
+  $("result-title").textContent = t("resultTokenRotatedTitle");
   $("result-warnings").hidden = true;
-  $("result-jobs").innerHTML = `<li><div class="muted">New token id: ${resp.token_id}</div></li>`;
+  const li = document.createElement("li");
+  const div = document.createElement("div");
+  div.className = "muted";
+  div.textContent = t("resultNewTokenIdLabel", [resp.token_id]);
+  li.appendChild(div);
+  $("result-jobs").innerHTML = "";
+  $("result-jobs").appendChild(li);
   show("result");
 }
 
 function renderResult(resp) {
-  if (!resp?.ok) return showError(resp?.error || "Submission failed");
+  if (!resp?.ok) return showError(resp?.error || t("errorSubmissionFailed"));
   const jobCount = resp.jobs?.length || 0;
-  $("result-title").textContent =
-    `Sent ${jobCount} ${jobCount === 1 ? "capture" : "captures"}`;
+  $("result-title").textContent = tPlural("sentCount", jobCount);
 
   // Render any partial-capture warnings prominently — never silent success.
   const wul = $("result-warnings");
   wul.innerHTML = "";
   const warnings = [
     ...(resp.capture_warnings || []),
-    ...((resp.skipped_urls || []).map((u) => `cookies skipped for: ${u}`)),
+    ...((resp.skipped_urls || []).map((u) => t("warningCookiesSkipped", [u]))),
   ];
   if (warnings.length) {
     for (const w of warnings) {
@@ -327,6 +357,8 @@ function renderResult(resp) {
 // --- wiring --------------------------------------------------------------
 
 document.addEventListener("DOMContentLoaded", () => {
+  i18nApply();
+
   $("open-pair-page").addEventListener("click", () => {
     chrome.tabs.create({ url: chrome.runtime.getURL("pair/pair.html") });
   });
