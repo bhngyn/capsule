@@ -52,5 +52,338 @@
   "captureModeGallery": {
     "message": "معرض",
     "description": "Capture mode pill: force gallery-dl image capture path (Arabic)."
+  },
+
+  "popupTitle": {
+    "message": "Capsule",
+    "description": "Browser-tab title for the popup. Brand name; usually left as-is."
+  },
+  "popupUnpairedMessage": {
+    "message": "‏لم يتم إقران هذه الإضافة بتثبيت Capsule بعد.",
+    "description": "Shown when the popup opens but no pairing token is stored locally."
+  },
+  "popupPairButton": {
+    "message": "‏إقران مع Capsule",
+    "description": "Button on the unpaired screen that opens the pairing page."
+  },
+  "popupActiveCaseLabel": {
+    "message": "القضية النشطة",
+    "description": "Label above the case picker dropdown."
+  },
+  "popupSendTabAriaLabel": {
+    "message": "إرسال التبويب النشط",
+    "description": "Accessible label for the primary Send-this-tab button."
+  },
+  "popupSendTabButton": {
+    "message": "إرسال هذا التبويب",
+    "description": "Primary button: submit the current tab as a capture job."
+  },
+  "popupSendListToggleButton": {
+    "message": "إرسال قائمة روابط",
+    "description": "Button: reveals the multi-URL textarea form."
+  },
+  "popupSyncCookiesButton": {
+    "message": "مزامنة ملفات تعريف الارتباط لهذا الموقع",
+    "description": "Button: uploads cookies for the active tab's domain to the active case."
+  },
+  "popupUrlListPlaceholder": {
+    "message": "رابط واحد في كل سطر · الحد الأقصى 25",
+    "description": "Placeholder text for the multi-URL textarea."
+  },
+  "popupSendListButton": {
+    "message": "إرسال القائمة",
+    "description": "Submit button for the multi-URL textarea."
+  },
+  "popupCaptureOptionsHeading": {
+    "message": "خيارات الالتقاط",
+    "description": "Summary text for the collapsible Capture-options block."
+  },
+  "popupLiveCaptureLabel": {
+    "message": "تضمين الالتقاط المباشر",
+    "description": "Toggle label: ship MHTML/screenshot/DOM/storage from the user's browser."
+  },
+  "popupLiveCaptureHint": {
+    "message": "‏— يُرسل MHTML ولقطة الشاشة ولقطة DOM وحالة التخزين جنبًا إلى جنب مع الالتقاط الأساسي.",
+    "description": "Hint shown under the Include-live-capture toggle. Leading em-dash is intentional."
+  },
+  "popupBlockAdsLabel": {
+    "message": "حجب الإعلانات والمتتبّعين في هذا المتصفح",
+    "description": "Toggle label: enable declarativeNetRequest blocking in the user's tab."
+  },
+  "popupBlockAdsHint": {
+    "message": "— يطابق قائمة الحجب في الخادم حتى لا يحمل الالتقاط المباشر ضوضاء المتتبّعين.",
+    "description": "Hint shown under the block-ads toggle."
+  },
+  "popupRealHarLabel": {
+    "message": "‏التقاط سجل الشبكة الكامل (chrome.debugger)",
+    "description": "Toggle label: attach the Chrome debugger to record a full HAR."
+  },
+  "popupRealHarHint": {
+    "message": "‏— يعرض Chrome شريطًا أصفر أثناء الاتصال. معطّل افتراضيًا.",
+    "description": "Hint shown under the chrome.debugger toggle, warning about the visible banner."
+  },
+  "popupEphemeralCookiesLabel": {
+    "message": "ملفات تعريف الارتباط المؤقتة (لمرة واحدة)",
+    "description": "Toggle label: send cookies for this capture only, never persist to the case."
+  },
+  "popupEphemeralCookiesHint": {
+    "message": "— ترسل ملفات تعريف الارتباط لهذا الالتقاط فقط. لا تُكتب أبدًا إلى مجلد القضية.",
+    "description": "Hint shown under the ephemeral-cookies toggle."
+  },
+  "popupRotateTokenButton": {
+    "message": "تدوير الرمز المميز",
+    "description": "Link button in the popup footer that mints a new token."
+  },
+  "popupManageButton": {
+    "message": "إدارة",
+    "description": "Link button in the popup footer that opens the pairing page."
+  },
+  "popupPairedAsLabel": {
+    "message": "مقترن بـ «$LABEL$»",
+    "description": "Chip in the popup footer showing the human-readable label of the active pairing.",
+    "placeholders": {
+      "label": { "content": "$1", "example": "Brian's laptop" }
+    }
+  },
+  "popupDoneButton": {
+    "message": "تم",
+    "description": "Button that returns from the result screen to the paired screen."
+  },
+
+  "statusChecking": {
+    "message": "جارٍ التحقق…",
+    "description": "Status pill while the popup is verifying the pairing."
+  },
+  "statusNotPaired": {
+    "message": "غير مقترن",
+    "description": "Status pill when no pairing token is stored locally."
+  },
+  "statusServerChanged": {
+    "message": "تغيّر الخادم",
+    "description": "Status pill when the Capsule server's signing key fingerprint no longer matches the paired one."
+  },
+  "statusOffline": {
+    "message": "غير متصل",
+    "description": "Status pill when the Capsule server can't be reached."
+  },
+  "statusConnected": {
+    "message": "متصل",
+    "description": "Status pill when the popup has reached the paired Capsule server."
+  },
+
+  "errorScreenTitle": {
+    "message": "حدث خطأ ما",
+    "description": "Heading on the popup's error screen."
+  },
+  "errorRetryButton": {
+    "message": "إعادة المحاولة",
+    "description": "Button on the error screen that re-runs the popup init."
+  },
+  "errorBackButton": {
+    "message": "رجوع",
+    "description": "Link on the error screen that returns to the paired screen."
+  },
+  "errorServerFingerprintMismatch": {
+    "message": "‏تغيّر مفتاح توقيع خادم Capsule. أعد إقران الإضافة.",
+    "description": "Error body when the server's Ed25519 fingerprint doesn't match the paired one."
+  },
+  "errorServerUnreachable": {
+    "message": "‏تعذّر الوصول إلى Capsule على $URL$. تأكد من تشغيل التطبيق.",
+    "description": "Error body when the popup can't reach the paired Capsule server.",
+    "placeholders": {
+      "url": { "content": "$1", "example": "http://localhost:8080" }
+    }
+  },
+  "errorCasesLoadFailed": {
+    "message": "فشل تحميل القضايا: $REASON$",
+    "description": "Error body when the case list couldn't be fetched.",
+    "placeholders": {
+      "reason": { "content": "$1", "example": "network" }
+    }
+  },
+  "errorNoActiveTab": {
+    "message": "لا يوجد تبويب نشط.",
+    "description": "Error shown when the popup can't find an active tab to capture."
+  },
+  "errorNoCaseSelected": {
+    "message": "اختر قضية أولًا.",
+    "description": "Error shown when the user tries to submit without choosing a case."
+  },
+  "errorNoUrlsProvided": {
+    "message": "الصق رابطًا واحدًا على الأقل.",
+    "description": "Error shown when the multi-URL textarea is empty on submit."
+  },
+  "errorSyncFailed": {
+    "message": "فشلت المزامنة: $REASON$",
+    "description": "Error body when the sync-cookies endpoint returned a failure.",
+    "placeholders": {
+      "reason": { "content": "$1", "example": "network" }
+    }
+  },
+  "errorRotateTokenFailed": {
+    "message": "تعذّر تدوير الرمز المميز: $REASON$",
+    "description": "Error body when the rotate-token endpoint returned a failure.",
+    "placeholders": {
+      "reason": { "content": "$1", "example": "unauthorized" }
+    }
+  },
+  "errorSubmissionFailed": {
+    "message": "فشل الإرسال",
+    "description": "Generic error body when capture submission failed for an unknown reason."
+  },
+
+  "resultCookiesSyncedTitle": {
+    "message": "تمت مزامنة ملفات تعريف الارتباط",
+    "description": "Title on the result screen after a successful cookies sync."
+  },
+  "resultTokenRotatedTitle": {
+    "message": "تم تدوير الرمز المميز",
+    "description": "Title on the result screen after a successful token rotation."
+  },
+  "resultNewTokenIdLabel": {
+    "message": "معرّف الرمز الجديد: $ID$",
+    "description": "Result row showing the freshly-minted token's id.",
+    "placeholders": {
+      "id": { "content": "$1", "example": "a1b2c3d4e5f6" }
+    }
+  },
+
+  "warningCookiesSkipped": {
+    "message": "ملفات تعريف الارتباط مُستبعدة لـ: $URL$",
+    "description": "Warning row shown in the result screen when cookies couldn't be attached for a URL.",
+    "placeholders": {
+      "url": { "content": "$1", "example": "https://x.com/foo" }
+    }
+  },
+
+  "sentCount_zero": {
+    "message": "لم يتم إرسال أي التقاط",
+    "description": "Result-screen title after a successful submit. ICU plural form 'zero'.",
+    "placeholders": {
+      "count": { "content": "$1", "example": "0" }
+    }
+  },
+  "sentCount_one": {
+    "message": "تم إرسال التقاط واحد",
+    "description": "Result-screen title after a successful single-capture submit. ICU plural form 'one'.",
+    "placeholders": {
+      "count": { "content": "$1", "example": "1" }
+    }
+  },
+  "sentCount_two": {
+    "message": "تم إرسال التقاطين",
+    "description": "Result-screen title after a successful submit. ICU plural form 'two'.",
+    "placeholders": {
+      "count": { "content": "$1", "example": "2" }
+    }
+  },
+  "sentCount_few": {
+    "message": "تم إرسال $COUNT$ التقاطات",
+    "description": "Result-screen title after a successful submit. ICU plural form 'few' (3–10).",
+    "placeholders": {
+      "count": { "content": "$1", "example": "5" }
+    }
+  },
+  "sentCount_many": {
+    "message": "تم إرسال $COUNT$ التقاطًا",
+    "description": "Result-screen title after a successful submit. ICU plural form 'many' (11+).",
+    "placeholders": {
+      "count": { "content": "$1", "example": "15" }
+    }
+  },
+  "sentCount_other": {
+    "message": "تم إرسال $COUNT$ التقاط",
+    "description": "Result-screen title after a successful multi-capture submit. ICU plural form 'other' / fallback.",
+    "placeholders": {
+      "count": { "content": "$1", "example": "5" }
+    }
+  },
+
+  "pairPageTitle": {
+    "message": "‏إقران مع Capsule",
+    "description": "Browser-tab title for the pairing page."
+  },
+  "pairHeadingTitle": {
+    "message": "‏إقران مع Capsule",
+    "description": "H1 heading on the pairing page."
+  },
+  "pairStep1": {
+    "message": "‏افتح Capsule في متصفحك (الافتراضي <code>http://localhost:8080</code>).",
+    "description": "Pairing step 1. Contains inline <code> markup; rendered as innerHTML."
+  },
+  "pairStep2": {
+    "message": "انتقل إلى <strong>الإعدادات ← إضافة المتصفح</strong> وانقر على <strong>إقران إضافة جديدة</strong>.",
+    "description": "Pairing step 2. Contains inline <strong> markup; rendered as innerHTML."
+  },
+  "pairStep3": {
+    "message": "‏انسخ <strong>الرمز المميز</strong> الذي يعرضه Capsule (يُكشف مرة واحدة فقط).",
+    "description": "Pairing step 3. Contains inline <strong> markup; rendered as innerHTML."
+  },
+  "pairStep4": {
+    "message": "الصقه أدناه.",
+    "description": "Pairing step 4."
+  },
+  "pairServerUrlLabel": {
+    "message": "‏رابط خادم Capsule",
+    "description": "Label above the server-URL input."
+  },
+  "pairTokenLabel": {
+    "message": "الرمز المميز",
+    "description": "Label above the token input."
+  },
+  "pairTokenPlaceholder": {
+    "message": "capsule-…",
+    "description": "Placeholder hint for the token input. Tokens start with the literal prefix 'capsule-' followed by base32 characters."
+  },
+  "pairLabelInputLabel": {
+    "message": "تسمية لهذا الجهاز (اختياري)",
+    "description": "Label above the device-label input."
+  },
+  "pairLabelInputPlaceholder": {
+    "message": "حاسوبي المحمول",
+    "description": "Placeholder text inside the device-label input."
+  },
+  "pairSubmitButton": {
+    "message": "إقران",
+    "description": "Submit button on the pairing form."
+  },
+  "pairPrivacyNotice": {
+    "message": "‏بمجرد الإقران، تتواصل الإضافة <em>حصرًا</em> مع رابط خادم Capsule أعلاه. لا ترسل أي بيانات إلى الإنترنت العام. يُخزَّن الرمز المميز في مخزن إضافات متصفحك ولا يُشارَك أبدًا مع صفحات الويب.",
+    "description": "Privacy notice at the bottom of the pairing page. Contains inline <em> markup; rendered as innerHTML."
+  },
+  "pairUnpairButton": {
+    "message": "إلغاء إقران هذه الإضافة",
+    "description": "Link button that wipes the locally-stored pairing token."
+  },
+  "pairDefaultDeviceLabel": {
+    "message": "إضافة المتصفح",
+    "description": "Default device label submitted when the user leaves the label input blank."
+  },
+  "pairAlreadyPairedMessage": {
+    "message": "‏مقترن مع $URL$ (بصمة الخادم: $FINGERPRINT$). يُخزَّن الرمز المميز محليًا — غيّره بإعادة الإقران أو ألغِ الإقران أدناه.",
+    "description": "Message shown when the pairing page loads with an existing token.",
+    "placeholders": {
+      "url": { "content": "$1", "example": "http://localhost:8080" },
+      "fingerprint": { "content": "$2", "example": "ab12cd34" }
+    }
+  },
+  "pairSuccessMessage": {
+    "message": "‏تم الإقران. بصمة الخادم: $FINGERPRINT$. يمكنك إغلاق هذا التبويب وفتح النافذة المنبثقة.",
+    "description": "Success message after a fresh pairing.",
+    "placeholders": {
+      "fingerprint": { "content": "$1", "example": "ab12cd34" }
+    }
+  },
+  "pairUnpairedMessage": {
+    "message": "تم إلغاء الإقران. تمت إزالة الرمز المميز المحلي من المتصفح.",
+    "description": "Message shown after the user clicks 'Unpair this extension'."
+  },
+  "errorPairMissingServerOrToken": {
+    "message": "رابط الخادم والرمز المميز كلاهما مطلوبان.",
+    "description": "Error shown when the user clicks Pair without filling both fields."
+  },
+  "errorPairFailed": {
+    "message": "فشل الإقران.",
+    "description": "Generic error when the pair request failed and no specific reason was returned."
   }
 }
