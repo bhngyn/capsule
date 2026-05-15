@@ -129,6 +129,14 @@ class CaptureInput:
     page_har: Path | None = None
     page_console: Path | None = None
     page_context_screenshot: Path | None = None
+    # v0.12 — frozen single-file HTML artifact. Companion to MHTML/PNG/WARC;
+    # post-JS rendered DOM with inlined computed styles, JS stripped,
+    # images as data: URIs (or absolute URLs at the external tier). Same
+    # hash-and-sign path as every other artifact. ``frozen_html_capture``
+    # is the meta block (version, tier, counters, error) — its shape
+    # mirrors ``meta.json.capture.frozen_html.*`` for the schema.
+    page_frozen_html: Path | None = None
+    frozen_html_capture: dict[str, Any] | None = None
     extra_sidecars: list[Path] = field(default_factory=list)  # description, thumbnail, subs
     # Gallery pass v0.5: gallery-dl producer outputs. Used when yt-dlp
     # returned no media but gallery-dl pulled images from the URL — see
@@ -562,6 +570,8 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
             ("page_har", capture_input.page_har),
             ("page_console", capture_input.page_console),
             ("page_context_screenshot", capture_input.page_context_screenshot),
+            # v0.12 — frozen single-file HTML artifact.
+            ("page_frozen_html", capture_input.page_frozen_html),
             ("user_browser_mhtml", capture_input.user_browser_mhtml),
             ("user_browser_screenshot", capture_input.user_browser_screenshot),
             ("user_browser_har", capture_input.user_browser_har),
@@ -580,6 +590,8 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                 "page_har": f"{stem}.page.har",
                 "page_console": f"{stem}.page.console.json",
                 "page_context_screenshot": f"{stem}.page.context.png",
+                # v0.12 — frozen.html sits alongside MHTML/PNG/WARC.
+                "page_frozen_html": f"{stem}.page.frozen.html",
                 "user_browser_mhtml": f"{stem}.user-browser.mhtml",
                 "user_browser_screenshot": f"{stem}.user-browser.png",
                 "user_browser_har": f"{stem}.user-browser.har",
@@ -822,8 +834,30 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
         # PDF sees stall events alongside other capture-side counters.
         capture_block.setdefault("stalled_count", stalled_count)
 
+        # CLAUDE.md §15 v0.12 — frozen-html block. Always emit so
+        # absence-vs-default is unambiguous; the ``generated`` boolean
+        # discriminates "artifact exists and is bound by meta.json.sig"
+        # from "skipped or failed; see error". The block is bound
+        # transitively by meta.json.sig — a recipient can verify the
+        # frozen HTML's hash matches the value here.
+        fh_input = dict(capture_input.frozen_html_capture or {})
+        frozen_html_block = {
+            "generated": "page_frozen_html" in artifacts,
+            "version": fh_input.get("version"),
+            "tier": fh_input.get("tier"),
+            "byte_count": fh_input.get("byte_count"),
+            "inlined_image_count": int(fh_input.get("inlined_image_count") or 0),
+            "external_image_count": int(fh_input.get("external_image_count") or 0),
+            "stripped_script_count": int(fh_input.get("stripped_script_count") or 0),
+            "stripped_iframe_count": int(fh_input.get("stripped_iframe_count") or 0),
+            "stripped_font_face_count": int(fh_input.get("stripped_font_face_count") or 0),
+            "shadow_root_omitted_count": int(fh_input.get("shadow_root_omitted_count") or 0),
+            "error": fh_input.get("error"),
+        }
+        capture_block["frozen_html"] = frozen_html_block
+
         meta = {
-            "schema_version": 10,
+            "schema_version": 11,
             "job_uuid": capture_input.job_uuid,
             "capture_kind": capture_kind,
             "case": {"id": case.id, "slug": case.slug, "name": case.name},
@@ -1070,6 +1104,41 @@ def finalize(conn: sqlite3.Connection, capture_input: CaptureInput) -> CaptureRe
                     ],
                 },
             )
+        # CLAUDE.md §15 v0.12: frozen-html generation outcome. Two
+        # complementary rows depending on whether the artifact landed
+        # on disk. ``generated`` mirrors the boolean in
+        # ``meta.json.capture.frozen_html``; the counters give a court
+        # reviewer a quick "what did this view preserve" answer.
+        if frozen_html_block.get("generated"):
+            audit.append(
+                conn, "capture.frozen_html_generated",
+                case_id=case.id, download_id=download_id, actor="system",
+                details={
+                    "stem": stem,
+                    "version": frozen_html_block.get("version"),
+                    "tier": frozen_html_block.get("tier"),
+                    "byte_count": frozen_html_block.get("byte_count"),
+                    "inlined_image_count": frozen_html_block.get("inlined_image_count"),
+                    "external_image_count": frozen_html_block.get("external_image_count"),
+                    "stripped_script_count": frozen_html_block.get("stripped_script_count"),
+                    "stripped_iframe_count": frozen_html_block.get("stripped_iframe_count"),
+                    "stripped_font_face_count": frozen_html_block.get("stripped_font_face_count"),
+                    "shadow_root_omitted_count": frozen_html_block.get("shadow_root_omitted_count"),
+                    "sha256": (checksums.get("page_frozen_html") or {}).get("sha256"),
+                },
+            )
+        elif frozen_html_block.get("error"):
+            audit.append(
+                conn, "capture.frozen_html_failed",
+                case_id=case.id, download_id=download_id, actor="system",
+                details={
+                    "stem": stem,
+                    "error": frozen_html_block.get("error"),
+                    "tier": frozen_html_block.get("tier"),
+                    "byte_count": frozen_html_block.get("byte_count"),
+                },
+            )
+
         # CLAUDE.md §16 v0.11 bucket 2 #2: HAR sidecar was missing the
         # ``_capsule_redacted_header_count`` marker, so we deleted it
         # rather than ship potentially un-redacted Cookie/Authorization
@@ -1209,6 +1278,10 @@ def extend_capture(
         "page_har":                      (SUBDIR_CAPTURES, f"{stem}.page.har"),
         "page_console":                  (SUBDIR_CAPTURES, f"{stem}.page.console.json"),
         "page_context_screenshot":       (SUBDIR_CAPTURES, f"{stem}.page.context.png"),
+        # v0.12 — extend_capture can retrofit a frozen.html onto a legacy
+        # item via the same path; on-disk siblings already in place stay
+        # untouched, the new frozen.html joins them under Captures/.
+        "page_frozen_html":              (SUBDIR_CAPTURES, f"{stem}.page.frozen.html"),
         "user_browser_mhtml":            (SUBDIR_CAPTURES, f"{stem}.user-browser.mhtml"),
         "user_browser_screenshot":       (SUBDIR_CAPTURES, f"{stem}.user-browser.png"),
         "user_browser_har":              (SUBDIR_CAPTURES, f"{stem}.user-browser.har"),

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://capsule.example/schemas/meta.schema.json",
   "title": "Capsule capture metadata (meta.json)",
-  "description": "Per-capture forensic record. Source of truth for the integrity story; signed by the case keypair. Schema v2 (hardening pass) adds tab_context, capture-side mutations (blocking + banner hide), render-wait outcomes, and cookie-set provenance hash. Schema v3 (Track A) adds the per-item manifest PDF artifact role + checksum, plus capture.report_lang for the locale the manifest PDF was rendered in. Schema v4 adds the per-item report PDF (``report_pdf`` artifact role) — a human-readable companion to the manifest PDF carrying provenance, full description, tools, and the capture report; its hash is bound to meta.json by the same signature. Schema v5 adds ``url_canonical`` (canonical form of url_final used for dedup hashing) and ``force_recapture_index`` (set when the row was an intentional re-capture per CLAUDE.md §15; null otherwise). Schema v6 adds the ``gallery`` capture_kind for image-gallery captures (gallery-dl producer): ``gallery_count`` and ``gallery_extractor`` at the root, ``gallery_dl_version`` under tools, ``gallery_NNN`` / ``gallery_NNN_meta`` / ``gallery_info`` artifact roles, and ``capture.gallery_attempted`` / ``capture.gallery_outcome`` for the capture report. Schema v7 (page-preservation hardening pass) adds in-session WARC provenance (``capture.warc.*``), animation-freeze and video-pause counters, console + HAR sidecars (``page_console`` and ``page_har`` artifact roles), the navigation response block (``capture.response``), the media-context viewport screenshot (``page_context_screenshot`` role), and ``warcio_version`` / ``browsertrix_version: null`` for in-session captures. Schema v8 (Download options + reliability hardening v0.7) adds the ``download_options`` block and ``capture.stalled_count``. Schema v9 (Format choice v0.9) adds ``download_options.video_container`` and ``download_options.audio_container``. Schema v10 (Capture mode v0.10) adds ``download_options.capture_mode``.",
+  "description": "Per-capture forensic record. Source of truth for the integrity story; signed by the case keypair. Schema v2 (hardening pass) adds tab_context, capture-side mutations (blocking + banner hide), render-wait outcomes, and cookie-set provenance hash. Schema v3 (Track A) adds the per-item manifest PDF artifact role + checksum, plus capture.report_lang for the locale the manifest PDF was rendered in. Schema v4 adds the per-item report PDF (``report_pdf`` artifact role) — a human-readable companion to the manifest PDF carrying provenance, full description, tools, and the capture report; its hash is bound to meta.json by the same signature. Schema v5 adds ``url_canonical`` (canonical form of url_final used for dedup hashing) and ``force_recapture_index`` (set when the row was an intentional re-capture per CLAUDE.md §15; null otherwise). Schema v6 adds the ``gallery`` capture_kind for image-gallery captures (gallery-dl producer): ``gallery_count`` and ``gallery_extractor`` at the root, ``gallery_dl_version`` under tools, ``gallery_NNN`` / ``gallery_NNN_meta`` / ``gallery_info`` artifact roles, and ``capture.gallery_attempted`` / ``capture.gallery_outcome`` for the capture report. Schema v7 (page-preservation hardening pass) adds in-session WARC provenance (``capture.warc.*``), animation-freeze and video-pause counters, console + HAR sidecars (``page_console`` and ``page_har`` artifact roles), the navigation response block (``capture.response``), the media-context viewport screenshot (``page_context_screenshot`` role), and ``warcio_version`` / ``browsertrix_version: null`` for in-session captures. Schema v8 (Download options + reliability hardening v0.7) adds the ``download_options`` block and ``capture.stalled_count``. Schema v9 (Format choice v0.9) adds ``download_options.video_container`` and ``download_options.audio_container``. Schema v10 (Capture mode v0.10) adds ``download_options.capture_mode``. Schema v11 (Frozen single-file HTML v0.12) adds the ``page_frozen_html`` artifact role and the ``capture.frozen_html.*`` block describing the post-JS-rendered DOM snapshot with inlined computed styles (archive.today's technique), held alongside MHTML/WARC as a derived long-term-durable view.",
   "type": "object",
   "required": [
     "schema_version",
@@ -22,7 +22,7 @@
     "signing_key_fp"
   ],
   "properties": {
-    "schema_version": { "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] },
+    "schema_version": { "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
     "job_uuid": { "type": "string" },
     "capture_kind": { "enum": ["media", "page_only", "gallery"] },
     "case": {
@@ -224,6 +224,59 @@
         "stalled_count": {
           "type": "integer",
           "description": "Number of stall events the runner emitted during this capture (no progress JSON for >= STALL_THRESHOLD_S). Mirrors download_options.stalled_count. v8."
+        },
+        "frozen_html": {
+          "type": "object",
+          "description": "Frozen single-file HTML view provenance (CLAUDE.md §15 v0.12). The artifact at ``artifacts.page_frozen_html`` is a post-JS-rendered DOM serialization with computed styles inlined and images embedded as data: URIs — archive.today's technique applied as a long-term-durable derived view alongside MHTML/PNG/WARC. Always emitted on v11+ records (``generated: false`` + ``error: 'skipped'`` when not produced). The file is hashed and bound transitively by meta.json.sig. v11.",
+          "properties": {
+            "generated": {
+              "type": "boolean",
+              "description": "True iff page.frozen.html was written and added to the artifacts map. False when an exception was caught or the writer was skipped."
+            },
+            "version": {
+              "type": ["string", "null"],
+              "description": "Frozen-html writer format version (``app.frozen_html.FROZEN_HTML_VERSION``). Bumped when the serializer's output shape changes so a future verifier can correlate output style to the writer that produced it."
+            },
+            "tier": {
+              "anyOf": [
+                { "type": "null" },
+                { "enum": ["full", "small_only", "external"] }
+              ],
+              "description": "Which step of the size ladder produced the output. ``full`` inlines images up to 256KB each (typical); ``small_only`` retries with a 64KB per-image cap; ``external`` leaves every <img src> as an absolute URL (recipient relies on the WARC for offline replay). ``null`` when no artifact was produced."
+            },
+            "byte_count": {
+              "type": ["integer", "null"],
+              "description": "On-disk size of the frozen.html in bytes. ``null`` when no artifact was produced."
+            },
+            "inlined_image_count": {
+              "type": "integer",
+              "description": "Number of images embedded as data: URIs in the output."
+            },
+            "external_image_count": {
+              "type": "integer",
+              "description": "Number of images left as absolute URLs (oversized, blob:, or fetch failure)."
+            },
+            "stripped_script_count": {
+              "type": "integer",
+              "description": "Number of <script> elements removed during serialization. Frozen HTML carries no JavaScript so the snapshot can't break years later when third-party JS APIs change."
+            },
+            "stripped_iframe_count": {
+              "type": "integer",
+              "description": "Number of <iframe> elements replaced with a visible 'see page.warc.gz' placeholder. Same-origin iframe contents are not walked recursively under pragmatic fidelity."
+            },
+            "stripped_font_face_count": {
+              "type": "integer",
+              "description": "Count of @font-face declarations dropped (system-font fallback). Recorded so a recipient knows the typography degradation was deliberate, not a bug."
+            },
+            "shadow_root_omitted_count": {
+              "type": "integer",
+              "description": "Number of shadow-root hosts replaced with a visible 'see page.warc.gz' placeholder. Shadow DOM is not walked under pragmatic fidelity."
+            },
+            "error": {
+              "type": ["string", "null"],
+              "description": "Reason no artifact was produced: ``skipped`` (capture pipeline didn't reach the generate step), ``size_budget_exceeded`` (even the external tier blew past the 25MB hard cap), ``evaluate_raised:<ExceptionClass>``, ``write_io_error:<ExceptionClass>``. ``null`` when generation succeeded."
+            }
+          }
         }
       }
     },

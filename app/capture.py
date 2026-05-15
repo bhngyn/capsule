@@ -320,6 +320,23 @@ class CaptureBundle:
     console_log: Path | None = None
     context_screenshot: Path | None = None
     warcio_version: str | None = None
+    # v0.12 — frozen single-file HTML artifact (CLAUDE.md §15 v0.12).
+    # ``frozen_html`` is the Path to ``{stem}.page.frozen.html`` (or None
+    # if generation failed / was skipped). The companion counter and
+    # tier fields populate ``meta.json.capture.frozen_html.*``. The
+    # whole block is additive — pre-v0.12 code paths that don't pass
+    # these keep working unchanged.
+    frozen_html: Path | None = None
+    frozen_html_version: str | None = None
+    frozen_html_tier: str | None = None
+    frozen_html_byte_count: int | None = None
+    frozen_html_inlined_count: int = 0
+    frozen_html_external_count: int = 0
+    frozen_html_stripped_script_count: int = 0
+    frozen_html_stripped_iframe_count: int = 0
+    frozen_html_stripped_font_face_count: int = 0
+    frozen_html_shadow_root_omitted_count: int = 0
+    frozen_html_error: str | None = None
 
 
 def browsertrix_available() -> bool:
@@ -972,6 +989,24 @@ async def _playwright_snapshot(
     warc_in_session_error: str | None = None
     banner_hide_error: str | None = None
     console_sidecar_error: str | None = None
+    # v0.12 — frozen single-file HTML default ("skipped" outcome). If
+    # an exception fires before the generate() call near the end of the
+    # ``async with`` block, this default keeps the return shape stable
+    # so meta.json still receives a well-formed (absent-artifact) block.
+    from . import frozen_html as _frozen_html_init_mod
+    frozen_html_result = _frozen_html_init_mod.FrozenHtmlResult(
+        path=None,
+        version=_frozen_html_init_mod.FROZEN_HTML_VERSION,
+        tier=None,
+        byte_count=None,
+        inlined_image_count=0,
+        external_image_count=0,
+        stripped_script_count=0,
+        stripped_iframe_count=0,
+        stripped_font_face_count=0,
+        shadow_root_omitted_count=0,
+        error="skipped",
+    )
 
     render_wait_started = _time.monotonic()
 
@@ -1285,7 +1320,11 @@ async def _playwright_snapshot(
 
             # Close WARC writer BEFORE the browser context exits so all
             # CDP events have a chance to fire while the network domain is
-            # still attached.
+            # still attached. Closing it here also means the frozen.html
+            # generation below (which issues fresh image fetches via
+            # ``page.request.fetch``) doesn't pollute the WARC with
+            # derivation requests — the WARC stays a clean record of
+            # what the page itself loaded.
             if warc_writer is not None:
                 try:
                     await warc_writer.__aexit__(None, None, None)
@@ -1301,6 +1340,20 @@ async def _playwright_snapshot(
                     # __aexit__ failure that followed it.
                     if warc_in_session_error is None:
                         warc_in_session_error = type(exc).__name__
+
+            # CLAUDE.md §15 v0.12 — frozen single-file HTML artifact.
+            # Generated AFTER the animation-freeze stylesheet has been
+            # removed (line ~1295) so the inlined computed styles
+            # reflect the page's source CSS, not Capsule's overlay.
+            # Image bodies are fetched via Playwright's APIRequestContext
+            # (browser context, cookies + auth + CORS handled at the
+            # browser layer). Never raises; the result captures any
+            # failure reason for meta.json + audit.
+            from . import frozen_html as _frozen_html_mod
+            frozen_html_result = await _frozen_html_mod.generate(
+                page=page,
+                work_dir=out_dir,
+            )
         finally:
             await browser.close()
 
@@ -1385,6 +1438,27 @@ async def _playwright_snapshot(
         "chromium_version": chromium_v,
         "warcio_version": warcio_v,
         "report": report,
+        # v0.12 — frozen single-file HTML. ``frozen_html_result`` was
+        # built inside the ``async with`` block above; outside the block
+        # we only forward its (already serialised) fields. ``path`` is
+        # None when generation failed or wasn't attempted; the counters
+        # and error string still flow through so meta.json gets the
+        # forensic story.
+        "frozen_html": (
+            frozen_html_result.path
+            if frozen_html_result.path is not None and frozen_html_result.path.is_file()
+            else None
+        ),
+        "frozen_html_version": frozen_html_result.version,
+        "frozen_html_tier": frozen_html_result.tier,
+        "frozen_html_byte_count": frozen_html_result.byte_count,
+        "frozen_html_inlined_count": frozen_html_result.inlined_image_count,
+        "frozen_html_external_count": frozen_html_result.external_image_count,
+        "frozen_html_stripped_script_count": frozen_html_result.stripped_script_count,
+        "frozen_html_stripped_iframe_count": frozen_html_result.stripped_iframe_count,
+        "frozen_html_stripped_font_face_count": frozen_html_result.stripped_font_face_count,
+        "frozen_html_shadow_root_omitted_count": frozen_html_result.shadow_root_omitted_count,
+        "frozen_html_error": frozen_html_result.error,
     }
 
 
@@ -1657,4 +1731,16 @@ async def capture_page(
         console_log=snap["console_log"],
         context_screenshot=snap["context_screenshot"],
         warcio_version=snap["warcio_version"],
+        # v0.12 — frozen single-file HTML artifact + counters.
+        frozen_html=snap.get("frozen_html"),
+        frozen_html_version=snap.get("frozen_html_version"),
+        frozen_html_tier=snap.get("frozen_html_tier"),
+        frozen_html_byte_count=snap.get("frozen_html_byte_count"),
+        frozen_html_inlined_count=int(snap.get("frozen_html_inlined_count") or 0),
+        frozen_html_external_count=int(snap.get("frozen_html_external_count") or 0),
+        frozen_html_stripped_script_count=int(snap.get("frozen_html_stripped_script_count") or 0),
+        frozen_html_stripped_iframe_count=int(snap.get("frozen_html_stripped_iframe_count") or 0),
+        frozen_html_stripped_font_face_count=int(snap.get("frozen_html_stripped_font_face_count") or 0),
+        frozen_html_shadow_root_omitted_count=int(snap.get("frozen_html_shadow_root_omitted_count") or 0),
+        frozen_html_error=snap.get("frozen_html_error"),
     )

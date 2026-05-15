@@ -698,10 +698,12 @@ def test_manifest_pdf_hash_present_in_meta_and_checksums(env):
     # knobs + reliability counters; v9 (CLAUDE.md §15 v0.9) adds the
     # container picker (video_container, audio_container); v10 (CLAUDE.md
     # §15 v0.11) adds ``capture_mode`` + ``force_gallery_run`` for
-    # orchestrator routing. Per CLAUDE.md §13.15, schema and producer
-    # move in lockstep. Manifest + report PDFs continue to ride the same
-    # artifact-binding transitive signature path.
-    assert meta["schema_version"] == 10
+    # orchestrator routing; v11 (CLAUDE.md §15 v0.12) adds the
+    # ``capture.frozen_html`` block describing the post-JS-rendered DOM
+    # snapshot (archive.today technique). Per CLAUDE.md §13.15, schema
+    # and producer move in lockstep. Manifest + report PDFs continue
+    # to ride the same artifact-binding transitive signature path.
+    assert meta["schema_version"] == 11
     assert meta["url_canonical"]
     assert meta["force_recapture_index"] is None
     # CLAUDE.md §15 v0.7: download_options block always emitted on v8+.
